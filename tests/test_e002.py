@@ -1,13 +1,16 @@
 import copy
 import itertools
 import json
+import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from llm_evaluation import cli
+from llm_evaluation import cli, records
 from llm_evaluation.metrics import all_k, best_of_k, marginal
 from llm_evaluation.records import (
     analyze, canonical_bytes, canonical_sha256, load_fixture, parse_fixture,
@@ -17,6 +20,7 @@ from llm_evaluation.records import (
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures/e002_synthetic.json"
 COMMIT = "a" * 40
+IMPLEMENTATION = "b" * 64
 
 
 class EstimatorTests(unittest.TestCase):
@@ -71,13 +75,14 @@ class RecordTests(unittest.TestCase):
     def finalized(self):
         result = analyze(self.fixture, 2, source_bytes=self.source)
         result["software_commit"] = COMMIT
+        result["implementation_sha256"] = IMPLEMENTATION
         return result
 
     def test_public_fixture_result_and_macro_weighting(self):
         self.assertEqual(canonical_sha256(self.fixture),
                          "dfa517c2c76ad0c6cebacb157e67fdb3b177d0a1bcf6526096b8c80f2a3772a2")
         result = self.finalized()
-        self.assertEqual(result["schema_version"], 2)
+        self.assertEqual(result["schema_version"], 3)
         self.assertEqual(result["per_task"][0]["best_of_k"], 5 / 6)
         self.assertEqual(result["per_task"][0]["all_k"], 1 / 6)
         self.assertAlmostEqual(result["macro"]["best_of_k"], 11 / 18)
@@ -86,12 +91,13 @@ class RecordTests(unittest.TestCase):
 
     def test_finalized_writer_rejects_missing_software_and_source(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "record.json"
+            path = Path(directory).resolve() / "record.json"
             preview = analyze(self.fixture, 2, source_bytes=self.source)
             with self.assertRaisesRegex(ValueError, "software commit"):
                 write_immutable(path, preview, self.source)
             self.assertFalse(path.exists())
             preview["software_commit"] = COMMIT
+            preview["implementation_sha256"] = IMPLEMENTATION
             preview["fixture_raw_sha256"] = None
             with self.assertRaisesRegex(ValueError, "raw source"):
                 write_immutable(path, preview, self.source)
@@ -105,6 +111,7 @@ class RecordTests(unittest.TestCase):
         fixture["tasks"][0]["outcomes"][0] = False
         self.assertEqual(canonical_bytes(result), before)
         result["software_commit"] = COMMIT
+        result["implementation_sha256"] = IMPLEMENTATION
         self.assertIs(verify_result_source(result, self.source), result)
 
     def test_source_binding_and_hash_contract(self):
@@ -147,28 +154,124 @@ class RecordTests(unittest.TestCase):
             with self.subTest(broken=broken), self.assertRaises(ValueError):
                 validate_result(broken)
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "run.json"
+            path = Path(directory).resolve() / "run.json"
             result = self.finalized()
-            with patch("llm_evaluation.records.current_git_commit", return_value=COMMIT):
+            with patch("llm_evaluation.records.software_identity", return_value=(COMMIT, IMPLEMENTATION)):
                 write_immutable(path, result, self.source)
                 self.assertEqual(read_finalized(path, self.source), result)
                 with self.assertRaises(FileExistsError):
                     write_immutable(path, result, self.source)
-            self.assertEqual(list(Path(directory).iterdir()), [path])
+            self.assertEqual(list(Path(directory).resolve().iterdir()), [path])
 
     def test_reject_wrong_executing_commit(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "run.json"
-            with patch("llm_evaluation.records.current_git_commit", return_value="b" * 40):
-                with self.assertRaisesRegex(ValueError, "executing clean checkout"):
+            path = Path(directory).resolve() / "run.json"
+            with patch("llm_evaluation.records.software_identity", return_value=("c" * 40, IMPLEMENTATION)):
+                with self.assertRaisesRegex(ValueError, "executing Git checkout"):
                     write_immutable(path, self.finalized(), self.source)
             self.assertFalse(path.exists())
 
+    def test_finalized_requires_measured_implementation(self):
+        result = self.finalized()
+        result["implementation_sha256"] = None
+        with self.assertRaisesRegex(ValueError, "implementation digest"):
+            validate_result(result)
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "implementation digest"):
+                write_immutable(Path(directory).resolve() / "out.json", result, self.source)
+
+    def test_software_digest_mismatch_rejected_at_writer(self):
+        result = self.finalized()
+        result["implementation_sha256"] = "d" * 64
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory).resolve() / "out.json"
+            with patch("llm_evaluation.records.software_identity",
+                       return_value=(COMMIT, IMPLEMENTATION)):
+                with self.assertRaisesRegex(ValueError, "software identity"):
+                    write_immutable(path, result, self.source)
+            self.assertFalse(path.exists())
+
+    def test_fsync_parent_after_publishing_and_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory).resolve() / "out.json"
+            with patch("llm_evaluation.records.software_identity",
+                       return_value=(COMMIT, IMPLEMENTATION)), patch(
+                           "llm_evaluation.records._fsync_directory",
+                           wraps=records._fsync_directory
+                       ) as sync:
+                write_immutable(path, self.finalized(), self.source)
+            self.assertGreaterEqual(sync.call_count, 2)
+            self.assertEqual(read_finalized(path, self.source), self.finalized())
+
+    def test_symlinked_artifact_parent_and_target_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            real = root / "real"
+            real.mkdir()
+            alias = root / "alias"
+            alias.symlink_to(real, target_is_directory=True)
+            with patch("llm_evaluation.records.software_identity",
+                       return_value=(COMMIT, IMPLEMENTATION)):
+                with self.assertRaisesRegex(ValueError, "symbolic links"):
+                    write_immutable(alias / "out.json", self.finalized(), self.source)
+                target = real / "out.json"
+                target.symlink_to(root / "absent")
+                with self.assertRaisesRegex(ValueError, "symbolic links"):
+                    write_immutable(target, self.finalized(), self.source)
+            self.assertFalse((real / "absent").exists())
+
+    def test_git_objects_reject_hidden_implementation_modifications(self):
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            clone = Path(directory).resolve() / "repo"
+            clone.mkdir()
+            shutil.copytree(root / "src", clone / "src",
+                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            shutil.copytree(root / "fixtures", clone / "fixtures")
+            shutil.copy2(root / ".gitignore", clone / ".gitignore")
+            def git(*args):
+                return subprocess.run(["git", *args], cwd=clone, check=True,
+                                      capture_output=True, text=True).stdout.strip()
+            git("init", "-q")
+            git("config", "user.email", "test@example.invalid")
+            git("config", "user.name", "Test")
+            git("add", "src", "fixtures", ".gitignore")
+            git("commit", "-qm", "fixture")
+            environment = dict(os.environ, PYTHONPATH=str(clone / "src"))
+            output = Path(directory).resolve() / "out.json"
+            command = [sys.executable, "-m", "llm_evaluation.cli",
+                       str(clone / "fixtures" / "e002_synthetic.json"),
+                       "--k", "2", "--output", str(output)]
+            first = subprocess.run(command, cwd=clone, env=environment,
+                                   capture_output=True, text=True)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertEqual(git("status", "--porcelain", "--untracked-files=all"), "")
+            record = read_finalized(output, self.source)
+            self.assertEqual(record["software_commit"], git("rev-parse", "HEAD"))
+            self.assertEqual(len(record["implementation_sha256"]), 64)
+            for flag, reset in (("--assume-unchanged", "--no-assume-unchanged"),
+                                ("--skip-worktree", "--no-skip-worktree")):
+                with self.subTest(flag=flag):
+                    git("update-index", flag, "src/llm_evaluation/metrics.py")
+                    target = clone / "src/llm_evaluation/metrics.py"
+                    original = target.read_text()
+                    target.write_text(original.replace("return c / n",
+                                                        "return 0.123456789"))
+                    self.assertEqual(git("status", "--porcelain", "--untracked-files=all"), "")
+                    output.unlink(missing_ok=True)
+                    failed = subprocess.run(command, cwd=clone, env=environment,
+                                            capture_output=True, text=True)
+                    self.assertNotEqual(failed.returncode, 0)
+                    self.assertIn("executing implementation bytes differ", failed.stderr)
+                    self.assertFalse(output.exists())
+                    git("update-index", reset, "src/llm_evaluation/metrics.py")
+                    target.write_text(original)
+
     def test_real_cli_surface_with_controlled_checkout_identity(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "run.json"
+            path = Path(directory).resolve() / "run.json"
             argv = ["llm-evaluation", str(FIXTURE), "--k", "2", "--output", str(path)]
-            with patch.object(sys, "argv", argv), patch("llm_evaluation.cli.current_git_commit", return_value=COMMIT), patch("llm_evaluation.records.current_git_commit", return_value=COMMIT):
+            with patch.object(sys, "argv", argv), patch("llm_evaluation.cli.software_identity", return_value=(COMMIT, IMPLEMENTATION)), patch("llm_evaluation.records.software_identity", return_value=(COMMIT, IMPLEMENTATION)):
                 cli.main()
                 self.assertEqual(read_finalized(path, self.source)["software_commit"], COMMIT)
                 with self.assertRaises(FileExistsError):

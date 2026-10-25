@@ -1,10 +1,11 @@
-"""Strict v2 synthetic records and explicit source/finalization verification."""
+"""Strict v3 synthetic records and distinct source/software/finalization checks."""
 
 import copy
 import hashlib
 import json
 import os
 import platform
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -102,10 +103,11 @@ def analyze(value: object, k: int, *, source_bytes: bytes | None = None) -> dict
         n, c = len(outcomes), sum(outcomes)
         rows.append({"task": task["id"], "n": n, "c": c, "marginal": marginal(n, c),
                      "best_of_k": best_of_k(n, c, k), "all_k": all_k(n, c, k)})
-    return {"schema_version": 2, "record_type": "e002_diagnostic", "experiment": "E-002",
+    return {"schema_version": 3, "record_type": "e002_diagnostic", "experiment": "E-002",
             "fixture_canonical_sha256": canonical_sha256(fixture),
             "fixture_raw_sha256": raw_sha256(source_bytes) if source_bytes is not None else None,
             "condition": copy.deepcopy(fixture["condition"]), "software_commit": None,
+            "implementation_sha256": None,
             "python_version": platform.python_version(), "k": k, "task_weighting": "equal",
             "per_task": rows,
             "macro": {key: sum(row[key] for row in rows) / len(rows) for key in METRICS},
@@ -115,9 +117,9 @@ def analyze(value: object, k: int, *, source_bytes: bytes | None = None) -> dict
 def validate_result(value: object, *, finalized: bool = True) -> dict[str, Any]:
     result = _fields(value, {"schema_version", "record_type", "experiment",
                              "fixture_canonical_sha256", "fixture_raw_sha256", "condition",
-                             "software_commit", "python_version", "k", "task_weighting",
+                             "software_commit", "implementation_sha256", "python_version", "k", "task_weighting",
                              "per_task", "macro", "interpretation"}, "result")
-    if type(result["schema_version"]) is not int or result["schema_version"] != 2 or result["record_type"] != "e002_diagnostic" or result["experiment"] != "E-002":
+    if type(result["schema_version"]) is not int or result["schema_version"] != 3 or result["record_type"] != "e002_diagnostic" or result["experiment"] != "E-002":
         raise ValueError("unsupported result schema")
     if not _hex(result["fixture_canonical_sha256"], 64):
         raise ValueError("invalid canonical source digest")
@@ -125,10 +127,15 @@ def validate_result(value: object, *, finalized: bool = True) -> dict[str, Any]:
     if raw is not None and not _hex(raw, 64):
         raise ValueError("invalid raw source digest")
     commit = result["software_commit"]
-    if commit is not None and not _hex(commit, 40):
+    if commit is not None and (type(commit) is not str or len(commit) not in (40, 64) or not _hex(commit, len(commit))):
         raise ValueError("invalid software commit")
     if finalized and (raw is None or commit is None):
         raise ValueError("finalized record requires raw source and software commit")
+    implementation = result["implementation_sha256"]
+    if implementation is not None and not _hex(implementation, 64):
+        raise ValueError("invalid implementation digest")
+    if finalized and implementation is None:
+        raise ValueError("finalized record requires implementation digest")
     if type(result["python_version"]) is not str or not result["python_version"]:
         raise ValueError("missing Python version")
     condition = _fields(result["condition"], CONDITION_FIELDS, "condition")
@@ -179,30 +186,120 @@ def load_fixture(path: Path) -> dict[str, Any]:
     return parse_fixture(path.read_bytes())
 
 
-def current_git_commit() -> str:
-    """Identity of the clean checkout that actually executes this installed source."""
+def _git(root: Path, *args: str) -> bytes:
+    return subprocess.run(["git", *args], cwd=root, capture_output=True,
+                          check=True).stdout
+
+
+def _package_files(root: Path) -> dict[str, bytes]:
+    """Actual regular Python source under the package; reject linked or special files."""
+    package = root / "src" / "llm_evaluation"
+    if (root / "src").is_symlink() or package.is_symlink() or not package.is_dir():
+        raise ValueError("implementation package is missing or linked")
+    files: dict[str, bytes] = {}
+    for path in package.rglob("*"):
+        if "__pycache__" in path.parts:
+            continue
+        mode = path.lstat().st_mode
+        if stat.S_ISLNK(mode):
+            raise ValueError("implementation symlink is forbidden")
+        if stat.S_ISDIR(mode):
+            continue
+        if not stat.S_ISREG(mode):
+            raise ValueError("implementation special file is forbidden")
+        if path.suffix == ".py":
+            files[path.relative_to(root).as_posix()] = path.read_bytes()
+    return files
+
+
+def _package_digest(files: dict[str, bytes]) -> str:
+    """SHA-256 over sorted UTF-8 relative paths and lengths plus exact file bytes."""
+    digest = hashlib.sha256(b"llm-evaluation-python-package-v1\0")
+    for name, data in sorted(files.items()):
+        path_bytes = name.encode("utf-8")
+        digest.update(len(path_bytes).to_bytes(8, "big"))
+        digest.update(path_bytes)
+        digest.update(len(data).to_bytes(8, "big"))
+        digest.update(data)
+    return digest.hexdigest()
+
+
+def software_identity() -> tuple[str, str]:
+    """Commit and measured package digest, checked against HEAD's committed blobs.
+
+    .py files under src/llm_evaluation are identity-bearing; paths and bytes
+    enter the digest. Untracked additions and removals change the inventory.
+    Python caches are excluded. The Git object format determines commit length.
+    """
     root = Path(__file__).resolve().parents[2]
-    def git(*args: str) -> str:
-        return subprocess.run(["git", *args], cwd=root, capture_output=True,
-                              text=True, check=True).stdout.strip()
-    if Path(git("rev-parse", "--show-toplevel")).resolve() != root:
+    if Path(os.fsdecode(_git(root, "rev-parse", "--show-toplevel")).strip()).resolve() != root:
         raise ValueError("implementation is not executing from its repository root")
-    if git("status", "--porcelain", "--untracked-files=all"):
-        raise ValueError("refusing to finalize against a dirty checkout")
-    commit = git("rev-parse", "--verify", "HEAD")
-    if not _hex(commit, 40):
+    commit = _git(root, "rev-parse", "--verify", "HEAD").decode("ascii").strip()
+    fmt = _git(root, "rev-parse", "--show-object-format").decode("ascii").strip()
+    length = {"sha1": 40, "sha256": 64}.get(fmt)
+    if length is None or not _hex(commit, length):
         raise ValueError("invalid checkout commit")
-    return commit
+    prefix = b"src/llm_evaluation/"
+    names = _git(root, "ls-tree", "-r", "-z", "--name-only", commit, "--", "src/llm_evaluation")
+    committed: dict[str, bytes] = {}
+    for raw_name in names.split(b"\0"):
+        if not raw_name:
+            continue
+        if not raw_name.startswith(prefix):
+            raise ValueError("unexpected Git tree path")
+        name = raw_name.decode("utf-8")
+        if name.endswith(".py"):
+            committed[name] = _git(root, "show", f"{commit}:{name}")
+    actual = _package_files(root)
+    if set(actual) != set(committed):
+        raise ValueError("implementation source inventory differs from Git HEAD")
+    measured = _package_digest(actual)
+    if measured != _package_digest(committed):
+        raise ValueError("executing implementation bytes differ from Git HEAD")
+    if _git(root, "status", "--porcelain", "--untracked-files=all"):
+        raise ValueError("refusing to finalize against a dirty checkout")
+    return commit, measured
+
+
+def current_git_commit() -> str:
+    """Compatibility helper; also verifies executing package bytes against HEAD."""
+    return software_identity()[0]
+
+
+def _reject_symlink_components(path: Path) -> None:
+    """Reject existing symlink ancestors, including a symlinked final name."""
+    absolute = path.absolute()
+    for part in (absolute, *absolute.parents):
+        if part.is_symlink():
+            raise ValueError("symbolic links are forbidden in artifact paths")
+
+
+def _fsync_directory(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def verify_result_software(value: object) -> dict[str, Any]:
+    """Check a v3 record against this local checkout and Python runtime."""
+    result = validate_result(value)
+    commit, implementation = software_identity()
+    if result["software_commit"] != commit or result["implementation_sha256"] != implementation:
+        raise ValueError("software identity does not match executing Git checkout")
+    if result["python_version"] != platform.python_version():
+        raise ValueError("Python runtime differs from record")
+    return result
 
 
 def write_immutable(path: Path, value: dict[str, Any], source_bytes: bytes) -> None:
-    """Bind to source and exact clean HEAD, then atomically publish without overwrite."""
+    """Bind source and measured code to HEAD, then publish complete bytes once."""
     result = verify_result_source(value, source_bytes)
-    if result["software_commit"] != current_git_commit():
-        raise ValueError("software commit does not match executing clean checkout")
-    if result["python_version"] != platform.python_version():
-        raise ValueError("Python runtime differs from record")
+    verify_result_software(result)
+    _reject_symlink_components(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    _reject_symlink_components(path)
     staging: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(mode="wb", dir=path.parent, prefix=".e002-",
@@ -211,13 +308,18 @@ def write_immutable(path: Path, value: dict[str, Any], source_bytes: bytes) -> N
             handle.write(canonical_bytes(result))
             handle.flush()
             os.fsync(handle.fileno())
-        os.link(staging, path)  # existing path/symlink fails; final name appears complete
+        os.link(staging, path, follow_symlinks=False)  # complete, exclusive publication
+        _fsync_directory(path.parent)
     finally:
         if staging is not None:
             staging.unlink(missing_ok=True)
+            _fsync_directory(path.parent)
 
 
 def read_finalized(path: Path, source_bytes: bytes) -> dict[str, Any]:
+    _reject_symlink_components(path)
+    if not path.is_file():
+        raise ValueError("finalized artifact is not an ordinary file")
     data = path.read_bytes()
     result = json.loads(data, object_pairs_hook=_object_pairs, parse_constant=_bad_constant)
     verify_result_source(result, source_bytes)
