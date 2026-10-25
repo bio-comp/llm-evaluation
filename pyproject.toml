@@ -11,6 +11,7 @@ dependencies = []
 
 [project.scripts]
 llm-evaluation = "llm_evaluation.cli:main"
+llm-evaluation-stopping = "llm_evaluation.stopping_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/llm_evaluation"]
