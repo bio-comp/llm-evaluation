@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "llm-evaluation"
+version = "0.1.0"
+description = "Public, reproducible evaluation-methodology diagnostics"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+llm-evaluation = "llm_evaluation.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/llm_evaluation"]

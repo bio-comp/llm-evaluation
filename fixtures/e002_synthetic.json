@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "experiment": "E-002",
+  "condition": {
+    "subject": "synthetic-binary-generator-v1",
+    "prompt": "none",
+    "harness": "direct-fixture",
+    "tools": "none",
+    "runtime": "deterministic-recorded",
+    "sampling": "four-observed-trials-per-task",
+    "retry_policy": "none",
+    "budget": "four-trials",
+    "benchmark": "public-synthetic-v1",
+    "oracle": "literal-boolean-v1",
+    "evaluator": "exact-count-v1",
+    "software": "git-commit-recorded-at-execution"
+  },
+  "tasks": [
+    {
+      "id": "mixed",
+      "role": "synthetic",
+      "outcomes": [
+        true,
+        true,
+        false,
+        false
+      ]
+    },
+    {
+      "id": "always",
+      "role": "synthetic",
+      "outcomes": [
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    {
+      "id": "never",
+      "role": "synthetic",
+      "outcomes": [
+        false,
+        false,
+        false,
+        false
+      ]
+    }
+  ]
+}
