@@ -1,14 +1,22 @@
 import copy
 import itertools
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from llm_evaluation import cli
 from llm_evaluation.metrics import all_k, best_of_k, marginal
-from llm_evaluation.records import analyze, canonical_bytes, digest, load_fixture, validate_fixture, validate_result, write_immutable
+from llm_evaluation.records import (
+    analyze, canonical_bytes, canonical_sha256, load_fixture, parse_fixture,
+    raw_sha256, read_finalized, validate_fixture, validate_result,
+    verify_result_source, write_immutable,
+)
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures/e002_synthetic.json"
+COMMIT = "a" * 40
 
 
 class EstimatorTests(unittest.TestCase):
@@ -32,7 +40,6 @@ class EstimatorTests(unittest.TestCase):
                                            sum(all(s) for s in subsets) / len(subsets))
 
     def test_iid_exact_enumeration_and_bad_plugin(self):
-        # Enumerate all equally likely n=4 Bernoulli(1/2) outcome vectors.
         vectors = list(itertools.product((False, True), repeat=4))
         self.assertAlmostEqual(sum(best_of_k(4, sum(v), 2) for v in vectors) / 16, 0.75)
         self.assertAlmostEqual(sum(all_k(4, sum(v), 2) for v in vectors) / 16, 0.25)
@@ -42,12 +49,10 @@ class EstimatorTests(unittest.TestCase):
         self.assertGreater(plugin_all, 0.25)
 
     def test_dependent_and_nonstationary_future_events(self):
-        # Perfectly shared Bernoulli latent variable: P(all two)=P(any two)=1/2.
         scenarios = [(False, False), (True, True)]
         self.assertEqual(sum(all(s) for s in scenarios) / 2, 0.5)
         self.assertEqual(sum(any(s) for s in scenarios) / 2, 0.5)
         self.assertNotEqual(0.5, (0.5) ** 2)
-        # Alternating deterministic trial positions: marginal 1/2, all-two 0.
         self.assertEqual(sum((True, False)) / 2, 0.5)
         self.assertEqual(all((True, False)), False)
 
@@ -59,42 +64,115 @@ class EstimatorTests(unittest.TestCase):
 
 
 class RecordTests(unittest.TestCase):
+    def setUp(self):
+        self.source = FIXTURE.read_bytes()
+        self.fixture = parse_fixture(self.source)
+
+    def finalized(self):
+        result = analyze(self.fixture, 2, source_bytes=self.source)
+        result["software_commit"] = COMMIT
+        return result
+
     def test_public_fixture_result_and_macro_weighting(self):
-        fixture = load_fixture(FIXTURE)
-        self.assertEqual(digest(fixture), "dfa517c2c76ad0c6cebacb157e67fdb3b177d0a1bcf6526096b8c80f2a3772a2")
-        result = analyze(fixture, 2)
-        self.assertEqual(result["schema_version"], 1)
+        self.assertEqual(canonical_sha256(self.fixture),
+                         "dfa517c2c76ad0c6cebacb157e67fdb3b177d0a1bcf6526096b8c80f2a3772a2")
+        result = self.finalized()
+        self.assertEqual(result["schema_version"], 2)
         self.assertEqual(result["per_task"][0]["best_of_k"], 5 / 6)
         self.assertEqual(result["per_task"][0]["all_k"], 1 / 6)
         self.assertAlmostEqual(result["macro"]["best_of_k"], 11 / 18)
         self.assertAlmostEqual(result["macro"]["all_k"], 7 / 18)
         self.assertEqual(canonical_bytes(json.loads(canonical_bytes(result))), canonical_bytes(result))
 
+    def test_finalized_writer_rejects_missing_software_and_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "record.json"
+            preview = analyze(self.fixture, 2, source_bytes=self.source)
+            with self.assertRaisesRegex(ValueError, "software commit"):
+                write_immutable(path, preview, self.source)
+            self.assertFalse(path.exists())
+            preview["software_commit"] = COMMIT
+            preview["fixture_raw_sha256"] = None
+            with self.assertRaisesRegex(ValueError, "raw source"):
+                write_immutable(path, preview, self.source)
+            self.assertFalse(path.exists())
+
+    def test_mutating_input_does_not_mutate_output(self):
+        fixture = copy.deepcopy(self.fixture)
+        result = analyze(fixture, 2, source_bytes=self.source)
+        before = canonical_bytes(result)
+        fixture["condition"]["subject"] = "mutated-after-analysis"
+        fixture["tasks"][0]["outcomes"][0] = False
+        self.assertEqual(canonical_bytes(result), before)
+        result["software_commit"] = COMMIT
+        self.assertIs(verify_result_source(result, self.source), result)
+
+    def test_source_binding_and_hash_contract(self):
+        result = self.finalized()
+        self.assertIs(verify_result_source(result, self.source), result)
+        modified = self.source.replace(b"synthetic-binary-generator-v1",
+                                       b"synthetic-binary-generator-v2")
+        with self.assertRaisesRegex(ValueError, "raw source"):
+            verify_result_source(result, modified)
+        reformatted = canonical_bytes(self.fixture)
+        self.assertEqual(canonical_sha256(parse_fixture(reformatted)),
+                         result["fixture_canonical_sha256"])
+        self.assertNotEqual(raw_sha256(reformatted), raw_sha256(self.source))
+        with self.assertRaisesRegex(ValueError, "raw source"):
+            verify_result_source(result, reformatted)
+        copied = copy.deepcopy(result)
+        copied["condition"]["subject"] = "changed-result-condition"
+        with self.assertRaisesRegex(ValueError, "source/result"):
+            verify_result_source(copied, self.source)
+        copied = copy.deepcopy(result)
+        copied["fixture_canonical_sha256"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "canonical source"):
+            verify_result_source(copied, self.source)
+
     def test_strict_boundary_and_immutable_record(self):
-        fixture = load_fixture(FIXTURE)
         for mutation in (lambda f: f.update(token="private"),
                          lambda f: f["tasks"][0]["outcomes"].append(1),
                          lambda f: f["tasks"][0].update(role="private"),
                          lambda f: f["condition"].pop("oracle"),
                          lambda f: f.update(schema_version=2)):
-            broken = copy.deepcopy(fixture)
+            broken = copy.deepcopy(self.fixture)
             mutation(broken)
             with self.subTest(broken=broken), self.assertRaises(ValueError):
                 validate_fixture(broken)
         for mutation in (lambda r: r["per_task"][0].update(all_k=0.9),
                          lambda r: r["macro"].update(extra=1),
                          lambda r: r.update(software_commit="unknown")):
-            broken = copy.deepcopy(analyze(fixture, 2))
+            broken = copy.deepcopy(self.finalized())
             mutation(broken)
             with self.subTest(broken=broken), self.assertRaises(ValueError):
                 validate_result(broken)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "run.json"
-            result = analyze(fixture, 2)
-            write_immutable(path, result)
-            self.assertEqual(json.loads(path.read_text()), result)
-            with self.assertRaises(FileExistsError):
-                write_immutable(path, result)
+            result = self.finalized()
+            with patch("llm_evaluation.records.current_git_commit", return_value=COMMIT):
+                write_immutable(path, result, self.source)
+                self.assertEqual(read_finalized(path, self.source), result)
+                with self.assertRaises(FileExistsError):
+                    write_immutable(path, result, self.source)
+            self.assertEqual(list(Path(directory).iterdir()), [path])
+
+    def test_reject_wrong_executing_commit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "run.json"
+            with patch("llm_evaluation.records.current_git_commit", return_value="b" * 40):
+                with self.assertRaisesRegex(ValueError, "executing clean checkout"):
+                    write_immutable(path, self.finalized(), self.source)
+            self.assertFalse(path.exists())
+
+    def test_real_cli_surface_with_controlled_checkout_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "run.json"
+            argv = ["llm-evaluation", str(FIXTURE), "--k", "2", "--output", str(path)]
+            with patch.object(sys, "argv", argv), patch("llm_evaluation.cli.current_git_commit", return_value=COMMIT), patch("llm_evaluation.records.current_git_commit", return_value=COMMIT):
+                cli.main()
+                self.assertEqual(read_finalized(path, self.source)["software_commit"], COMMIT)
+                with self.assertRaises(FileExistsError):
+                    cli.main()
 
 
 if __name__ == "__main__":
