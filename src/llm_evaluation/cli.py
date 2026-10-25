@@ -1,27 +1,23 @@
-"""Credential-free E-002 synthetic diagnostic."""
+"""Credential-free E-002 diagnostic with explicit preview/finalization."""
 
 import argparse
-import subprocess
 from pathlib import Path
 
-from .records import analyze, canonical_bytes, load_fixture, write_immutable
+from .records import (analyze, canonical_bytes, current_git_commit, parse_fixture,
+                      write_immutable)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("fixture", type=Path)
     parser.add_argument("--k", type=int, required=True)
-    parser.add_argument("--output", type=Path, help="new immutable run record; fails if present")
+    parser.add_argument("--output", type=Path, help="new immutable final record; fails if present")
     args = parser.parse_args()
-    result = analyze(load_fixture(args.fixture), args.k)
+    source_bytes = args.fixture.read_bytes()
+    result = analyze(parse_fixture(source_bytes), args.k, source_bytes=source_bytes)
     if args.output:
-        root = Path(__file__).resolve().parents[2]
-        status = subprocess.run(["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True, check=True)
-        if status.stdout:
-            parser.error("refusing to finalize against a dirty checkout")
-        commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True)
-        result["software_commit"] = commit.stdout.strip()
-        write_immutable(args.output, result)
+        result["software_commit"] = current_git_commit()
+        write_immutable(args.output, result, source_bytes)
     else:
         print(canonical_bytes(result).decode("utf-8"), end="")
 
