@@ -3,7 +3,7 @@
 import argparse
 from pathlib import Path
 
-from .records import (analyze, canonical_bytes, current_git_commit, parse_fixture,
+from .records import (analyze, canonical_bytes, software_identity, parse_fixture,
                       write_immutable)
 
 
@@ -16,7 +16,7 @@ def main() -> None:
     source_bytes = args.fixture.read_bytes()
     result = analyze(parse_fixture(source_bytes), args.k, source_bytes=source_bytes)
     if args.output:
-        result["software_commit"] = current_git_commit()
+        result["software_commit"], result["implementation_sha256"] = software_identity()
         write_immutable(args.output, result, source_bytes)
     else:
         print(canonical_bytes(result).decode("utf-8"), end="")
