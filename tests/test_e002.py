@@ -10,10 +10,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from llm_evaluation import cli, records, artifact_io
+from llm_evaluation import cli, artifact_io
 from llm_evaluation.metrics import all_k, best_of_k, marginal
 from llm_evaluation.records import (
-    analyze, canonical_bytes, canonical_sha256, load_fixture, parse_fixture,
+    analyze, canonical_bytes, canonical_sha256, parse_fixture,
     raw_sha256, read_finalized, validate_fixture, validate_result,
     verify_result_source, write_immutable,
 )

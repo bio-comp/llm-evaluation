@@ -40,7 +40,7 @@ The corresponding symmetric reject count at look n is n minus the accept count. 
 
 ## Independent reference sizing
 
-`reference_sample_size()` exactly sizes a separate fixed Bernoulli reference arm for a threshold θ, distance Δ and maximum wrong-decision probability ε. Ties are explicit: `inconclusive`, independent fair `half` tie-break, or `wrong`.
+`reference_sample_size()` exactly sizes a separate fixed Bernoulli reference arm for a threshold θ, distance Δ and maximum wrong-decision probability ε. Ties are explicit: `inconclusive`, independent fair `half` tie-break, or `wrong`. The routine now reports raw wrong-decision, inconclusive/tie, and correct-decision probabilities separately and can additionally require `worst_inconclusive <= epsilon_inconclusive`; satisfying the wrong-decision bound alone is no longer allowed to hide a large abstention probability. Calls that omit the new inconclusive constraint preserve the historical wrong-decision sizing semantics and published values.
 
 For θ=.5, examples are:
 
@@ -82,11 +82,11 @@ A `GenerationResult` retains:
 - provider request ID when available;
 - the raw provider JSON metadata;
 - elapsed client wall time;
-- an `EffectiveRequest` containing API endpoint/mode, deterministic serialized request body, SHA-256 of that body, and SHA-256 of the normalized internal prompt packet.
+- an `EffectiveRequest` containing HTTP method, API endpoint/mode, backend configuration ID, executed condition ID, deterministic serialized request body, SHA-256 of that body, SHA-256 of the normalized internal prompt packet, SHA-256 of the full non-secret `ModelCondition`, and one normative request-identity SHA-256 over those execution dimensions plus timeout.
 
-Provider-specific metadata is not erased merely to create a uniform table.
+Provider-specific metadata is not erased merely to create a uniform table, but provenance-bearing data is restricted to canonical JSON-like values with string keys/finite numbers and recursively copied into immutable containers so later caller mutation cannot rewrite an already-recorded condition/result. Response JSON containing credential-like metadata keys (for example `Authorization`, API-key/access-token/password/secret fields) is rejected before result persistence rather than copied into durable provenance.
 
-`ModelCondition` separately identifies weights/checkpoint, artifact SHA-256 when locally inspectable, quantization, provider, backend and version, API mode, endpoint model ID, prompt/template identity, seed behavior and runtime environment. `BackendConfig` contains provider ID, base URL, model ID, API mode, capability profile, an optional credential-environment-variable name, an optional configuration ID, and a tiny explicit internal→wire parameter-name map. The configuration ID is distinct from provider identity so one provider can serve multiple model/API configurations simultaneously. The wire map exists because compatible endpoints can name the same requested control differently—for example local Chat endpoints use `max_tokens`, while current OpenAI Chat prefers `max_completion_tokens`; the serialized translated body is what is hashed as the effective request. Base URLs with embedded credentials are rejected because endpoint identity is retained for provenance. `BackendRegistry` is deliberately only an explicit lookup table; it is not a provider framework.
+`ModelCondition` separately identifies weights/checkpoint, normalized artifact SHA-256 when locally inspectable, quantization, provider, backend-configuration ID, backend and version, API mode, endpoint model ID, prompt/template identity, seed behavior, runtime environment, and an explicit reasoning control when the selected compatible surface exposes one. Current reasoning wire modes deliberately remain distinct: Chat-style `reasoning_effort` and Responses-style `reasoning.effort` are not assumed semantically interchangeable merely because both carry an effort label. If a backend profile declares reasoning capability, generation is rejected unless the condition freezes a reasoning setting. `BackendConfig` contains provider ID, base URL, model ID, API mode, capability profile, an optional credential-environment-variable name, an optional configuration ID, and a tiny explicit internal→wire parameter-name map. The configuration ID is distinct from provider identity so one provider can serve multiple model/API configurations simultaneously. The wire map exists because compatible endpoints can name the same requested control differently—for example local Chat endpoints use `max_tokens`, while current OpenAI Chat prefers `max_completion_tokens`; aliases cannot overwrite transport-owned fields such as `model`, `messages`, `input` or reasoning objects. Base URLs with embedded credentials are rejected because endpoint identity is retained for provenance. `BackendRegistry` is deliberately only an explicit lookup table; it is not a provider framework.
 
 ## Transport decision
 
@@ -119,15 +119,20 @@ The bounded local preflight establishes the following status for the subset E-00
 | max output tokens | SUPPORTED, observed | SUPPORTED, observed | blocked for selected artifact |
 | stop sequence | SUPPORTED/documented; visible-marker probe still confounded by reasoning | SUPPORTED/documented; visible-marker probe still confounded by reasoning | blocked for selected artifact |
 | usage accounting / finish reason | SUPPORTED, observed | SUPPORTED, observed | blocked for selected artifact |
+| explicit reasoning control | GPT-OSS `reasoning_effort=low` SUPPORTED/observed through compatible Chat; Qwen3.5 exposes native boolean `think` semantics and is **not** promoted to equivalent compatible-Chat support | GPT-OSS `reasoning.effort=low` SUPPORTED/observed through Responses; exact Chat reasoning parity remains condition-specific | documented compatible Chat `reasoning_effort` is template-driven, but no local server/model probe in this pass |
 | structured output / streaming | not required; not promoted by this preflight | not required; not promoted by this preflight | not required |
 
 No local probe established an `ACCEPTED_BUT_IGNORED` classification for a required field. Such a result must be recorded if a future differential probe demonstrates it; absence of evidence is not converted into `SUPPORTED`.
 
 ## Retry and failure semantics
 
-The common transport has no automatic retry. Each technical call is represented by `GenerationAttempt` with an attempt index, optional `retry_of_attempt`, retry count, explicit status, and a Boolean saying whether a completed attempt contributes to the statistical sample.
+The common transport has no automatic retry. Each technical call is represented by `GenerationAttempt` with an attempt index, optional `retry_of_attempt`, retry count, a technical `GenerationStatus`, a separate `EvaluationStatus`, and an explicit statistical-sample inclusion flag. `attempt_generation()` requires an explicit `BackendConfig.config_id`; the provider-ID fallback remains available only for non-sampling transport/capability work, so a scientific attempt cannot silently collapse two endpoint configurations onto one provider identity.
 
-Statuses distinguish transport failure, provider/runtime failure, completed model generation and oracle failure. A retry therefore cannot silently become another independent model sample. Oracle evaluation remains a separate stage.
+Transport/provider failures cannot carry a result, cannot be evaluated, and cannot contribute to the statistical sample. A completed generation initially remains `NOT_EVALUATED`; `record_evaluation()` can attach `PASSED`, `FAILED`, or `ORACLE_ERROR` exactly once. An oracle error therefore preserves the generated response instead of being mislabeled as a generation failure, but it cannot count as a sample. The provider-reported model ID is compared with the bound endpoint model ID and the match state is retained; a mismatch or missing reported model ID preserves the generation for diagnosis but cannot enter the statistical sample. Statistical inclusion is decided only after evaluation. Retry lineage remains visible, so retry attempts are not silently treated as new independent stochastic observations.
+
+## Engineering verification guardrails
+
+The repository keeps runtime dependencies empty. Three pinned **development-only** checks were justified by demonstrated findings: Ruff 0.14.4 caught dead imports without requiring a formatter migration; mypy 1.18.2 exposed an over-broad `dict[str, object]` scientific return contract that is now an explicit `TypedDict`; coverage.py 7.17.0 measures statement/branch coverage. The measured source branch baseline after the integrity work is 81%, with an 80% CI floor chosen to prevent material regression without rewarding trivial tests. Hypothesis 6.170.9 was evaluated transiently with deterministic bounded generated properties but did not find a new fault beyond the existing exact/exhaustive oracles and regression suite, so it was not added. NumPy/SciPy/scikit-learn remain unnecessary for the current finite exact `Fraction` kernel.
 
 ## Local backend inventory and bounded probes
 
@@ -145,8 +150,10 @@ Checked 2026-10-25 on an Apple M4 MacBook Air with 24 GB unified memory and macO
 - A bounded stop request returned `finish_reason="stop"` with empty visible text. Because the model was still using the reasoning surface, that establishes endpoint acceptance/termination for this request but is not a clean visible-marker truncation test.
 - `qwen3.5:9b`: architecture qwen35, 9.7B parameters, Q4_K_M, 262144 context, renderer/parser qwen3.5. Its local GGUF blob has independently measured SHA-256 `dec52a44569a2a25341c4e4d3fee25846eed4f6f0b936278e3a3c900bb99d37c` over 6,594,462,816 bytes.
 - A separate 32-token Chat smoke call returned `finish_reason="length"`, empty visible `content`, and a nonempty provider-specific `message.reasoning` field while all 32 completion tokens were consumed. Output-token budgets therefore need a visible-answer/truncation preflight for thinking models; token accounting alone is not enough.
+- **Post-integrity runner probe:** the already-installed `gpt-oss:20b` blob `e7b273f9636059a689e3ddcab3716e4f65abe0143ac978e46673ad0e52d09efb` was called exactly once through compatible Chat with `reasoning_effort="low"`, `max_tokens=16`, concurrency 1. Ollama returned model `gpt-oss:20b`, `finish_reason="length"`, usage 72 prompt + 16 completion = 88 total, zero visible-content characters, and 61 provider `message.reasoning` characters. The runner recorded body SHA-256 `4ce26a3e957889f50381f8e15f65774f163d324a7da498592daf2ab6b8b8f157`, condition SHA-256 `1408ff72e7d1b46b81beb371f81fc3c1b1e5f539b921e70d4732fa1ab9c00805`, and request-identity SHA-256 `16bea6ff94811a62b13e61541444f7f4a049bd4a67afb9a76d80be4041c2d0ce`. This is a capability/truncation probe, not a subject observation.
+- Ollama's local model metadata reports GPT-OSS reasoning values `low/medium/high` with default `medium`, whereas Qwen3.5 reports boolean thinking `{false,true}` with default `true`. The compatible-Chat GPT-OSS probe therefore does **not** establish equivalent control semantics for Qwen3.5.
 
-Ollama documents its OpenAI compatibility at <https://docs.ollama.com/openai>.
+Ollama documents OpenAI compatibility at <https://docs.ollama.com/openai> and native thinking control at <https://ollama.com/blog/thinking>.
 
 ### LM Studio
 
@@ -159,14 +166,16 @@ Ollama documents its OpenAI compatibility at <https://docs.ollama.com/openai>.
 - Available Qwen probe model: `qwen/qwen3-4b-thinking-2507`, selected variant `@4bit`, 4B, 4-bit **safetensors/MLX**, indexed size 2,279,153,047 bytes, not GGUF. Do not treat it as an artifact-equivalent control for the Ollama Qwen3.5 model.
 - `lms ps` reported effective context length 8192 and server `parallel=4` during this preflight. Calls were issued sequentially, but this server-level configuration is another reason the seed probe is not evidence of single-worker deterministic RNG semantics; a real E-002 condition must freeze or explicitly vary it.
 - A separate 32-token Chat smoke returned `finish_reason="length"`, empty visible `content`, provider-specific `reasoning_content`, and 30 reported reasoning tokens. The bounded Responses smoke likewise returned HTTP 200 and usage but no visible answer. Thinking/output-budget semantics therefore remain part of the condition, not a hidden transport detail.
+- **Post-integrity runner probe:** the already-downloaded `openai/gpt-oss-20b@mxfp4` safetensors variant was loaded only for this probe with context 4096, `parallel=1`, and a short TTL, then unloaded. One compatible Responses call transmitted `reasoning:{"effort":"low"}` and `max_output_tokens=16`; LM Studio returned `status="completed"`, usage 72 input + 12 output = 84 total, and zero visible text. The runner recorded body SHA-256 `10319127fe3554307d1b2fb5d3a98e02e4385db486d55d8f67cfd01419cd8742`, condition SHA-256 `7a78c971d6917bd6ec6864a021b78ad1d18aa21dc3c91549d4e146a9bb4748c5`, and request-identity SHA-256 `b283a6c1906bc965b4693519fe86758543471323d118f426777204fe2526164d`. The API exposed the indexed variant and MXFP4 quantization, but this pass did not establish a cryptographic local artifact digest or a stable prompt-template identifier; those remain real preregistration gaps for an LM Studio subject condition.
 
-LM Studio documents its OpenAI-compatible endpoints at <https://lmstudio.ai/docs/developer/openai-compat>.
+LM Studio documents its OpenAI-compatible endpoints at <https://lmstudio.ai/docs/developer/openai-compat> and Responses reasoning at <https://lmstudio.ai/docs/developer/openai-compat/responses>.
 
 ### standalone llama.cpp
 
 - `llama-server` version 0.7.0, build 11669, commit `620d2225c` on Darwin arm64.
 - The OpenAI-compatible Chat path is the intended portable surface when a model loads successfully.
 - A same-artifact control was attempted with the independently hashed Ollama Qwen3.5 blob `dec52a44569a2a25341c4e4d3fee25846eed4f6f0b936278e3a3c900bb99d37c`. Before inference, the installed standalone llama.cpp rejected it with `key qwen35.rope.dimension_sections has wrong array length; expected 4, got 3`, so this exact artifact is **not currently a valid Ollama↔standalone-llama.cpp parity condition**.
+- The version was reverified in the post-integrity pass and no `llama-server` listener was active. The prior same-artifact incompatibility therefore remains the applicable negative result; no new model was launched merely to manufacture a parity probe.
 - No model was downloaded, converted, patched or re-quantized to force a parity result.
 
 This negative result matters: “both use GGUF/llama.cpp lineage” does not establish that the same current artifact can be served by both installed runtimes.
@@ -221,8 +230,8 @@ The archived `openai/grade-school-math` repository at commit `3101c7d5072418e28b
 
 Keep the first real pilot small enough to interpret:
 
-1. **Ollama Qwen3.5 9B Q4_K_M** — exact local model blob SHA-256 `dec52a44569a2a25341c4e4d3fee25846eed4f6f0b936278e3a3c900bb99d37c` (6,594,462,816 bytes), qwen35 architecture, 9.7B parameters, 262144 context; smaller/faster primary condition.
-2. **Ollama GPT-OSS 20B** — larger, distinct-model local contrast on the same serving backend: architecture `gptoss`, 20.9B parameters, MXFP4, 131072 context, exact local model blob SHA-256 `e7b273f9636059a689e3ddcab3716e4f65abe0143ac978e46673ad0e52d09efb` (13,793,422,144 bytes). No quality ordering versus Qwen3.5 is assumed before task-specific evidence.
+1. **Ollama Qwen3.5 9B Q4_K_M — candidate, not yet execution-ready.** Exact local model blob SHA-256 `dec52a44569a2a25341c4e4d3fee25846eed4f6f0b936278e3a3c900bb99d37c` (6,594,462,816 bytes), qwen35 architecture, 9.7B parameters, 262144 context. Ollama reports boolean thinking with default `true`; this pass did not establish a scientifically equivalent explicit reasoning control on the portable OpenAI-compatible surface, so the runner must not count Qwen3.5 observations until that condition gap is resolved or explicitly excluded by design.
+2. **Ollama GPT-OSS 20B — portable reasoning path capability-probed.** Architecture `gptoss`, 20.9B parameters, MXFP4, 131072 context, exact local model blob SHA-256 `e7b273f9636059a689e3ddcab3716e4f65abe0143ac978e46673ad0e52d09efb` (13,793,422,144 bytes). Compatible Chat transmitted and the backend honored the model's `low/medium/high` reasoning surface in the bounded `low` probe. The 16-token probe still yielded no visible answer, so a real condition also needs an output-budget/truncation rule. No quality ordering versus Qwen3.5 is assumed before task-specific evidence.
 3. **Optional backend-parity control only after demonstrated artifact compatibility.** The attempted Qwen3.5 Ollama↔standalone llama.cpp control currently fails the capability gate and must not be represented as parity.
 
 LM Studio Qwen3 4B Thinking is useful for transport/capability development, but mixing checkpoint and backend simultaneously makes it a poor same-model parity control.
@@ -253,9 +262,10 @@ For every condition freeze checkpoint/weights identity, quantization, provider, 
 
 - Direct OpenAI-compatible HTTP transport; Chat Completions normative initial mode.
 - Capability gate before scientific comparison.
-- Hash normalized prompt packet and exact serialized effective request.
-- Retain raw provider metadata and request IDs when available.
-- No automatic retries; every attempt/retry is visible and explicitly marked as contributing or not contributing to the statistical sample.
+- Hash the normalized prompt packet and exact serialized body, and retain a separate normative request-identity digest that binds method/endpoint/API mode/backend config/non-secret condition identity/timeout to those hashes.
+- Mechanically bind request condition ID, model condition, provider/model/API mode and backend configuration before transmission; do not merely co-record them after the fact.
+- Retain immutable raw provider metadata and request IDs when available.
+- No automatic retries; generation status, evaluation/oracle status, retry lineage and statistical-sample inclusion remain distinct, and inclusion can occur only after evaluation.
 - Treat malformed/empty/truncated output as an explicit outcome class for preflight/abort handling, not silently as a transport retry.
 
 ### Resource envelope
@@ -268,4 +278,4 @@ Abort or reclassify the affected condition if any of the following occurs: model
 
 ## What remains unresolved
 
-The runner and exact finite-state machinery can be tested without choosing the real scientific loss function. A full E-002 run still requires explicit selection of the actual threshold/indifference zone and error/loss targets, a frozen final task/oracle set, and a bounded local compute envelope. Hosted execution additionally requires explicit cost authorization and credentials. Until then E-002 remains **PLANNED**.
+The runner and exact finite-state machinery can be tested without choosing the real scientific loss function. A full E-002 run still requires explicit selection of the actual threshold/indifference zone, false-accept/false-reject targets, abstention/cap utility, separate reference wrong-decision and inconclusive tolerances, frozen task/oracle packet and weighting, final model conditions and reasoning semantics, seed schedule, dependence handling, and a bounded local compute envelope. The Ollama Qwen3.5 compatible-surface reasoning control remains unresolved; an LM Studio subject condition would additionally need a frozen artifact digest/template identity if used. Hosted execution additionally requires explicit cost authorization and credentials. Until then E-002 remains **PLANNED**.
