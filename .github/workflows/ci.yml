@@ -23,7 +23,14 @@ jobs:
         run: |
           python -m pip install uv==0.8.4
           uv lock --check
-      - run: python -m unittest discover -s tests -v
+          uv sync --frozen --group dev
+      - name: Static checks and branch coverage
+        run: |
+          uv run --frozen ruff check src tests
+          uv run --frozen mypy --python-version 3.11 src
+          uv run --frozen coverage erase
+          uv run --frozen coverage run --branch -m unittest discover -s tests -v
+          uv run --frozen coverage report --include='src/*' --fail-under=80
       - name: Build and exercise installed entrypoint
         shell: bash
         run: |

@@ -6,6 +6,7 @@ makes the probability propagation and output identities independent of binary fl
 from dataclasses import dataclass
 from fractions import Fraction
 from math import comb
+from typing import TypedDict
 
 
 def rational(value: str) -> Fraction:
@@ -128,7 +129,16 @@ class Scenario:
         return self.p
 
 
-def operating_characteristics(policy: Policy, scenario: Scenario) -> dict[str, object]:
+class OperatingCharacteristics(TypedDict):
+    accept: Fraction
+    reject: Fraction
+    inconclusive: Fraction
+    expected_n: Fraction
+    stopping: dict[int, Fraction]
+    interval_coverage: Fraction | None
+
+
+def operating_characteristics(policy: Policy, scenario: Scenario) -> OperatingCharacteristics:
     """Exact probability-mass DP; a capped continuation is inconclusive."""
     states = {0: Fraction(1)}
     outcomes = {"accept": Fraction(), "reject": Fraction(),
@@ -157,7 +167,7 @@ def operating_characteristics(policy: Policy, scenario: Scenario) -> dict[str, o
                             and binomial_tail(n, c, scenario.p, upper=False) > budget):
                         covered += mass
     assert sum(outcomes.values()) == 1
-    expected = sum(n * mass for n, mass in stopped.items())
+    expected = sum((n * mass for n, mass in stopped.items()), Fraction())
     return {
         "accept": outcomes["accept"], "reject": outcomes["reject"],
         "inconclusive": outcomes["inconclusive"],
@@ -207,13 +217,17 @@ def reference_comparison(policy: Policy, p: Fraction, reference_n: int) -> dict[
         raise ValueError("truth is undefined exactly at the decision threshold")
     result = operating_characteristics(policy, Scenario("iid", p))
     reference = reference_error(p, policy.threshold, reference_n)
-    correct = "accept" if p > policy.threshold else "reject"
-    wrong = "reject" if correct == "accept" else "accept"
+    if p > policy.threshold:
+        policy_correct, policy_wrong = result["accept"], result["reject"]
+        reference_correct, reference_wrong = reference["accept"], reference["reject"]
+    else:
+        policy_correct, policy_wrong = result["reject"], result["accept"]
+        reference_correct, reference_wrong = reference["reject"], reference["accept"]
     return {
         "apparent_disagreement": (result["accept"]*reference["reject"]
                                   + result["reject"]*reference["accept"]),
-        "reference_wrong_policy_correct": result[correct]*reference[wrong],
-        "policy_wrong_reference_correct": result[wrong]*reference[correct],
+        "reference_wrong_policy_correct": policy_correct * reference_wrong,
+        "policy_wrong_reference_correct": policy_wrong * reference_correct,
         "policy_inconclusive": result["inconclusive"],
         "reference_inconclusive": reference["inconclusive"],
     }

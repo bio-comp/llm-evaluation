@@ -1,7 +1,7 @@
 import unittest
 from fractions import Fraction as F
 
-from llm_evaluation.stopping import Policy, Scenario
+from llm_evaluation.stopping import Policy, Scenario, reference_error
 from llm_evaluation.stopping_calibration import (
     calibrate_finite_count_boundaries,
     calibrate_lr_grid,
@@ -73,6 +73,43 @@ class StoppingCalibrationTests(unittest.TestCase):
         for result in (inconclusive, half, wrong):
             if result["n"] > 1:
                 self.assertGreater(result["previous_worst_wrong"], F(1, 20))
+
+    def test_exhaustive_boolean_cube_proofs_have_explicit_cap_guard(self):
+        oversized = Policy("fixed", (17,), threshold=F(1, 2))
+        with self.assertRaisesRegex(ValueError, "exhaustive verification cap"):
+            finite_path_monotonicity(oversized)
+        with self.assertRaisesRegex(ValueError, "exhaustive verification cap"):
+            finite_count_path_monotonicity(
+                looks=(17,), accept_min=(10,), reject_max=(7,)
+            )
+
+    def test_reference_size_can_separately_bound_wrong_and_inconclusive_probability(self):
+        result = reference_sample_size(
+            threshold=F(1, 2), delta=F(1, 20), epsilon=F(1, 20),
+            epsilon_inconclusive=F(1, 20), tie_handling="inconclusive", max_n=10000,
+        )
+        self.assertLessEqual(result["worst_wrong"], F(1, 20))
+        self.assertLessEqual(result["worst_inconclusive"], F(1, 20))
+        self.assertEqual(
+            result["lower_correct"] + result["lower_raw_wrong"] + result["lower_inconclusive"],
+            F(1),
+        )
+        self.assertEqual(
+            result["upper_correct"] + result["upper_raw_wrong"] + result["upper_inconclusive"],
+            F(1),
+        )
+        self.assertEqual(result["min_correct"], min(result["lower_correct"], result["upper_correct"]))
+        n = result["n"]
+        if n > 1:
+            lower_previous = reference_error(F(9, 20), F(1, 2), n - 1)
+            upper_previous = reference_error(F(11, 20), F(1, 2), n - 1)
+            previous_wrong = max(lower_previous["accept"], upper_previous["reject"])
+            previous_inconclusive = max(
+                lower_previous["inconclusive"], upper_previous["inconclusive"]
+            )
+            self.assertTrue(
+                previous_wrong > F(1, 20) or previous_inconclusive > F(1, 20)
+            )
 
     def test_matched_error_classification_and_pareto_do_not_reward_abstention_silently(self):
         feasible_fast = {

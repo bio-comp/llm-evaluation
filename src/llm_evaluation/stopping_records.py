@@ -84,8 +84,8 @@ def compute(config: dict) -> dict:
         for p in ("9/20", "11/20", "7/10")
         for n in config["reference_counts"]
     ]
-    sensitivity = []
-    loss = []
+    sensitivity: list[dict[str, object]] = []
+    loss: list[dict[str, object]] = []
     for theta in config["sensitivity_thresholds"]:
         for width in config["sensitivity_halfwidths"]:
             threshold, gap = rational(theta), rational(width)

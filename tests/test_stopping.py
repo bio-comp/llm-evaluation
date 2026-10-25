@@ -1,5 +1,4 @@
 import copy
-import hashlib
 import itertools
 import tempfile
 import unittest
@@ -8,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from llm_evaluation.stopping import (
-    Policy, Scenario, decision, operating_characteristics, ratio,
+    Policy, Scenario, decision, operating_characteristics,
     reference_error, reference_comparison, task_variance,
 )
 from llm_evaluation import stopping_records
