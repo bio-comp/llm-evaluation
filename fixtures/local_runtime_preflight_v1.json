@@ -1,0 +1,53 @@
+{
+  "packet_id": "local-runtime-preflight-v1",
+  "purpose": "Runtime/model preflight only; not E-002 evidence",
+  "sampling": "one primary attempt per task/condition; explicit reproducibility probes are separate",
+  "scoring": "exact visible-text match after no normalization",
+  "tasks": [
+    {
+      "id": "exact-format-control",
+      "category": "instruction_exactness",
+      "prompt": "Return exactly COBALT-17 and nothing else. Do not add punctuation, quotes, explanation, or surrounding whitespace.",
+      "oracle": {
+        "type": "exact_text",
+        "expected": "COBALT-17"
+      }
+    },
+    {
+      "id": "factual-constant",
+      "category": "short_factual",
+      "prompt": "How many bits are in a SHA-256 digest? Return only the base-10 integer.",
+      "oracle": {
+        "type": "exact_text",
+        "expected": "256"
+      }
+    },
+    {
+      "id": "arithmetic",
+      "category": "reasoning",
+      "prompt": "Compute (37 * 19) - 58. Return only the base-10 integer result.",
+      "oracle": {
+        "type": "exact_text",
+        "expected": "645"
+      }
+    },
+    {
+      "id": "python-comprehension",
+      "category": "coding",
+      "prompt": "Evaluate this Python 3 program without running it:\n\ndef f(xs):\n    return [x * x for x in xs if x % 2]\n\nprint(f(range(6)))\n\nReturn exactly the single line printed by the program, with no code fence or explanation.",
+      "oracle": {
+        "type": "exact_text",
+        "expected": "[1, 9, 25]"
+      }
+    },
+    {
+      "id": "synthetic-long-context",
+      "category": "long_context_retrieval",
+      "prompt": "Below is a synthetic record table. Find Record 137 and return only its 12-character code, with no explanation.\n\nRecord 001: BF2887A1C759\nRecord 002: 230AE4B30BF8\nRecord 003: 7FFD44AC601D\nRecord 004: 2AAA3987002C\nRecord 005: E3CB2F93E2AF\nRecord 006: 59A5099B315D\nRecord 007: C3398D67602C\nRecord 008: C884D9828ABB\nRecord 009: 6D4BBEE929C8\nRecord 010: F9D97A2B69BC\nRecord 011: DE30B4D33680\nRecord 012: A09018694141\nRecord 013: D251CC3F811A\nRecord 014: C5DE34536C0F\nRecord 015: A647F5C892BF\nRecord 016: 764D4AC9B7EA\nRecord 017: 76F77E7C390E\nRecord 018: 28A64E1832E1\nRecord 019: 93676D48CFB7\nRecord 020: C9F94F026631\nRecord 021: D973350083AC\nRecord 022: 853ECA5B6497\nRecord 023: 7F67D9C16B6B\nRecord 024: 8CF3A0839601\nRecord 025: D953AE0AA799\nRecord 026: 670EA76D775B\nRecord 027: C104CBF0C07B\nRecord 028: C44E0D55AC78\nRecord 029: D5D90FAB7FD7\nRecord 030: 4949123CCB6B\nRecord 031: 77930C31D4C0\nRecord 032: 8C4DEEC4437E\nRecord 033: 2B8D46F3E1D4\nRecord 034: F92CFABB4360\nRecord 035: 3062112D99C2\nRecord 036: A4B236447AEE\nRecord 037: 9CDDE182D6B2\nRecord 038: EABC4534FC5B\nRecord 039: DCEC6F2B8A88\nRecord 040: 2EBD1A285031\nRecord 041: F388C4AD28AA\nRecord 042: 1CCDBF50FA98\nRecord 043: B3D9245B8C88\nRecord 044: 474CC232D3D5\nRecord 045: B22CEB926F0A\nRecord 046: E2815674587A\nRecord 047: CC1B875D2700\nRecord 048: E2AB3E19A811\nRecord 049: 5CDCCCA2B72B\nRecord 050: 0F8DF49D1A31\nRecord 051: 209874B4A8AE\nRecord 052: 2886CFFAB254\nRecord 053: 514A07244ADE\nRecord 054: 72EF3780CB23\nRecord 055: 67360DC3D081\nRecord 056: 849048B8A0A7\nRecord 057: D5103B49EB84\nRecord 058: D04C5F5F869C\nRecord 059: 86D1E0A68F6F\nRecord 060: E4D233A3173C\nRecord 061: 658467710832\nRecord 062: 94FD890AC483\nRecord 063: E7470B250866\nRecord 064: 31601652F884\nRecord 065: 25FE67008875\nRecord 066: 34C6907F9766\nRecord 067: 167551CFA523\nRecord 068: 2C0FAFD76EE5\nRecord 069: 961181531F09\nRecord 070: 38153FC27EFB\nRecord 071: E8ABDC497E19\nRecord 072: 47A3904DAF89\nRecord 073: 873320DDD053\nRecord 074: 808DA98EA6E4\nRecord 075: 5B278ED5E9E3\nRecord 076: AEDE7872B473\nRecord 077: B31DF47C2A5E\nRecord 078: 6BABD637C9E7\nRecord 079: D3125093EF64\nRecord 080: 9CB95C86ADD7\nRecord 081: 68AFBB6FB1D9\nRecord 082: 2AB2E1450CE0\nRecord 083: 1C1DD28C0022\nRecord 084: 63A950C8CB6A\nRecord 085: 95F13C6BB1FE\nRecord 086: FC2C729A75FF\nRecord 087: D5F34AF6D857\nRecord 088: DE20EE7D206F\nRecord 089: 69625A43DE36\nRecord 090: 664F75B7F305\nRecord 091: 40E5B818AFD1\nRecord 092: ADF1B74FF7A2\nRecord 093: DEF03AC67B8A\nRecord 094: 08F1FFAE702E\nRecord 095: 39B8785E1BDB\nRecord 096: E7A955BF9ABA\nRecord 097: C18F69C7E6A8\nRecord 098: D5C6540EBC63\nRecord 099: FA3532264831\nRecord 100: 21B930F3B083\nRecord 101: 3133759199C6\nRecord 102: 4CCD08CFF458\nRecord 103: B68B1ABB80DF\nRecord 104: C140E48DBEB9\nRecord 105: 8E524BCBF0A8\nRecord 106: C546765ADB0D\nRecord 107: 2522652E7EF6\nRecord 108: DA061644434D\nRecord 109: 5230DB0104ED\nRecord 110: 42FDF1EBCEBD\nRecord 111: BB58F5C9C4CE\nRecord 112: CB2E1530381E\nRecord 113: DD2D505AF577\nRecord 114: 9A5BD3A405BC\nRecord 115: 70742D29CEE2\nRecord 116: 6909DEF6FE76\nRecord 117: 4072E703ED8D\nRecord 118: 3B866C4181F9\nRecord 119: FFF4DBA78EAF\nRecord 120: 843A722785A6\nRecord 121: 2A2E0D001789\nRecord 122: B93DD27088D0\nRecord 123: 8A9A1062623F\nRecord 124: C2AFDFC175BA\nRecord 125: 04C85B4389BE\nRecord 126: A752B346187E\nRecord 127: 48EA4AC8BDAE\nRecord 128: 3BC835ACA18C\nRecord 129: BE4AB5C5C328\nRecord 130: A8377958E9E1\nRecord 131: 8D07F914FF01\nRecord 132: B9F391462463\nRecord 133: F0A98F400189\nRecord 134: A886665DC3BF\nRecord 135: 2365159CC33E\nRecord 136: 0C9071F0DDEF\nRecord 137: E53D2E3C4489\nRecord 138: B13C8B3C67FB\nRecord 139: 252B428E3FB8\nRecord 140: 7B7DD9776059\nRecord 141: 577047D1D73D\nRecord 142: AA373FEB7C0C\nRecord 143: 9A8485382D14\nRecord 144: 0BF13A7F215D\nRecord 145: 8288665E5E36\nRecord 146: 0DA13EF93F30\nRecord 147: 74CDAA698A19\nRecord 148: 7D9B7BF68CB5\nRecord 149: E36DCC2F64AE\nRecord 150: 28E01F93F397\nRecord 151: E25746C1D404\nRecord 152: 1D443CD95490\nRecord 153: 4E1FE9E9BAEB\nRecord 154: 1ADBFF732F7C\nRecord 155: 4DAF0C673448\nRecord 156: 64A7AC237078\nRecord 157: A13513242DB5\nRecord 158: A0B42F4C949C\nRecord 159: BCCBB4D889EE\nRecord 160: 3A3F6455ADF8\nRecord 161: 7B7708E33128\nRecord 162: A04B42B9E8E6\nRecord 163: FABF99F69710\nRecord 164: 2F5BFDBC56B5\nRecord 165: ADA44E8B5713\nRecord 166: 5F8A4A86880A\nRecord 167: 6833E6FDF12E\nRecord 168: DFB7B5C68493\nRecord 169: BD52876C526A\nRecord 170: A40552122655\nRecord 171: E71B818010C7\nRecord 172: 5409B1ABDCB3\nRecord 173: 78CEBDCF552A\nRecord 174: 2CC34CF086DB\nRecord 175: 9754CAEA7557\nRecord 176: 6BF7E09FD0EC\nRecord 177: 4C7045E0AB8F\nRecord 178: E8709C565BD7\nRecord 179: 0D5F18BDC250\nRecord 180: 8EA44D4FE6F2\nRecord 181: 9CF8B957BEE0\nRecord 182: 4A4D0360BB47\nRecord 183: 9B9FD214742B\nRecord 184: 13F8EA0E6435\nRecord 185: 2E65929D5200\nRecord 186: 2766E6B13F74\nRecord 187: A44B762AE94D\nRecord 188: C5D59CA07938\nRecord 189: 79A1DE47D088\nRecord 190: 5E921BC6FCFC\nRecord 191: EBAC5F797DAC\nRecord 192: B0BB94D205CA\nRecord 193: 1F01E9CAF14C\nRecord 194: 764A2EAF4EC3\nRecord 195: F8D8E4C418CE\nRecord 196: BDFD6EA535FF\nRecord 197: 9C2964BC5F46\nRecord 198: DA3D53F3E9FB\nRecord 199: B9D1AD826B4F\nRecord 200: 1F1B473E530D\nRecord 201: 9A37E7D3F07F\nRecord 202: 2329EDB2C384\nRecord 203: 04006ACCF9AE\nRecord 204: FFD3A74AE232\nRecord 205: 91A23FFFA16E\nRecord 206: DCBBE99A7428\nRecord 207: 4FC196038779\nRecord 208: 0971EC511F1D\nRecord 209: 721D5125C8CB\nRecord 210: 0740CD8F33CE\nRecord 211: 14A381AF6A12\nRecord 212: C1B0F749FF56\nRecord 213: 8CB96EE4F328\nRecord 214: E30A213A2174\nRecord 215: A8EE4F2099D4\nRecord 216: A3FEA12BD5BF\nRecord 217: 5CDAB3B21D79\nRecord 218: 615A9F2A5D6B\nRecord 219: 687E695C0431\nRecord 220: 57CDE7FE4481\nRecord 221: 390E5BC6C0EA\nRecord 222: EB0DD5429B6F\nRecord 223: F9E77E0599F9\nRecord 224: 0F7E27E34C56\nRecord 225: D973246FEF3D\nRecord 226: A1B57D3AAD0F\nRecord 227: DEB5B6FB27C6\nRecord 228: C548E39470F2\nRecord 229: B3B8A174DE6A\nRecord 230: B1695C906ED1\nRecord 231: 2FFA092FA2AF\nRecord 232: 8222BB84AC0A\nRecord 233: 3F55961FF7A4\nRecord 234: F4FA85B53875\nRecord 235: 7BA21E999B00\nRecord 236: 0392CDE03FC9\nRecord 237: 07704A94BDBB\nRecord 238: 7C6C8DF2AE7F\nRecord 239: 7D3517CEC9C6\nRecord 240: 8E2C2F80C065\nRecord 241: 4BC0B6E877AB\nRecord 242: 78EF87C9E839\nRecord 243: C7FFCE685E93\nRecord 244: 37244CD77DF4\nRecord 245: E8DF28422FC5\nRecord 246: DE7C85B50326\nRecord 247: 6F3F5FA21043\nRecord 248: 3C19971E673F\nRecord 249: C8151316102D\nRecord 250: F9614643990D\nRecord 251: 0CED5E7D51EC\nRecord 252: 29B81B02D621\nRecord 253: 783BDA597CEC\nRecord 254: F7833F635226\nRecord 255: 0D6E9FCC7499\nRecord 256: B9D9D01B1130",
+      "oracle": {
+        "type": "exact_text",
+        "expected": "E53D2E3C4489"
+      }
+    }
+  ]
+}
