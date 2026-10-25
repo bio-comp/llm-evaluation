@@ -1,6 +1,7 @@
 """Credential-free E-002 diagnostic with explicit preview/finalization."""
 
 import argparse
+import subprocess
 from pathlib import Path
 
 from .records import (analyze, canonical_bytes, software_identity, parse_fixture,
@@ -16,7 +17,13 @@ def main() -> None:
     source_bytes = args.fixture.read_bytes()
     result = analyze(parse_fixture(source_bytes), args.k, source_bytes=source_bytes)
     if args.output:
-        result["software_commit"], result["implementation_sha256"] = software_identity()
+        try:
+            result["software_commit"], result["implementation_sha256"] = software_identity()
+        except subprocess.CalledProcessError:
+            parser.error("finalization requires a source checkout; installed wheels "
+                         "support preview only")
+        except ValueError as exc:
+            parser.error(f"finalization rejected: {exc}")
         write_immutable(args.output, result, source_bytes)
     else:
         print(canonical_bytes(result).decode("utf-8"), end="")

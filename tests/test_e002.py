@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from llm_evaluation import cli, records
+from llm_evaluation import cli, records, artifact_io
 from llm_evaluation.metrics import all_k, best_of_k, marginal
 from llm_evaluation.records import (
     analyze, canonical_bytes, canonical_sha256, load_fixture, parse_fixture,
@@ -88,6 +88,10 @@ class RecordTests(unittest.TestCase):
         self.assertAlmostEqual(result["macro"]["best_of_k"], 11 / 18)
         self.assertAlmostEqual(result["macro"]["all_k"], 7 / 18)
         self.assertEqual(canonical_bytes(json.loads(canonical_bytes(result))), canonical_bytes(result))
+        # Frozen v3 contract from PR #3: refactors must not change its bytes.
+        import hashlib
+        self.assertEqual(hashlib.sha256(canonical_bytes(result)).hexdigest(),
+                         "a7c934e5871d94df2567e8165fcc4103c17e02933e84e4e90e111820989d87cc")
 
     def test_finalized_writer_rejects_missing_software_and_source(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -196,8 +200,8 @@ class RecordTests(unittest.TestCase):
             path = Path(directory).resolve() / "out.json"
             with patch("llm_evaluation.records.software_identity",
                        return_value=(COMMIT, IMPLEMENTATION)), patch(
-                           "llm_evaluation.records._fsync_directory",
-                           wraps=records._fsync_directory
+                           "llm_evaluation.artifact_io.fsync_directory",
+                           wraps=artifact_io.fsync_directory
                        ) as sync:
                 write_immutable(path, self.finalized(), self.source)
             self.assertGreaterEqual(sync.call_count, 2)
@@ -266,6 +270,34 @@ class RecordTests(unittest.TestCase):
                     self.assertFalse(output.exists())
                     git("update-index", reset, "src/llm_evaluation/metrics.py")
                     target.write_text(original)
+
+    def test_in_process_binding_is_outside_v3_attestation(self):
+        # A committed disposable repository keeps the on-disk identity pristine.
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            clone = Path(directory).resolve() / "repo"
+            clone.mkdir()
+            shutil.copytree(root / "src", clone / "src",
+                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+            shutil.copy2(root / ".gitignore", clone / ".gitignore")
+            for command in (["git", "init", "-q"],
+                            ["git", "config", "user.email", "test@example.invalid"],
+                            ["git", "config", "user.name", "Test"],
+                            ["git", "add", "src", ".gitignore"],
+                            ["git", "commit", "-qm", "fixture"]):
+                subprocess.run(command, cwd=clone, check=True, capture_output=True)
+            code = ("from unittest.mock import patch\n"
+                    "from llm_evaluation import records\n"
+                    "from llm_evaluation.records import software_identity\n"
+                    "before=software_identity()\n"
+                    "with patch.object(records,'marginal',return_value=0.123456789):\n"
+                    "  assert software_identity()==before\n"
+                    "  print(records.marginal(4,2))\n")
+            completed = subprocess.run([sys.executable, "-c", code], cwd=clone,
+                                       env=dict(os.environ, PYTHONPATH=str(clone / "src")),
+                                       capture_output=True, text=True)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(completed.stdout.strip(), "0.123456789")
 
     def test_real_cli_surface_with_controlled_checkout_identity(self):
         with tempfile.TemporaryDirectory() as directory:
