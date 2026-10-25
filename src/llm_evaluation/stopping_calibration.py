@@ -6,8 +6,12 @@ not claims about dependent, drifting, or heterogeneous latent-item processes.
 """
 from dataclasses import dataclass
 from fractions import Fraction
+from typing import TypedDict, cast
 
 from .stopping import Policy, Scenario, decision, operating_characteristics, reference_error
+
+
+MAX_EXHAUSTIVE_VERIFICATION_CAP = 16
 
 
 @dataclass(frozen=True)
@@ -39,6 +43,11 @@ def finite_path_monotonicity(policy: Policy) -> MonotonicityProof:
     with X_i(p)=1{U_i<=p}, this puts iid Bernoulli composite error suprema at the
     nearest boundary point of each one-sided region.
     """
+    if policy.cap > MAX_EXHAUSTIVE_VERIFICATION_CAP:
+        raise ValueError(
+            f"exhaustive verification cap is {MAX_EXHAUSTIVE_VERIFICATION_CAP}; "
+            f"got {policy.cap}"
+        )
     decisions = {
         (n, c): decision(policy, n, c)
         for n in policy.looks
@@ -74,6 +83,11 @@ def finite_count_path_monotonicity(
         raise ValueError("looks must be positive and strictly increasing")
     if any(reject >= accept for reject, accept in zip(reject_max, accept_min, strict=True)):
         raise ValueError("reject boundary must be strictly below accept boundary")
+    if looks[-1] > MAX_EXHAUSTIVE_VERIFICATION_CAP:
+        raise ValueError(
+            f"exhaustive verification cap is {MAX_EXHAUSTIVE_VERIFICATION_CAP}; "
+            f"got {looks[-1]}"
+        )
 
     def outcome(mask: int) -> str:
         successes = 0
@@ -146,52 +160,85 @@ def _wrong_probability(
 def reference_sample_size(
     *, threshold: Fraction, delta: Fraction, epsilon: Fraction,
     tie_handling: str = "inconclusive", max_n: int = 10000,
-) -> dict[str, Fraction | int | str]:
-    """Smallest exact fixed n meeting the two one-sided wrong-decision targets.
+    epsilon_inconclusive: Fraction | None = None,
+) -> dict[str, Fraction | int | str | bool | None]:
+    """Smallest exact fixed n meeting explicit wrong and optional tie constraints.
 
     The nearest points ``threshold-delta`` and ``threshold+delta`` are worst case
-    by the same Bernoulli coupling argument.  ``half`` means an independent fair
-    random tie break; ``inconclusive`` does not count a tie as a wrong decision.
+    for the one-sided wrong-decision events by Bernoulli coupling.  Raw tie and
+    correct-decision probabilities are reported separately so abstention cannot be
+    hidden inside the wrong-decision target.
     """
     if not 0 < threshold < 1 or not 0 < delta or threshold - delta < 0 or threshold + delta > 1:
         raise ValueError("delta must stay inside the Bernoulli parameter space")
     if not 0 < epsilon < 1 or max_n < 1:
         raise ValueError("invalid epsilon or max_n")
+    if epsilon_inconclusive is not None and not 0 <= epsilon_inconclusive < 1:
+        raise ValueError("epsilon_inconclusive must be in [0, 1)")
     if tie_handling not in {"inconclusive", "half", "wrong"}:
         raise ValueError("tie_handling must be inconclusive, half, or wrong")
     lower_p, upper_p = threshold - delta, threshold + delta
-    previous = Fraction(1)
+    previous_wrong = Fraction(1)
+    previous_inconclusive = Fraction(1)
+    previous_satisfied = False
     for n in range(1, max_n + 1):
+        lower = reference_error(lower_p, threshold, n)
+        upper = reference_error(upper_p, threshold, n)
+        lower_raw_wrong = lower["accept"]
+        upper_raw_wrong = upper["reject"]
+        lower_inconclusive = lower["inconclusive"]
+        upper_inconclusive = upper["inconclusive"]
+        lower_correct = lower["reject"]
+        upper_correct = upper["accept"]
         lower_wrong = _wrong_probability(lower_p, threshold, n, tie_handling)
         upper_wrong = _wrong_probability(upper_p, threshold, n, tie_handling)
-        worst = max(lower_wrong, upper_wrong)
-        if worst <= epsilon:
+        worst_wrong = max(lower_wrong, upper_wrong)
+        worst_inconclusive = max(lower_inconclusive, upper_inconclusive)
+        satisfied = worst_wrong <= epsilon and (
+            epsilon_inconclusive is None or worst_inconclusive <= epsilon_inconclusive
+        )
+        if satisfied:
             return {
                 "n": n,
                 "threshold": threshold,
                 "delta": delta,
                 "epsilon": epsilon,
+                "epsilon_inconclusive": epsilon_inconclusive,
                 "tie_handling": tie_handling,
                 "lower_wrong": lower_wrong,
                 "upper_wrong": upper_wrong,
-                "worst_wrong": worst,
-                "previous_worst_wrong": previous,
+                "worst_wrong": worst_wrong,
+                "lower_raw_wrong": lower_raw_wrong,
+                "upper_raw_wrong": upper_raw_wrong,
+                "lower_inconclusive": lower_inconclusive,
+                "upper_inconclusive": upper_inconclusive,
+                "worst_inconclusive": worst_inconclusive,
+                "lower_correct": lower_correct,
+                "upper_correct": upper_correct,
+                "min_correct": min(lower_correct, upper_correct),
+                "previous_worst_wrong": previous_wrong,
+                "previous_worst_inconclusive": previous_inconclusive,
+                "previous_satisfied": previous_satisfied,
             }
-        previous = worst
-    raise ValueError("no reference size met epsilon within max_n")
+        previous_wrong = worst_wrong
+        previous_inconclusive = worst_inconclusive
+        previous_satisfied = satisfied
+    raise ValueError("no reference size met requested constraints within max_n")
 
 
 def classify_candidate(
     row: dict[str, object], epsilon_accept: Fraction, epsilon_reject: Fraction
 ) -> str:
     """Classify a policy using realized endpoint errors, not nominal alpha."""
-    if row["false_accept"] <= epsilon_accept and row["false_reject"] <= epsilon_reject:
+    false_accept = cast(Fraction, row["false_accept"])
+    false_reject = cast(Fraction, row["false_reject"])
+    if false_accept <= epsilon_accept and false_reject <= epsilon_reject:
         return "feasible"
     return "infeasible"
 
 
 def _dominates(left: dict[str, object], right: dict[str, object]) -> bool:
-    keys = ("false_accept", "false_reject")
+    keys: tuple[str, ...] = ("false_accept", "false_reject")
     endpoint_keys = (
         "inconclusive_p0", "inconclusive_p1", "expected_n_p0", "expected_n_p1"
     )
@@ -200,7 +247,11 @@ def _dominates(left: dict[str, object], right: dict[str, object]) -> bool:
     else:
         # Small caller-supplied summaries may not have endpoint-specific fields.
         keys += ("inconclusive", "expected_n")
-    return all(left[k] <= right[k] for k in keys) and any(left[k] < right[k] for k in keys)
+    left_values = tuple(cast(Fraction, left[key]) for key in keys)
+    right_values = tuple(cast(Fraction, right[key]) for key in keys)
+    return all(a <= b for a, b in zip(left_values, right_values, strict=True)) and any(
+        a < b for a, b in zip(left_values, right_values, strict=True)
+    )
 
 
 def pareto_efficient(
@@ -252,9 +303,17 @@ def calibrate_lr_grid(
     return rows
 
 
+class FiniteCountOC(TypedDict):
+    accept: Fraction
+    reject: Fraction
+    inconclusive: Fraction
+    expected_n: Fraction
+    stopping: dict[int, Fraction]
+
+
 def _finite_count_oc(
     *, looks: tuple[int, ...], accept_min: tuple[int, ...], reject_max: tuple[int, ...], p: Fraction
-) -> dict[str, object]:
+) -> FiniteCountOC:
     states: dict[int, Fraction] = {0: Fraction(1)}
     accept = reject = inconclusive = Fraction()
     stopping: dict[int, Fraction] = {}
@@ -286,7 +345,7 @@ def _finite_count_oc(
         states = continuing
     if states or accept + reject + inconclusive != 1:
         raise AssertionError("finite count boundary mass did not resolve")
-    expected_n = sum(Fraction(n) * mass for n, mass in stopping.items())
+    expected_n = sum((Fraction(n) * mass for n, mass in stopping.items()), Fraction())
     return {
         "accept": accept,
         "reject": reject,
