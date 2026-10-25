@@ -115,17 +115,21 @@ _SENSITIVE_PROVIDER_METADATA_KEYS = {
 }
 
 
-def _reject_sensitive_provider_metadata(value: object) -> None:
+def _reject_sensitive_provider_metadata(
+    value: object, forbidden_strings: tuple[str, ...] = ()
+) -> None:
     """Refuse response JSON that could persist an echoed credential."""
     if isinstance(value, Mapping):
         for key, item in value.items():
             normalized = str(key).strip().lower().replace("-", "_")
             if normalized in _SENSITIVE_PROVIDER_METADATA_KEYS:
                 raise ProviderRuntimeFailure("provider response contains sensitive metadata key")
-            _reject_sensitive_provider_metadata(item)
+            _reject_sensitive_provider_metadata(item, forbidden_strings)
     elif isinstance(value, (list, tuple)):
         for item in value:
-            _reject_sensitive_provider_metadata(item)
+            _reject_sensitive_provider_metadata(item, forbidden_strings)
+    elif isinstance(value, str) and any(secret in value for secret in forbidden_strings):
+        raise ProviderRuntimeFailure("provider response contains configured credential")
 
 
 @dataclass(frozen=True)
@@ -205,6 +209,13 @@ class BackendConfig:
             raise ValueError("base_url must not embed credentials")
         if parsed.query or parsed.fragment:
             raise ValueError("base_url must not contain a query or fragment")
+        hostname = (parsed.hostname or "").rstrip(".").lower()
+        if (
+            self.credential_env is not None
+            and parsed.scheme != "https"
+            and hostname not in {"localhost", "127.0.0.1", "::1"}
+        ):
+            raise ValueError("credential requires HTTPS except for loopback endpoints")
         object.__setattr__(self, "base_url", self.base_url.rstrip("/"))
 
     @property
@@ -381,8 +392,11 @@ class GenerationResult:
     reported_model_matches_condition: bool | None
     elapsed_seconds: float
     effective_request: EffectiveRequest
+    termination_reason: str | None = None
 
     def __post_init__(self) -> None:
+        if self.termination_reason is not None and not isinstance(self.termination_reason, str):
+            raise ValueError("termination_reason must be str or None")
         if self.reported_model_matches_condition is not None and not isinstance(
             self.reported_model_matches_condition, bool
         ):
@@ -656,8 +670,13 @@ class OpenAICompatibleTransport:
         endpoint, body = self._body(request)
         effective = self._effective(request, endpoint, body)
         wire = effective.serialized_body.encode("utf-8")
+        headers = self._headers()
+        authorization = headers.get("Authorization")
+        forbidden_response_strings: tuple[str, ...] = ()
+        if authorization is not None:
+            forbidden_response_strings = (authorization, authorization.removeprefix("Bearer "))
         http_request = urllib.request.Request(
-            effective.endpoint, data=wire, headers=self._headers(), method="POST"
+            effective.endpoint, data=wire, headers=headers, method="POST"
         )
         started = time.perf_counter()
         try:
@@ -677,7 +696,8 @@ class OpenAICompatibleTransport:
             raise ProviderRuntimeFailure("provider returned invalid JSON") from exc
         if not isinstance(payload, dict):
             raise ProviderRuntimeFailure("provider response must be a JSON object")
-        _reject_sensitive_provider_metadata(payload)
+        _reject_sensitive_provider_metadata(header_request_id, forbidden_response_strings)
+        _reject_sensitive_provider_metadata(payload, forbidden_response_strings)
         if self.config.api_mode == "chat_completions":
             parsed = self._parse_chat(payload)
         else:
@@ -750,6 +770,7 @@ class OpenAICompatibleTransport:
             "raw_output": message["content"],
             "backend_model_id": model,
             "finish_reason": finish_reason,
+            "termination_reason": finish_reason,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens,
@@ -785,6 +806,19 @@ class OpenAICompatibleTransport:
         status = payload.get("status")
         if status is not None and not isinstance(status, str):
             raise ProviderRuntimeFailure("Responses status is not a string")
+        incomplete_details = payload.get("incomplete_details")
+        termination_reason: str | None = None
+        if incomplete_details is not None:
+            if not isinstance(incomplete_details, dict):
+                raise ProviderRuntimeFailure("Responses incomplete_details is not a JSON object")
+            reason = incomplete_details.get("reason")
+            if not isinstance(reason, str) or not reason:
+                raise ProviderRuntimeFailure("Responses incomplete_details.reason is not a string")
+            if status != "incomplete":
+                raise ProviderRuntimeFailure(
+                    "Responses incomplete_details is inconsistent with response status"
+                )
+            termination_reason = reason
         model = payload.get("model")
         if model is not None and not isinstance(model, str):
             raise ProviderRuntimeFailure("Responses model id is not a string")
@@ -795,6 +829,7 @@ class OpenAICompatibleTransport:
             "raw_output": "".join(texts),
             "backend_model_id": model,
             "finish_reason": status,
+            "termination_reason": termination_reason,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens,

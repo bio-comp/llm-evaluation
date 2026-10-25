@@ -31,6 +31,7 @@ class _FakeHandler(BaseHTTPRequestHandler):
     requests = []
     response_payload = {}
     response_status = 200
+    response_request_id = "header-request-id"
 
     def log_message(self, *args):
         pass
@@ -51,7 +52,7 @@ class _FakeHandler(BaseHTTPRequestHandler):
         body = json.dumps(self.__class__.response_payload).encode()
         self.send_response(self.__class__.response_status)
         self.send_header("Content-Type", "application/json")
-        self.send_header("X-Request-ID", "header-request-id")
+        self.send_header("X-Request-ID", self.__class__.response_request_id)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -61,6 +62,7 @@ class ModelRunnerTests(unittest.TestCase):
     def setUp(self):
         _FakeHandler.requests = []
         _FakeHandler.response_status = 200
+        _FakeHandler.response_request_id = "header-request-id"
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeHandler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -341,6 +343,42 @@ class ModelRunnerTests(unittest.TestCase):
             )
         self.assertNotIn("echoed-secret", str(caught.exception))
 
+    def test_provider_metadata_cannot_echo_configured_credential_under_innocuous_key(self):
+        secret = "credential-sentinel-7e1c48b34cb4"
+        _FakeHandler.response_payload = {
+            "id": "id", "model": "m",
+            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "debug": f"request used Bearer {secret}",
+        }
+        config = BackendConfig(
+            "hosted-fake", self.base_url, "m", "chat_completions", self.profile,
+            credential_env="FAKE_E002_KEY", config_id="hosted-fake-test",
+        )
+        with patch.dict(os.environ, {"FAKE_E002_KEY": secret}, clear=False):
+            with self.assertRaisesRegex(ProviderRuntimeFailure, "configured credential") as caught:
+                self._transport(config, condition_id="test-condition").generate(
+                    GenerationRequest(condition_id="test-condition", messages=(("user", "x"),))
+                )
+        self.assertNotIn(secret, str(caught.exception))
+
+    def test_provider_request_id_header_cannot_echo_configured_credential(self):
+        secret = "credential-sentinel-589cbe8a15f0"
+        _FakeHandler.response_payload = {
+            "id": "id", "model": "m",
+            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+        }
+        _FakeHandler.response_request_id = f"trace-Bearer {secret}"
+        config = BackendConfig(
+            "hosted-fake", self.base_url, "m", "chat_completions", self.profile,
+            credential_env="FAKE_E002_KEY", config_id="hosted-fake-test",
+        )
+        with patch.dict(os.environ, {"FAKE_E002_KEY": secret}, clear=False):
+            with self.assertRaisesRegex(ProviderRuntimeFailure, "configured credential") as caught:
+                self._transport(config, condition_id="test-condition").generate(
+                    GenerationRequest(condition_id="test-condition", messages=(("user", "x"),))
+                )
+        self.assertNotIn(secret, str(caught.exception))
+
     def test_unsupported_or_ignored_scientific_control_is_rejected_not_silently_sent(self):
         for status in (CapabilityStatus.UNSUPPORTED, CapabilityStatus.ACCEPTED_BUT_IGNORED,
                        CapabilityStatus.SEMANTICS_DIFFER, CapabilityStatus.UNKNOWN):
@@ -351,6 +389,17 @@ class ModelRunnerTests(unittest.TestCase):
                     GenerationRequest(condition_id="test-condition", messages=(("user", "x"),), seed=4)
                 )
         self.assertEqual(_FakeHandler.requests, [])
+
+    def test_backend_rejects_credentials_over_non_loopback_plain_http(self):
+        with self.assertRaisesRegex(ValueError, "credential requires HTTPS"):
+            BackendConfig(
+                "hosted-fake", "http://example.test/v1", "m", "chat_completions", self.profile,
+                credential_env="FAKE_E002_KEY", config_id="hosted-fake-test",
+            )
+        BackendConfig(
+            "local-fake", self.base_url, "m", "chat_completions", self.profile,
+            credential_env="FAKE_E002_KEY", config_id="local-fake-test",
+        )
 
     def test_backend_rejects_wire_parameter_name_collisions(self):
         with self.assertRaisesRegex(ValueError, "wire parameter names must be unique"):
@@ -463,6 +512,24 @@ class ModelRunnerTests(unittest.TestCase):
         self.assertEqual(result.raw_output, "")
         self.assertEqual(result.finish_reason, "completed")
         self.assertEqual(result.completion_tokens, 8)
+
+    def test_responses_incomplete_reason_is_normalized_without_losing_status(self):
+        _FakeHandler.response_payload = {
+            "id": "resp_incomplete", "model": "m2", "status": "incomplete",
+            "incomplete_details": {"reason": "max_output_tokens"},
+            "output": [],
+            "usage": {"input_tokens": 4, "output_tokens": 8, "total_tokens": 12},
+        }
+        config = BackendConfig("fake", self.base_url, "m", "responses", self.profile)
+        result = self._transport(config, condition_id="bounded-output").generate(
+            GenerationRequest(
+                condition_id="bounded-output",
+                messages=(("user", "x"),),
+                max_output_tokens=8,
+            )
+        )
+        self.assertEqual(result.finish_reason, "incomplete")
+        self.assertEqual(result.termination_reason, "max_output_tokens")
 
     def test_model_listing_is_capability_gated(self):
         config = BackendConfig("fake", self.base_url, "m", "chat_completions", self.profile)
