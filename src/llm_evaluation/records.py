@@ -7,10 +7,10 @@ import os
 import platform
 import stat
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Any
 
+from .artifact_io import publish_immutable, reject_symlink_components
 from .metrics import all_k, best_of_k, marginal
 
 CONDITION_FIELDS = {"subject", "prompt", "harness", "tools", "runtime", "sampling",
@@ -266,22 +266,6 @@ def current_git_commit() -> str:
     return software_identity()[0]
 
 
-def _reject_symlink_components(path: Path) -> None:
-    """Reject existing symlink ancestors, including a symlinked final name."""
-    absolute = path.absolute()
-    for part in (absolute, *absolute.parents):
-        if part.is_symlink():
-            raise ValueError("symbolic links are forbidden in artifact paths")
-
-
-def _fsync_directory(path: Path) -> None:
-    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
 def verify_result_software(value: object) -> dict[str, Any]:
     """Check a v3 record against this local checkout and Python runtime."""
     result = validate_result(value)
@@ -297,27 +281,11 @@ def write_immutable(path: Path, value: dict[str, Any], source_bytes: bytes) -> N
     """Bind source and measured code to HEAD, then publish complete bytes once."""
     result = verify_result_source(value, source_bytes)
     verify_result_software(result)
-    _reject_symlink_components(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _reject_symlink_components(path)
-    staging: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(mode="wb", dir=path.parent, prefix=".e002-",
-                                         delete=False) as handle:
-            staging = Path(handle.name)
-            handle.write(canonical_bytes(result))
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.link(staging, path, follow_symlinks=False)  # complete, exclusive publication
-        _fsync_directory(path.parent)
-    finally:
-        if staging is not None:
-            staging.unlink(missing_ok=True)
-            _fsync_directory(path.parent)
+    publish_immutable(path, canonical_bytes(result))
 
 
 def read_finalized(path: Path, source_bytes: bytes) -> dict[str, Any]:
-    _reject_symlink_components(path)
+    reject_symlink_components(path)
     if not path.is_file():
         raise ValueError("finalized artifact is not an ordinary file")
     data = path.read_bytes()
