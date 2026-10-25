@@ -28,6 +28,8 @@ class Policy:
     alpha: Fraction = Fraction(1, 10)
     low: Fraction = Fraction(3, 10)
     high: Fraction = Fraction(7, 10)
+    lr_reject: Fraction | None = None
+    lr_accept: Fraction | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in {"fixed", "naive", "group", "sequence", "sprt"}:
@@ -38,8 +40,23 @@ class Policy:
             raise ValueError("invalid threshold or error allocation")
         if not 0 < self.low < self.high < 1:
             raise ValueError("invalid SPRT endpoints")
+        if self.kind == "sprt" and not self.low < self.threshold < self.high:
+            raise ValueError("SPRT requires low < threshold < high")
+        if self.kind == "sprt":
+            if not 0 < self.effective_lr_reject < 1 < self.effective_lr_accept:
+                raise ValueError("SPRT LR boundaries require 0 < reject < 1 < accept")
+        elif self.lr_reject is not None or self.lr_accept is not None:
+            raise ValueError("LR boundaries apply only to SPRT policies")
         if self.kind == "fixed" and len(self.looks) != 1:
             raise ValueError("fixed policy has exactly one look")
+
+    @property
+    def effective_lr_reject(self) -> Fraction:
+        return self.alpha if self.lr_reject is None else self.lr_reject
+
+    @property
+    def effective_lr_accept(self) -> Fraction:
+        return 1 / self.alpha if self.lr_accept is None else self.lr_accept
 
     @property
     def cap(self) -> int:
@@ -64,9 +81,9 @@ def decision(policy: Policy, n: int, c: int) -> str:
         likelihood = (policy.high / policy.low)**c * (
             (1-policy.high) / (1-policy.low)
         )**(n-c)
-        if likelihood >= 1 / policy.alpha:
+        if likelihood >= policy.effective_lr_accept:
             return "accept"
-        if likelihood <= policy.alpha:
+        if likelihood <= policy.effective_lr_reject:
             return "reject"
         return "inconclusive"
     if policy.kind == "naive":
@@ -96,6 +113,8 @@ class Scenario:
             raise ValueError("unknown scenario")
         if not 0 <= self.p <= 1 or not 0 <= self.after <= 1:
             raise ValueError("invalid success probability")
+        if self.kind == "beta_mixture" and not (0 < self.p < 1 and self.concentration > 0):
+            raise ValueError("beta_mixture requires a proper Beta prior")
         if self.concentration <= 0 or self.change_at < 1:
             raise ValueError("invalid scenario parameter")
 
