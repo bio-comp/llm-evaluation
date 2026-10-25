@@ -12,9 +12,15 @@ inconclusive are distinct outcomes. The development configuration uses
 θ=1/2, an indifference zone with endpoints p₀=3/10 and p₁=7/10,
 total nominal error budget α=1/10, and looks at n=2,4,8,16.
 These numbers test methods; they are **not** a real release criterion.
-The held-out p grid, alternative θ and half-width grid, and abstract loss
-weights are declared in `stopping_records.CONFIG` before the analysis.
-A unit trial cost is an abstract count, not provider pricing.
+Schema-v1's historical `holdout_p` grid, alternative θ and half-width grid,
+and abstract loss weights were declared in `stopping_records.CONFIG` before
+the PR #4 analysis. That grid has now been evaluated and published, so it is
+consumed rather than an untouched confirmation set. Historical schema-v1 and
+its output values remain unchanged. New diagnostics should call such points
+an `evaluation_grid` unless a genuinely untouched holdout exists; for this
+finite Bernoulli problem, exact whole-region operating characteristics are
+preferred when monotonicity establishes them. A unit trial cost is an
+abstract count, not provider pricing.
 
 - Fixed n in {1,2,4,8,16}: compare c/n to θ; equality is inconclusive.
   This is a baseline classifier, not an α-controlled test.
@@ -64,11 +70,13 @@ At p=θ=.5 the naive repeated-look rule crosses either tail with probability
 .11945, exceeding its nominal total .10, and its stopped-interval coverage
 is .88055. The preallocated group rule has crossing probability .02625;
 the time-uniform allocation is far more conservative at this cap. Exact
-small-path enumeration independently checks the dynamic program. All
-policies are assessed on a separate held-out p grid, including near-zero,
-near-one, and values near the boundary. The configurable loss table keeps
-false acceptance, false rejection, cap, and trial count separate. Any
-ranking that gives no penalty to inconclusive outcomes is misleading.
+small-path enumeration independently checks the dynamic program. The published
+schema-v1 grid includes near-zero, near-one, and near-boundary points, but is
+now consumed evidence rather than an untouched holdout. For supported finite
+policies, exhaustive path monotonicity plus Bernoulli coupling now checks the
+outer composite regions directly at p₀/p₁. The configurable loss table keeps
+false acceptance, false rejection, cap, and trial count separate. Any ranking
+that gives no penalty to inconclusive outcomes is misleading.
 
 Under an exchangeable beta-mixture with marginal .3 and concentration 2,
 SPRT-style acceptance rises to .19655, versus .02088 for iid(.3).
@@ -98,21 +106,29 @@ component or establish performance over an unsampled question population.
 - [Wald, *Sequential Analysis*](https://books.google.com/books?id=4FZMAAAAMAAJ)
   gives the simple-hypothesis SPRT lineage. This study uses conservative
   likelihood-ratio thresholds with a finite cap and no forced decision.
-- [Pilditch, *Knowing When to Stop*, arXiv:2608.14425v1](https://arxiv.org/html/2608.14425v1)
+- [Pilditch, *Knowing When to Stop*, arXiv:2608.14425v1](https://arxiv.org/abs/2608.14425)
   studies hierarchical Bayesian precision-width stopping across items and
-  groups, including real benchmark shadow runs. Its 90/90 binary/continuous
-  interval comparisons use full-run estimates rather than known true
-  parameters; the authors explicitly do not claim frequentist calibration
-  from that check. The ordinal mode interval versus mean comparison has
-  0/15 and 1/15 coverage in two cells because the estimands differ. Its
-  posterior-width rule is **not** implemented here as an α-controlled
-  threshold decision.
-- [Balkır et al., *Confident Rankings with Fewer Items*,
-  arXiv:2601.13885v1](https://arxiv.org/html/2601.13885v1) adaptively
-  selects benchmark **items** for continuous-score model ranking. It does
-  not set repeated-generation counts on a fixed item. Ranking and tie
-  performance vary by metric; their TruthfulQA judge pair has .77 accuracy
-  on non-tie predictions.
+  groups, including benchmark shadow runs. Its stopping criterion is posterior
+  precision, not frequentist decision-error calibration. In a moderate-
+  heterogeneity known-truth simulation, empirical coverage is about 80% at
+  nominal 94% away from exact 0/1 boundaries; the binary/continuous full-run
+  comparison is instead a finite full-run-estimate precision check. The
+  ordinal 0/15 and 1/15 cells compare a modal-category interval with a mean,
+  so they are an estimand mismatch. The paper names `optstop` v0.4.0 for its
+  validation. The inspected repository main is now v0.5.0 at commit
+  `1fa679ea82081a26c790c9e59f7e1365f8e34c4a`; v0.5.0 changed low-rate interval
+  reporting and stopping behavior, so current main must not be treated as
+  automatically identical to the paper validation artifact.
+- [Balkır et al., *Confident Rankings with Fewer Items*, EMNLP 2026](https://aclanthology.org/2026.emnlp-main.2068/)
+  adaptively selects benchmark **items** for continuous-score model ranking;
+  it does not set repeated-generation counts on a fixed item. The current
+  arXiv v2/proceedings headline reports +0.13 Kendall τ over random sampling
+  and 99% accuracy on confident predictions at 2% of items, whereas arXiv v1
+  reported +0.12 τ and 95%. The public `trismik/continuous-cat` repository
+  has no tags/releases; inspected main is commit
+  `4f2b0bdac0b972ee8cef5da6845465db83f576c7` dated 2026-02-02, more than seven
+  months before arXiv v2. Its README still cites the arXiv preprint, so
+  code-to-proceedings identity is not assumed without a fresh reproduction.
 - [*Sequential Bayesian Evaluation of Large Language Model Behavior*,
   arXiv:2511.10661v2](https://arxiv.org/html/2511.10661v2) allocates
   repeated generations across fixed prompts for aggregate properties.
