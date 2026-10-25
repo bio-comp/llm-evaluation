@@ -191,7 +191,15 @@ def classify_candidate(
 
 
 def _dominates(left: dict[str, object], right: dict[str, object]) -> bool:
-    keys = ("false_accept", "false_reject", "inconclusive", "expected_n")
+    keys = ("false_accept", "false_reject")
+    endpoint_keys = (
+        "inconclusive_p0", "inconclusive_p1", "expected_n_p0", "expected_n_p1"
+    )
+    if all(key in left and key in right for key in endpoint_keys):
+        keys += endpoint_keys
+    else:
+        # Small caller-supplied summaries may not have endpoint-specific fields.
+        keys += ("inconclusive", "expected_n")
     return all(left[k] <= right[k] for k in keys) and any(left[k] < right[k] for k in keys)
 
 

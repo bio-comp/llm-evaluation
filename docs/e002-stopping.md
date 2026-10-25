@@ -114,17 +114,21 @@ component or establish performance over an unsampled question population.
   nominal 94% away from exact 0/1 boundaries; the binary/continuous full-run
   comparison is instead a finite full-run-estimate precision check. The
   ordinal 0/15 and 1/15 cells compare a modal-category interval with a mean,
-  so they are an estimand mismatch. The accompanying `optstop` repository's
-  paper validation used v0.4.0; later repository states must not be treated as
-  automatically identical to that validation artifact.
+  so they are an estimand mismatch. The paper names `optstop` v0.4.0 for its
+  validation. The inspected repository main is now v0.5.0 at commit
+  `1fa679ea82081a26c790c9e59f7e1365f8e34c4a`; v0.5.0 changed low-rate interval
+  reporting and stopping behavior, so current main must not be treated as
+  automatically identical to the paper validation artifact.
 - [Balkır et al., *Confident Rankings with Fewer Items*, EMNLP 2026](https://aclanthology.org/2026.emnlp-main.2068/)
   adaptively selects benchmark **items** for continuous-score model ranking;
   it does not set repeated-generation counts on a fixed item. The current
   arXiv v2/proceedings headline reports +0.13 Kendall τ over random sampling
   and 99% accuracy on confident predictions at 2% of items, whereas arXiv v1
   reported +0.12 τ and 95%. The public `trismik/continuous-cat` repository
-  currently has no publication tag and its main revision predates arXiv v2,
-  so code-to-proceedings identity is not assumed.
+  has no tags/releases; inspected main is commit
+  `4f2b0bdac0b972ee8cef5da6845465db83f576c7` dated 2026-02-02, more than seven
+  months before arXiv v2. Its README still cites the arXiv preprint, so
+  code-to-proceedings identity is not assumed without a fresh reproduction.
 - [*Sequential Bayesian Evaluation of Large Language Model Behavior*,
   arXiv:2511.10661v2](https://arxiv.org/html/2511.10661v2) allocates
   repeated generations across fixed prompts for aggregate properties.

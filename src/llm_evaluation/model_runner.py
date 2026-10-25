@@ -11,9 +11,11 @@ import json
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Any, Mapping
 
 
@@ -52,6 +54,12 @@ class ProviderRuntimeFailure(RuntimeError):
 class CapabilityProfile:
     statuses: Mapping[str, CapabilityStatus]
 
+    def __post_init__(self) -> None:
+        statuses = dict(self.statuses)
+        if any(not isinstance(status, CapabilityStatus) for status in statuses.values()):
+            raise ValueError("capability statuses must be CapabilityStatus values")
+        object.__setattr__(self, "statuses", MappingProxyType(statuses))
+
     def require(self, capability: str) -> None:
         status = self.statuses.get(capability, CapabilityStatus.UNKNOWN)
         if status is not CapabilityStatus.SUPPORTED:
@@ -66,15 +74,55 @@ class BackendConfig:
     api_mode: str
     capability_profile: CapabilityProfile
     credential_env: str | None = None
+    config_id: str | None = None
+    wire_parameter_names: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.provider_id or not self.model_id:
             raise ValueError("provider_id and model_id are required")
+        if self.config_id is not None and not self.config_id:
+            raise ValueError("config_id must be nonempty when supplied")
+        allowed_wire_overrides = {
+            "temperature", "top_p", "top_k", "seed", "stop", "max_output_tokens"
+        }
+        if any(key not in allowed_wire_overrides for key in self.wire_parameter_names):
+            raise ValueError("wire_parameter_names contains an unknown internal parameter")
+        if any(not isinstance(value, str) or not value for value in self.wire_parameter_names.values()):
+            raise ValueError("wire parameter names must be nonempty strings")
+        object.__setattr__(
+            self, "wire_parameter_names", MappingProxyType(dict(self.wire_parameter_names))
+        )
         if self.api_mode not in {"chat_completions", "responses"}:
             raise ValueError("api_mode must be chat_completions or responses")
-        if not self.base_url.startswith(("http://", "https://")):
-            raise ValueError("base_url must be HTTP(S)")
+        default_wire_names = {
+            "temperature": "temperature",
+            "top_p": "top_p",
+            "top_k": "top_k",
+            "seed": "seed",
+            "stop": "stop",
+            "max_output_tokens": (
+                "max_tokens" if self.api_mode == "chat_completions" else "max_output_tokens"
+            ),
+        }
+        effective_wire_names = [
+            self.wire_parameter_names.get(key, value)
+            for key, value in default_wire_names.items()
+        ]
+        if len(effective_wire_names) != len(set(effective_wire_names)):
+            raise ValueError("wire parameter names must be unique")
+        parsed = urllib.parse.urlsplit(self.base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("base_url must be an absolute HTTP(S) URL")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("base_url must not embed credentials")
+        if parsed.query or parsed.fragment:
+            raise ValueError("base_url must not contain a query or fragment")
         object.__setattr__(self, "base_url", self.base_url.rstrip("/"))
+
+    @property
+    def effective_config_id(self) -> str:
+        """Registry identity; provider identity alone is not a model configuration."""
+        return self.provider_id if self.config_id is None else self.config_id
 
 
 @dataclass(frozen=True)
@@ -84,19 +132,23 @@ class BackendRegistry:
     backends: tuple[BackendConfig, ...]
 
     def __post_init__(self) -> None:
-        ids = tuple(backend.provider_id for backend in self.backends)
+        ids = self.config_ids
         if len(ids) != len(set(ids)):
-            raise ValueError("duplicate provider_id in backend registry")
+            raise ValueError("duplicate config_id in backend registry")
+
+    @property
+    def config_ids(self) -> tuple[str, ...]:
+        return tuple(backend.effective_config_id for backend in self.backends)
 
     @property
     def provider_ids(self) -> tuple[str, ...]:
-        return tuple(backend.provider_id for backend in self.backends)
+        return tuple(dict.fromkeys(backend.provider_id for backend in self.backends))
 
-    def __getitem__(self, provider_id: str) -> BackendConfig:
+    def __getitem__(self, config_id: str) -> BackendConfig:
         for backend in self.backends:
-            if backend.provider_id == provider_id:
+            if backend.effective_config_id == config_id:
                 return backend
-        raise KeyError(provider_id)
+        raise KeyError(config_id)
 
 
 @dataclass(frozen=True)
@@ -128,6 +180,13 @@ class ModelCondition:
             digest = self.artifact_sha256.lower()
             if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
                 raise ValueError("artifact_sha256 must be a 64-character hexadecimal digest")
+        object.__setattr__(
+            self, "runtime_environment", MappingProxyType(dict(self.runtime_environment))
+        )
+        if self.artifact_metadata is not None:
+            object.__setattr__(
+                self, "artifact_metadata", MappingProxyType(dict(self.artifact_metadata))
+            )
 
 
 @dataclass(frozen=True)
@@ -259,13 +318,19 @@ class OpenAICompatibleTransport:
             ("seed", request.seed, "seed"),
             ("stop", list(request.stop) if request.stop is not None else None, "stop"),
         )
-        for capability, value, wire_name in controls:
+        for capability, value, default_wire_name in controls:
             if value is not None:
                 profile.require(capability)
+                wire_name = self.config.wire_parameter_names.get(capability, default_wire_name)
                 body[wire_name] = value
         if request.max_output_tokens is not None:
             profile.require("max_output_tokens")
-            wire_name = "max_tokens" if self.config.api_mode == "chat_completions" else "max_output_tokens"
+            default_wire_name = (
+                "max_tokens" if self.config.api_mode == "chat_completions" else "max_output_tokens"
+            )
+            wire_name = self.config.wire_parameter_names.get(
+                "max_output_tokens", default_wire_name
+            )
             body[wire_name] = request.max_output_tokens
         endpoint = "/chat/completions" if self.config.api_mode == "chat_completions" else "/responses"
         return endpoint, body
@@ -310,10 +375,15 @@ class OpenAICompatibleTransport:
             parsed = self._parse_chat(payload)
         else:
             parsed = self._parse_responses(payload)
-        request_id = payload.get("id") if isinstance(payload.get("id"), str) else header_request_id
+        body_request_id = payload.get("request_id")
+        if not isinstance(body_request_id, str):
+            body_request_id = None
         return GenerationResult(
             **parsed,
-            provider_request_id=request_id,
+            # OpenAI-style response-body `id` identifies the response object, not
+            # the HTTP request. Preserve it in raw_provider_metadata. Normalize an
+            # explicitly labeled body request_id first, then the request-ID header.
+            provider_request_id=body_request_id or header_request_id,
             raw_provider_metadata=payload,
             elapsed_seconds=elapsed,
             effective_request=effective,

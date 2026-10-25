@@ -92,6 +92,24 @@ class StoppingCalibrationTests(unittest.TestCase):
         frontier = pareto_efficient([feasible_fast, feasible_slow, infeasible], F(1, 20), F(1, 20))
         self.assertEqual({row["name"] for row in frontier}, {"fast", "slow"})
 
+    def test_pareto_dominance_does_not_average_away_endpoint_tradeoffs(self):
+        better_on_average_but_worse_at_p0 = {
+            "name": "left", "false_accept": F(1, 100), "false_reject": F(1, 100),
+            "inconclusive_p0": F(3, 10), "inconclusive_p1": F(0),
+            "expected_n_p0": F(12), "expected_n_p1": F(4),
+            "inconclusive": F(3, 20), "expected_n": F(8),
+        }
+        balanced = {
+            "name": "right", "false_accept": F(1, 100), "false_reject": F(1, 100),
+            "inconclusive_p0": F(1, 5), "inconclusive_p1": F(1, 5),
+            "expected_n_p0": F(10), "expected_n_p1": F(10),
+            "inconclusive": F(1, 5), "expected_n": F(10),
+        }
+        frontier = pareto_efficient(
+            [better_on_average_but_worse_at_p0, balanced], F(1, 20), F(1, 20)
+        )
+        self.assertEqual({row["name"] for row in frontier}, {"left", "right"})
+
     def test_finite_lr_grid_uses_realized_endpoint_errors_and_reports_abstention(self):
         rows = calibrate_lr_grid(
             looks=(2, 4, 8, 16), threshold=F(1, 2), p0=F(3, 10), p1=F(7, 10),

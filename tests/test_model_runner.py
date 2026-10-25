@@ -109,11 +109,30 @@ class ModelRunnerTests(unittest.TestCase):
         self.assertEqual(result.backend_model_id, "backend-reported-model")
         self.assertEqual(result.finish_reason, "stop")
         self.assertEqual((result.prompt_tokens, result.completion_tokens, result.total_tokens), (5, 2, 7))
-        self.assertEqual(result.provider_request_id, "body-request-id")
+        self.assertEqual(result.provider_request_id, "header-request-id")
         self.assertEqual(result.raw_provider_metadata["runtime"]["version"], "1.2.3")
         self.assertEqual(result.effective_request.body_sha256, result.effective_request.body_sha256)
         self.assertEqual(result.effective_request.serialized_body, canonical_json(body))
         self.assertGreaterEqual(result.elapsed_seconds, 0)
+
+    def test_explicit_body_request_id_is_not_confused_with_response_object_id(self):
+        _FakeHandler.response_payload = {
+            "id": "chatcmpl-response-object",
+            "request_id": "req-explicit-body",
+            "model": "m",
+            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+        }
+        result = OpenAICompatibleTransport(
+            BackendConfig("fake", self.base_url, "m", "chat_completions", self.profile)
+        ).generate(GenerationRequest(condition_id="c", messages=(("user", "x"),)))
+        self.assertEqual(result.provider_request_id, "req-explicit-body")
+        self.assertEqual(result.raw_provider_metadata["id"], "chatcmpl-response-object")
+
+    def test_base_url_cannot_embed_credentials_that_effective_request_would_expose(self):
+        with self.assertRaisesRegex(ValueError, "credentials"):
+            BackendConfig(
+                "bad", "https://user:secret@example.test/v1", "m", "chat_completions", self.profile
+            )
 
     def test_credential_env_is_used_without_entering_config_or_effective_body(self):
         _FakeHandler.response_payload = {
@@ -154,6 +173,29 @@ class ModelRunnerTests(unittest.TestCase):
                     GenerationRequest(condition_id="test-condition", messages=(("user", "x"),), seed=4)
                 )
         self.assertEqual(_FakeHandler.requests, [])
+
+    def test_backend_rejects_wire_parameter_name_collisions(self):
+        with self.assertRaisesRegex(ValueError, "wire parameter names must be unique"):
+            BackendConfig(
+                "bad", self.base_url, "m", "chat_completions", self.profile,
+                wire_parameter_names={"max_output_tokens": "top_p"},
+            )
+
+    def test_backend_can_translate_internal_max_output_tokens_to_effective_wire_name(self):
+        _FakeHandler.response_payload = {
+            "id": "id", "model": "m",
+            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+        }
+        config = BackendConfig(
+            "hosted-fake", self.base_url, "m", "chat_completions", self.profile,
+            wire_parameter_names={"max_output_tokens": "max_completion_tokens"},
+        )
+        OpenAICompatibleTransport(config).generate(
+            GenerationRequest(condition_id="c", messages=(("user", "x"),), max_output_tokens=17)
+        )
+        body = _FakeHandler.requests[-1][3]
+        self.assertEqual(body["max_completion_tokens"], 17)
+        self.assertNotIn("max_tokens", body)
 
     def test_none_and_unsupported_unrequested_parameters_are_omitted(self):
         _FakeHandler.response_payload = {
@@ -221,6 +263,30 @@ class ModelRunnerTests(unittest.TestCase):
         self.assertNotEqual(first.effective_request.prompt_packet_sha256,
                             second.effective_request.prompt_packet_sha256)
 
+    def test_capability_and_condition_mappings_are_copied_and_read_only(self):
+        statuses = {"chat_completions": CapabilityStatus.SUPPORTED}
+        profile = CapabilityProfile(statuses)
+        statuses["chat_completions"] = CapabilityStatus.UNSUPPORTED
+        profile.require("chat_completions")
+        with self.assertRaises(TypeError):
+            profile.statuses["chat_completions"] = CapabilityStatus.UNSUPPORTED
+
+        runtime = {"concurrency": 1}
+        metadata = {"architecture": "qwen35"}
+        condition = ModelCondition(
+            condition_id="immutable", weights_id="weights", artifact_sha256=None,
+            quantization=None, provider_id="local", backend_name="ollama",
+            backend_version="0.40.8", api_mode="chat_completions", endpoint_model_id="m",
+            prompt_template_id="template", seed_behavior="unknown",
+            runtime_environment=runtime, artifact_metadata=metadata,
+        )
+        runtime["concurrency"] = 4
+        metadata["architecture"] = "changed"
+        self.assertEqual(condition.runtime_environment["concurrency"], 1)
+        self.assertEqual(condition.artifact_metadata["architecture"], "qwen35")
+        with self.assertRaises(TypeError):
+            condition.runtime_environment["concurrency"] = 2
+
     def test_model_condition_keeps_weights_backend_provider_and_template_separate(self):
         condition = ModelCondition(
             condition_id="qwen-local-ollama",
@@ -246,14 +312,22 @@ class ModelRunnerTests(unittest.TestCase):
         self.assertEqual(condition.artifact_metadata["architecture"], "qwen35")
         self.assertEqual(condition.tokenizer_id, "qwen3.5-tokenizer")
 
-    def test_backend_registry_is_small_explicit_and_rejects_duplicate_ids(self):
-        one = BackendConfig("one", self.base_url, "m1", "chat_completions", self.profile)
-        two = BackendConfig("two", self.base_url, "m2", "responses", self.profile)
-        registry = BackendRegistry((one, two))
-        self.assertIs(registry["one"], one)
-        self.assertEqual(registry.provider_ids, ("one", "two"))
-        with self.assertRaisesRegex(ValueError, "duplicate provider_id"):
-            BackendRegistry((one, one))
+    def test_backend_registry_separates_provider_identity_from_config_identity(self):
+        qwen = BackendConfig(
+            "ollama", self.base_url, "qwen3.5:9b", "chat_completions", self.profile,
+            config_id="ollama-qwen35",
+        )
+        gpt_oss = BackendConfig(
+            "ollama", self.base_url, "gpt-oss:20b", "chat_completions", self.profile,
+            config_id="ollama-gpt-oss20b",
+        )
+        registry = BackendRegistry((qwen, gpt_oss))
+        self.assertIs(registry["ollama-qwen35"], qwen)
+        self.assertIs(registry["ollama-gpt-oss20b"], gpt_oss)
+        self.assertEqual(registry.config_ids, ("ollama-qwen35", "ollama-gpt-oss20b"))
+        self.assertEqual(registry.provider_ids, ("ollama",))
+        with self.assertRaisesRegex(ValueError, "duplicate config_id"):
+            BackendRegistry((qwen, qwen))
         with self.assertRaises(KeyError):
             _ = registry["missing"]
 

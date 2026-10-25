@@ -27,6 +27,17 @@ The finite calibrated rule is not a universal winner. It spends more of the allo
 
 The small constant-LR grid also exposes discreteness: many nominal LR thresholds map to the same reachable finite-state boundary. Finite count-boundary calibration is therefore more informative for this cap than pretending continuous LR tuning always changes the policy.
 
+Matched realized-error diagnostics at several symmetric endpoint targets expose the tradeoff rather than choosing a deployment policy. “Adaptive fastest” below means the lowest endpoint mean E[N] in the prespecified symmetric count-boundary family; “fixed fastest” allows threshold ties to remain inconclusive; “fixed zero-tie” is the smallest feasible odd n, which has no equality tie at θ=.5.
+
+| Endpoint error target | Adaptive fastest boundary | FA=FR | Inconclusive | E[N] | Fixed fastest (n; inconclusive) | Fixed zero-tie n |
+| ---: | --- | ---: | ---: | ---: | --- | ---: |
+| .10 | accept 2,4,6,10 | .09710 | .07741 | 6.4315 | 2; .42000 | 9 |
+| .05 | accept 3,4,6,9 | .03531 | .04003 | 10.2997 | 10; .10292 | 17 |
+| .025 | accept 3,4,6,10 | .02088 | .13305 | 10.2997 | 18; .03862 | 23 |
+| .01 | accept 3,4,7,11 | .00984 | .29704 | 12.2261 | 26; .01607 | 31 |
+
+The corresponding symmetric reject count at look n is n minus the accept count. These rows are not a scalar ranking: at the 1% target, for example, a slower finite-count rule (accept 3,5,7,10; E[N]=13.9473) cuts inconclusive probability from .29704 to .16519 while keeping both realized endpoint errors at .00782. At the 10% target, fixed n=2 is technically feasible only because it is inconclusive with probability .42. Candidate classification therefore retains false accept and false reject separately; Pareto dominance also uses p0/p1 inconclusive probabilities and p0/p1 expected sample counts separately rather than averaging away endpoint tradeoffs. Stopping distributions remain reported, not collapsed into that frontier.
+
 ## Independent reference sizing
 
 `reference_sample_size()` exactly sizes a separate fixed Bernoulli reference arm for a threshold θ, distance Δ and maximum wrong-decision probability ε. Ties are explicit: `inconclusive`, independent fair `half` tie-break, or `wrong`.
@@ -75,7 +86,7 @@ A `GenerationResult` retains:
 
 Provider-specific metadata is not erased merely to create a uniform table.
 
-`ModelCondition` separately identifies weights/checkpoint, artifact SHA-256 when locally inspectable, quantization, provider, backend and version, API mode, endpoint model ID, prompt/template identity, seed behavior and runtime environment. `BackendConfig` contains only provider ID, base URL, model ID, API mode, capability profile and an optional credential-environment-variable name. `BackendRegistry` is deliberately only an explicit lookup table; it is not a provider framework.
+`ModelCondition` separately identifies weights/checkpoint, artifact SHA-256 when locally inspectable, quantization, provider, backend and version, API mode, endpoint model ID, prompt/template identity, seed behavior and runtime environment. `BackendConfig` contains provider ID, base URL, model ID, API mode, capability profile, an optional credential-environment-variable name, an optional configuration ID, and a tiny explicit internal→wire parameter-name map. The configuration ID is distinct from provider identity so one provider can serve multiple model/API configurations simultaneously. The wire map exists because compatible endpoints can name the same requested control differently—for example local Chat endpoints use `max_tokens`, while current OpenAI Chat prefers `max_completion_tokens`; the serialized translated body is what is hashed as the effective request. Base URLs with embedded credentials are rejected because endpoint identity is retained for provenance. `BackendRegistry` is deliberately only an explicit lookup table; it is not a provider framework.
 
 ## Transport decision
 
@@ -93,7 +104,24 @@ Every requested scientific control is classified as one of:
 
 A requested control is transmitted only when its profile says `SUPPORTED`; all other statuses fail before the request is sent. An unrequested parameter is omitted. This prevents an SDK or common schema from creating fake parity.
 
-Before two conditions are compared scientifically, either restrict both to a demonstrated common control subset or preserve the control difference as part of the condition. In particular, seed, top-p, stop behavior, output-token semantics and prompt template must not be assumed identical across endpoints.
+Before two conditions are compared scientifically, either restrict both to a demonstrated common control subset or preserve the control difference as part of the condition. In particular, seed, top-p, stop behavior, output-token semantics and prompt template must not be assumed identical across endpoints. Protocol acceptance and scientific capability are intentionally distinct: a backend may accept a parameter while its reproducibility or semantic equivalence remains `UNKNOWN`.
+
+The bounded local preflight establishes the following status for the subset E-002 may need. “Blocked for selected artifact” means the installed server may document the API feature in general, but the exact Qwen3.5 artifact does not load, so no scientific capability is asserted for that condition.
+
+| Capability | Ollama 0.40.8 | LM Studio 0.4.26+4 | llama.cpp 0.7.0 + exact Qwen3.5 blob |
+| --- | --- | --- | --- |
+| model listing | SUPPORTED, observed | SUPPORTED, observed | blocked for selected artifact |
+| Chat Completions text generation | SUPPORTED, observed | SUPPORTED, observed | blocked for selected artifact |
+| Responses text generation | SUPPORTED transport, observed; not common control subset | SUPPORTED transport, observed; not common control subset | blocked for selected artifact |
+| temperature / top-p | SUPPORTED, documented and transmitted | SUPPORTED, documented and transmitted | blocked for selected artifact |
+| top-k through compatible Chat | UNKNOWN/not assumed portable | SUPPORTED/documented | blocked for selected artifact |
+| seed as a reproducibility control | UNKNOWN despite documented/accepted field | UNKNOWN despite documented/accepted field | blocked for selected artifact |
+| max output tokens | SUPPORTED, observed | SUPPORTED, observed | blocked for selected artifact |
+| stop sequence | SUPPORTED/documented; visible-marker probe still confounded by reasoning | SUPPORTED/documented; visible-marker probe still confounded by reasoning | blocked for selected artifact |
+| usage accounting / finish reason | SUPPORTED, observed | SUPPORTED, observed | blocked for selected artifact |
+| structured output / streaming | not required; not promoted by this preflight | not required; not promoted by this preflight | not required |
+
+No local probe established an `ACCEPTED_BUT_IGNORED` classification for a required field. Such a result must be recorded if a future differential probe demonstrates it; absence of evidence is not converted into `SUPPORTED`.
 
 ## Retry and failure semantics
 
@@ -113,10 +141,10 @@ Checked 2026-10-25 on an Apple M4 MacBook Air with 24 GB unified memory and macO
 - `/v1/chat/completions`: live probe returned HTTP 200, model ID, finish reason and usage.
 - `/v1/responses`: live stateless probe returned HTTP 200 and usage, but the documented portable Responses subset does not expose the same seed/stop surface as Chat Completions.
 - Documented Chat subset includes temperature, top-p, seed, max tokens and stop; top-k is not assumed portable through this OpenAI-compatible surface.
-- Two sequential short calls with seed 1701 produced the same message hash in this environment. Seed 1702 produced that same short truncated prefix too, so this probe establishes repeatability for that case but **not seed sensitivity or cross-runtime RNG equivalence**.
-- A bounded stop probe returned `finish_reason="stop"` with the stop marker absent from retained text, supporting stop-sequence operation for the tested request.
-- `qwen3.5:9b`: architecture qwen35, 9.7B parameters, Q4_K_M, 262144 context, renderer/parser qwen3.5. Its local GGUF blob has independently measured SHA-256 `dec52a44569a2a25341c4e4d3fee25846eed4f6f0b936278e3a3c900bb99d37c`.
-- A 32-token thinking-model smoke call used the entire completion budget in reasoning and produced empty visible text with a length stop. That is a truncation/output-budget preflight result, not model quality evidence.
+- The transport documents and accepts `seed`, but the bounded probe cannot promote its scientific semantics beyond **UNKNOWN**: seed 1701 twice and seed 1702 all exhausted the 64-token completion budget in hidden reasoning and returned empty visible text. Equal empty outputs do not demonstrate RNG equivalence or seed sensitivity.
+- A bounded stop request returned `finish_reason="stop"` with empty visible text. Because the model was still using the reasoning surface, that establishes endpoint acceptance/termination for this request but is not a clean visible-marker truncation test.
+- `qwen3.5:9b`: architecture qwen35, 9.7B parameters, Q4_K_M, 262144 context, renderer/parser qwen3.5. Its local GGUF blob has independently measured SHA-256 `dec52a44569a2a25341c4e4d3fee25846eed4f6f0b936278e3a3c900bb99d37c` over 6,594,462,816 bytes.
+- A separate 32-token Chat smoke call returned `finish_reason="length"`, empty visible `content`, and a nonempty provider-specific `message.reasoning` field while all 32 completion tokens were consumed. Output-token budgets therefore need a visible-answer/truncation preflight for thinking models; token accounting alone is not enough.
 
 Ollama documents its OpenAI compatibility at <https://docs.ollama.com/openai>.
 
@@ -126,10 +154,11 @@ Ollama documents its OpenAI compatibility at <https://docs.ollama.com/openai>.
 - Local server: `http://127.0.0.1:1234/v1`.
 - `/v1/models`, Chat Completions and Responses are available.
 - Chat Completions documents temperature, top-p, top-k, seed, max tokens and stop and applies the model prompt template automatically.
-- Two sequential short calls using the same seed 1701 produced different message hashes. The endpoint accepts `seed`, but in this tested MLX setup it must **not** be treated as a reproducibility guarantee. A different seed also produced a different trace.
-- A bounded stop probe returned `finish_reason="stop"` and omitted the marker; in that case the marker stopped generation before any visible answer.
-- Available Qwen probe model: `qwen/qwen3-4b-thinking-2507`, 4B, 4-bit **safetensors/MLX**, not GGUF. Do not treat it as an artifact-equivalent control for the Ollama Qwen3.5 model.
-- Its bounded Chat and Responses probes returned HTTP 200 with usage, but the short budget was again consumed by reasoning with no visible answer.
+- The endpoint documents and accepts `seed`, but reproducibility semantics remain **UNKNOWN** for scientific use. Two seed-1701 Chat calls both returned visible `PROBE`, yet provider-reported completion-token counts differed (57 versus 39); seed 1702 also returned `PROBE`. Visible equality on a trivial prompt is not evidence of identical stochastic traces.
+- A bounded stop request returned `finish_reason="stop"` and empty visible content. As with Ollama, the thinking surface prevents this from serving as a clean visible-marker truncation proof.
+- Available Qwen probe model: `qwen/qwen3-4b-thinking-2507`, selected variant `@4bit`, 4B, 4-bit **safetensors/MLX**, indexed size 2,279,153,047 bytes, not GGUF. Do not treat it as an artifact-equivalent control for the Ollama Qwen3.5 model.
+- `lms ps` reported effective context length 8192 and server `parallel=4` during this preflight. Calls were issued sequentially, but this server-level configuration is another reason the seed probe is not evidence of single-worker deterministic RNG semantics; a real E-002 condition must freeze or explicitly vary it.
+- A separate 32-token Chat smoke returned `finish_reason="length"`, empty visible `content`, provider-specific `reasoning_content`, and 30 reported reasoning tokens. The bounded Responses smoke likewise returned HTTP 200 and usage but no visible answer. Thinking/output-budget semantics therefore remain part of the condition, not a hidden transport detail.
 
 LM Studio documents its OpenAI-compatible endpoints at <https://lmstudio.ai/docs/developer/openai-compat>.
 
@@ -137,8 +166,8 @@ LM Studio documents its OpenAI-compatible endpoints at <https://lmstudio.ai/docs
 
 - `llama-server` version 0.7.0, build 11669, commit `620d2225c` on Darwin arm64.
 - The OpenAI-compatible Chat path is the intended portable surface when a model loads successfully.
-- A same-artifact control was attempted by serving the exact Ollama Qwen3.5 GGUF. The installed standalone llama.cpp rejected the model metadata (`qwen35.rope.dimension_sections` shape mismatch), so this exact artifact is **not currently a valid Ollama↔standalone-llama.cpp parity condition**.
-- No model was downloaded or converted to force a parity result.
+- A same-artifact control was attempted with the independently hashed Ollama Qwen3.5 blob `dec52a44569a2a25341c4e4d3fee25846eed4f6f0b936278e3a3c900bb99d37c`. Before inference, the installed standalone llama.cpp rejected it with `key qwen35.rope.dimension_sections has wrong array length; expected 4, got 3`, so this exact artifact is **not currently a valid Ollama↔standalone-llama.cpp parity condition**.
+- No model was downloaded, converted, patched or re-quantized to force a parity result.
 
 This negative result matters: “both use GGUF/llama.cpp lineage” does not establish that the same current artifact can be served by both installed runtimes.
 
@@ -158,13 +187,13 @@ For local conditions additionally record hardware class, memory/VRAM or unified-
 
 Checked against current official documentation on 2026-10-25. Prices below are per 1M text tokens and are **planning metadata only**; freeze exact prices again before any paid run.
 
-| Candidate | Compatible path | Version/pinning note | Standard text price | Scientific caution |
-| --- | --- | --- | --- | --- |
-| OpenAI GPT-5.5 snapshot `gpt-5.5-2026-04-23` | Chat Completions + Responses | Dated snapshot is explicitly pin-able | $5 input / $30 output | Expensive, but much cleaner version identity than a moving alias |
-| Groq `openai/gpt-oss-20b` | OpenAI-compatible Chat/Responses | Provider model ID; backend fingerprint should be recorded when returned | $0.075 input / $0.30 output | Compatibility differs: e.g. temperature 0 is translated; provider behavior is not local-weight equivalence |
-| OpenRouter explicit model + explicit provider | OpenAI-compatible router | Pin explicit model/version and provider; disable fallback | underlying model/provider price | Default routing/fallback can silently change provider; unsuitable unless routing is frozen and recorded |
+| Candidate | Compatible path | Version/pinning note | Required-control evidence | Current planning price / limits | Scientific caution |
+| --- | --- | --- | --- | --- | --- |
+| OpenAI GPT-5.5 snapshot `gpt-5.5-2026-04-23` | Chat Completions + Responses | Dated snapshot is explicitly pin-able; record returned model/system fingerprint and service tier | Chat API documents temperature/top-p/stop and best-effort seed reproducibility; exact snapshot must still be capability-probed before use | $5 input / $30 output per 1M; published limits are usage-tier dependent (e.g. Build 5K RPM/1M TPM, Launch 10K RPM/4M TPM) | Seed determinism is explicitly not guaranteed; service tier and backend fingerprint are condition metadata |
+| Groq `openai/gpt-oss-20b` | OpenAI-compatible Chat + Responses | No dated weight snapshot was established in this preflight; freeze model ID, date, returned metadata and any revision/fingerprint exposed | Groq documents seed, temperature, top-p, stop and reasoning controls; temperature 0 is translated to 1e-8 | $0.075 input / $0.30 output per 1M; developer 250K TPM / 1K RPM; 131072 context, 65536 max completion | Provider-hosted `gpt-oss-20b` is not presumed weight-identical to the local MXFP4 artifact; compatibility has known semantic differences |
+| OpenRouter explicit model + one explicit provider endpoint | Chat Completions portable path | Pin explicit model plus full provider slug where needed; set provider order/only and `allow_fallbacks:false`; record actual routed provider | Parameter support inherits the selected downstream provider; use `require_parameters` as a routing guard but still capability-probe the pinned route | Underlying model/provider token price; paid-model limits are generally provider-derived rather than plan-wide | Default routing and provider fallback are scientifically unsafe because the serving provider can change between trials |
 
-OpenAI pricing/model metadata: <https://developers.openai.com/api/docs/models/gpt-5.5> and <https://developers.openai.com/api/docs/pricing>. Groq model and compatibility documentation: <https://console.groq.com/docs/models> and <https://console.groq.com/docs/openai>. OpenRouter routing must be configured so provider fallback cannot silently change the condition.
+OpenAI pricing/model metadata: <https://developers.openai.com/api/docs/models/gpt-5.5>, <https://developers.openai.com/api/docs/pricing>, and the Chat reproducibility guidance. Groq model, reasoning and compatibility documentation: <https://console.groq.com/docs/models>, <https://console.groq.com/docs/reasoning>, and <https://console.groq.com/docs/openai>. OpenRouter must be configured with a pinned provider and fallbacks disabled; its default is provider routing/fallback, which is useful operationally but changes the evaluation condition.
 
 No hosted request was made in this preflight. Credentials are not required merely to support configuration for a future endpoint.
 
@@ -176,22 +205,24 @@ The pilot should contain at least two task families without an LLM judge.
 
 Preferred low-contamination stratum for repeated-sampling method validation. Generate instances from a frozen public algorithm version and deterministic task seed; require a narrow machine-checkable output such as one integer or exact token. The oracle is executable and the repository can own the generator rather than redistribute third-party questions.
 
-Risk: an over-strict parser can falsely reject a substantively correct response. Freeze the output contract and include positive/negative parser tests. Keep development task seeds separate from final task seeds.
+This is a **design candidate, not yet a versioned dataset**. It cannot enter a preregistered run until the generator/version, seed space, development/final split, parser and license are actually frozen. An over-strict parser can falsely reject a substantively correct response, so positive/negative parser controls are required.
 
-### 2. LiveCodeBench release_v6 coding tasks
+### 2. LiveCodeBench `release_v6` coding tasks
 
-Candidate executable coding stratum. The public project code is MIT-licensed and release_v6 contains 1,055 problems through April 2025. Execution/checker outcomes avoid an LLM judge, but timeout/runtime configuration is part of the oracle and can cause small score variation. Because problem material originates from external programming platforms, do not copy benchmark contents into this repository without a separate redistribution review; prefer stable IDs/source acquisition and hashes.
+Candidate external executable coding stratum. The inspected public repository revision is `28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24`; repository code is MIT-licensed and `release_v6` contains 1,055 problems released from May 2023 through April 2025. Execution/checker outcomes avoid an LLM judge, but the oracle is not infallible: the official `ERRATA.md` records multiple-output tasks that can mark valid answers incorrect, unsupported interactive problems, and erroneous test cases. Timeout/runtime/checker configuration is therefore part of the oracle condition.
 
-Release-date filtering reduces, but does not eliminate, contamination. For 2026-era models, an April-2025 cutoff may already be in training data, so release_v6 is better treated as a dated executable stress/development stratum unless a model-specific cutoff analysis justifies stronger claims.
+Because problem material originates from external programming platforms, repository-code licensing does not by itself settle redistribution rights for every problem statement/test artifact. Do not copy benchmark contents into this repository without a separate redistribution review; prefer stable IDs/source acquisition and hashes. Release-date filtering reduces, but does not eliminate, contamination. For 2026-era models, an April-2025 cutoff may already be in training data, so `release_v6` is better treated as a dated executable stress/development stratum unless a model-specific cutoff analysis justifies stronger claims.
 
-GSM8K can remain a cheap pipeline-development fallback because its numeric oracle is simple and its repository is permissively licensed, but its age/saturation makes it a poor final contamination-sensitive stratum.
+### 3. GSM8K original test split
+
+The archived `openai/grade-school-math` repository at commit `3101c7d5072418e28b9008a6636bde82a006892c` is MIT-licensed and defines the original GSM8K train/test JSONL plus a reference `####` final-number extraction convention. This makes it a cheap objective-oracle pipeline-development candidate. Parser normalization still needs explicit tests (equivalent numeric formats, commas/signs/decimals), and the 2021 benchmark is old and heavily exposed, so it is a poor final contamination-sensitive stratum for 2026-era models.
 
 ## Proposed initial local subject conditions
 
 Keep the first real pilot small enough to interpret:
 
-1. **Ollama Qwen3.5 9B Q4_K_M** — exact local artifact identity already inspectable; smaller/faster primary condition.
-2. **Ollama GPT-OSS 20B** — stronger/larger local contrast on the same serving backend, subject to final exact artifact identity capture before use.
+1. **Ollama Qwen3.5 9B Q4_K_M** — exact local model blob SHA-256 `dec52a44569a2a25341c4e4d3fee25846eed4f6f0b936278e3a3c900bb99d37c` (6,594,462,816 bytes), qwen35 architecture, 9.7B parameters, 262144 context; smaller/faster primary condition.
+2. **Ollama GPT-OSS 20B** — larger, distinct-model local contrast on the same serving backend: architecture `gptoss`, 20.9B parameters, MXFP4, 131072 context, exact local model blob SHA-256 `e7b273f9636059a689e3ddcab3716e4f65abe0143ac978e46673ad0e52d09efb` (13,793,422,144 bytes). No quality ordering versus Qwen3.5 is assumed before task-specific evidence.
 3. **Optional backend-parity control only after demonstrated artifact compatibility.** The attempted Qwen3.5 Ollama↔standalone llama.cpp control currently fails the capability gate and must not be represented as parity.
 
 LM Studio Qwen3 4B Thinking is useful for transport/capability development, but mixing checkpoint and backend simultaneously makes it a poor same-model parity control.
