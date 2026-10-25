@@ -218,3 +218,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Private local acquisition and run staging
+.private-drive-cache/
+.private/
+runs/
+.env*
+*.pem
+*credentials*.json
