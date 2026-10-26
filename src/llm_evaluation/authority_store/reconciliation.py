@@ -12,6 +12,7 @@ from .contracts import (
     PublicImpact,
     ReconciliationObligation,
     ReconciliationStatus,
+    SemanticState,
     VerifiedPublicationReceipt,
 )
 
@@ -24,7 +25,6 @@ class RemoteRaceError(RuntimeError):
     pass
 
 
-_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SECRET_PATTERNS = (
     re.compile(rb"ya29\.[0-9A-Za-z._-]+"),
     re.compile(rb"AIza[0-9A-Za-z_-]{20,}"),
@@ -34,19 +34,22 @@ _SECRET_PATTERNS = (
 )
 
 
-def _require_sha(value: str) -> None:
-    if not _SHA256.fullmatch(value):
-        raise ValueError("semantic hash must be lowercase SHA-256")
-
-
 def classify_reconciliation(
-    semantic_sha256: str,
+    semantic: SemanticState,
     last: LastReconciledState | None,
     public_impact: PublicImpact,
 ) -> ReconciliationObligation:
-    _require_sha(semantic_sha256)
-    previous = None if last is None else last.semantic_sha256
-    if previous == semantic_sha256:
+    current_identity = (
+        semantic.logical_role,
+        semantic.projection_schema,
+        semantic.sha256,
+    )
+    previous_identity = (
+        None
+        if last is None
+        else (last.logical_role, last.projection_schema, last.semantic_sha256)
+    )
+    if previous_identity == current_identity:
         status = ReconciliationStatus.NONE
     elif public_impact is PublicImpact.NONE:
         status = ReconciliationStatus.NONE
@@ -56,8 +59,12 @@ def classify_reconciliation(
         status = ReconciliationStatus.BLOCKED
     return ReconciliationObligation(
         status=status,
-        semantic_sha256=semantic_sha256,
-        previous_semantic_sha256=previous,
+        logical_role=semantic.logical_role,
+        projection_schema=semantic.projection_schema,
+        semantic_sha256=semantic.sha256,
+        previous_logical_role=None if last is None else last.logical_role,
+        previous_projection_schema=None if last is None else last.projection_schema,
+        previous_semantic_sha256=None if last is None else last.semantic_sha256,
         public_impact=public_impact,
     )
 
@@ -68,9 +75,19 @@ def complete_reconciliation(
 ) -> ReconciliationObligation:
     if obligation.status is not ReconciliationStatus.REQUIRED:
         raise ValueError("only a REQUIRED obligation can become COMPLETE")
-    if receipt.semantic_sha256 != obligation.semantic_sha256:
+    obligation_identity = (
+        obligation.logical_role,
+        obligation.projection_schema,
+        obligation.semantic_sha256,
+    )
+    receipt_identity = (
+        receipt.logical_role,
+        receipt.projection_schema,
+        receipt.semantic_sha256,
+    )
+    if receipt_identity != obligation_identity:
         raise ValueError(
-            "publication receipt does not bind the required semantic state"
+            "publication receipt does not bind the required semantic identity"
         )
     if receipt.resulting_commit != receipt.readback_commit:
         raise ValueError("publication commit was not verified by exact readback")
@@ -126,7 +143,7 @@ def verify_remote_base(expected_oid: str, observed_oid: str) -> None:
 def _checkpoint_bytes(state: LastReconciledState) -> bytes:
     return (
         json.dumps(
-            {"schema": "llm-evaluation-last-reconciled-v1", **state.model_dump()},
+            {"schema": "llm-evaluation-last-reconciled-v2", **state.model_dump()},
             sort_keys=True,
             separators=(",", ":"),
         )
@@ -146,7 +163,7 @@ def read_last_reconciled_state(path: Path) -> LastReconciledState:
     raw = json.loads(path.read_bytes())
     if (
         not isinstance(raw, dict)
-        or raw.pop("schema", None) != "llm-evaluation-last-reconciled-v1"
+        or raw.pop("schema", None) != "llm-evaluation-last-reconciled-v2"
     ):
         raise ValueError("invalid last-reconciled checkpoint schema")
     return LastReconciledState.model_validate(raw)

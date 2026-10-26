@@ -23,14 +23,14 @@ jobs:
         run: |
           python -m pip install uv==0.8.4
           uv lock --check
-          uv sync --frozen --group dev
+          uv sync --frozen --group dev --extra drive
       - name: Static checks and branch coverage
         run: |
-          uv run --frozen ruff check src tests
-          uv run --frozen mypy --python-version 3.11 src
-          uv run --frozen coverage erase
-          uv run --frozen coverage run --branch -m unittest discover -s tests -v
-          uv run --frozen coverage report --include='src/*' --fail-under=80
+          uv run --frozen --extra drive ruff check src tests
+          uv run --frozen --extra drive mypy --python-version 3.11 src
+          uv run --frozen --extra drive coverage erase
+          uv run --frozen --extra drive coverage run --branch -m unittest discover -s tests -v
+          uv run --frozen --extra drive coverage report --include='src/*' --fail-under=80
       - name: Build and exercise installed entrypoint
         shell: bash
         run: |
@@ -41,6 +41,16 @@ jobs:
           python -m build --sdist --wheel --outdir "$build_dir/dist"
           python -m venv "$build_dir/venv"
           "$build_dir/venv/bin/pip" install "$build_dir"/dist/*.whl
+          "$build_dir/venv/bin/python" - <<'PY_BASE'
+          from importlib.metadata import PackageNotFoundError, version
+          import llm_evaluation.authority_store.contracts
+          for distribution in ("google-api-python-client", "google-auth"):
+              try:
+                  version(distribution)
+              except PackageNotFoundError:
+                  continue
+              raise AssertionError(f"base wheel unexpectedly installed {distribution}")
+          PY_BASE
           (unset PYTHONPATH; "$build_dir/venv/bin/llm-evaluation" fixtures/e002_synthetic.json --k 2 > "$build_dir/preview.json")
           python -c 'import json,sys; assert json.load(open(sys.argv[1]))["macro"]["marginal"] == 0.5' "$build_dir/preview.json"
           (unset PYTHONPATH; "$build_dir/venv/bin/llm-evaluation-stopping" > "$build_dir/stopping-preview.json")

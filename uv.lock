@@ -561,9 +561,13 @@ name = "llm-evaluation"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "pydantic" },
+]
+
+[package.optional-dependencies]
+drive = [
     { name = "google-api-python-client" },
     { name = "google-auth" },
-    { name = "pydantic" },
 ]
 
 [package.dev-dependencies]
@@ -575,10 +579,11 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "google-api-python-client", specifier = "==2.201.0" },
-    { name = "google-auth", specifier = "==2.62.0" },
+    { name = "google-api-python-client", marker = "extra == 'drive'", specifier = "==2.201.0" },
+    { name = "google-auth", marker = "extra == 'drive'", specifier = "==2.62.0" },
     { name = "pydantic", specifier = "==2.14.1" },
 ]
+provides-extras = ["drive"]
 
 [package.metadata.requires-dev]
 dev = [

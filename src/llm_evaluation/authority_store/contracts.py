@@ -110,8 +110,30 @@ class AcquisitionReceipt(ClosedRecord):
 
 
 class LastReconciledState(ClosedRecord):
+    logical_role: str
+    projection_schema: str
     semantic_sha256: str
     public_commit: str | None = None
+
+    @classmethod
+    def from_semantic(
+        cls, semantic: SemanticState, *, public_commit: str | None = None
+    ) -> "LastReconciledState":
+        return cls(
+            logical_role=semantic.logical_role,
+            projection_schema=semantic.projection_schema,
+            semantic_sha256=semantic.sha256,
+            public_commit=public_commit,
+        )
+
+    @field_validator("logical_role", "projection_schema")
+    @classmethod
+    def nonempty_identity(cls, value: str) -> str:
+        if not value or value != value.strip():
+            raise ValueError(
+                "reconciliation identity strings must be non-empty and trimmed"
+            )
+        return value
 
     @field_validator("semantic_sha256")
     @classmethod
@@ -130,9 +152,29 @@ class LastReconciledState(ClosedRecord):
 
 class ReconciliationObligation(ClosedRecord):
     status: ReconciliationStatus
+    logical_role: str
+    projection_schema: str
     semantic_sha256: str
+    previous_logical_role: str | None
+    previous_projection_schema: str | None
     previous_semantic_sha256: str | None
     public_impact: PublicImpact
+
+    @field_validator("logical_role", "projection_schema")
+    @classmethod
+    def nonempty_identity(cls, value: str) -> str:
+        if not value or value != value.strip():
+            raise ValueError(
+                "reconciliation identity strings must be non-empty and trimmed"
+            )
+        return value
+
+    @field_validator("previous_logical_role", "previous_projection_schema")
+    @classmethod
+    def optional_identity(cls, value: str | None) -> str | None:
+        if value is not None and (not value or value != value.strip()):
+            raise ValueError("previous identity strings must be non-empty and trimmed")
+        return value
 
     @field_validator("semantic_sha256", "previous_semantic_sha256")
     @classmethod
@@ -143,11 +185,22 @@ class ReconciliationObligation(ClosedRecord):
 
 
 class VerifiedPublicationReceipt(ClosedRecord):
+    logical_role: str
+    projection_schema: str
     semantic_sha256: str
     expected_base: str
     resulting_commit: str
     readback_commit: str
     public_payload_sha256: str
+
+    @field_validator("logical_role", "projection_schema")
+    @classmethod
+    def nonempty_identity(cls, value: str) -> str:
+        if not value or value != value.strip():
+            raise ValueError(
+                "publication identity strings must be non-empty and trimmed"
+            )
+        return value
 
     @field_validator("semantic_sha256", "public_payload_sha256")
     @classmethod

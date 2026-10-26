@@ -12,7 +12,7 @@
 
 ## Task 2.1 — Dependency and strict contract boundary
 
-- Add exact current Pydantic v2 and official Google Python client/auth dependencies.
+- Keep Pydantic in the base package; expose the official Google Python client/auth libraries only through the explicit `drive` optional dependency extra so ordinary evaluation/runtime installs do not acquire Google coupling.
 - Add strict/frozen Pydantic contracts for private registered identity, capability, Drive/source observation, semantic state, acquisition receipt, last-reconciled state, reconciliation obligation, and verified publication receipt.
 - Keep read-only and future mutation capability distinct. A read-only source observation has no Docs revision field and cannot gain mutation authority by attaching one.
 - RED tests: strict coercion/extra-field rejection, no `headRevisionId`/`revisionId` in read-only records, all four reconciliation statuses distinct.
@@ -43,10 +43,10 @@
 
 ## Task 2.5 — Explicit last-reconciled state and four-way classification
 
-- Store only the smallest private checkpoint needed to answer what semantic hash was last verified as reconciled; do not put Drive IDs, revisions, source text, or credentials in public Git.
-- Classification rules: unchanged semantic hash -> `NONE`; changed + project-declared private/no-public impact -> `NONE`; changed + explicit public/executable impact -> `REQUIRED`; changed + unknown/unsafe impact -> `BLOCKED`; only a matching verified publication receipt may move a `REQUIRED` obligation to `COMPLETE`.
+- Store only the smallest private checkpoint needed to answer which public-safe semantic identity `(logical_role, projection_schema, semantic_sha256)` was last verified as reconciled; do not put Drive IDs, revisions, source text, or credentials in public Git.
+- Classification rules: unchanged public-safe semantic identity `(logical_role, projection_schema, semantic_sha256)` -> `NONE`; changed + project-declared private/no-public impact -> `NONE`; changed + explicit public/executable impact -> `REQUIRED`; changed + unknown/unsafe impact -> `BLOCKED`; only a matching verified publication receipt may move a `REQUIRED` obligation to `COMPLETE`.
 - The authority-store layer never decides scientific meaning; public impact is an explicit caller/project judgment.
-- RED tests: statuses cannot collapse; mismatched receipt cannot complete; branch edit alone cannot complete.
+- RED tests: statuses cannot collapse; same hash with a different logical role cannot complete; same role/hash under a different projection schema cannot complete; branch edit alone cannot complete.
 
 ## Task 2.6 — Publication and Git-race boundary
 
@@ -65,3 +65,9 @@
 ## Completion boundary for this session
 
 Task 2 may be reported as **implemented/verified** for its deterministic foundation only after fresh gates pass. `live verified` requires the bounded local OAuth gate. `COMPLETE` reconciliation requires a real separately authorized public transaction and verified readback; a synthetic test demonstrates the state machine but is not a completed reconciliation.
+
+## Integration gate after Task 1
+
+Task 2 intentionally remains based on the pre-Task-1 public `main`. Do not independently recreate Task 1's pytest/Hypothesis/httpx/Pydantic tooling changes here. After Task 1 is separately accepted and merged, rebase Task 2 onto that resulting `main`, reconcile `pyproject.toml` and `uv.lock` against the merged dependency/tooling baseline, and only then run the combined pytest/coverage/package gate. The pre-rebase Task-2 gate is focused verification, not the combined integration gate.
+
+Candidate later Task-3 extraction/interoperability requirement: if persistent/shared and formal llama-server lifecycle owners are expected to coexist cooperatively, all such owners should use the same physical-resource lease semantics. Do not migrate the shared router or weaken Task 1's external-conflict detector as part of Task 2.

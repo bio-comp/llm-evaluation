@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from llm_evaluation.authority_store.contracts import (
     LastReconciledState,
     PublicImpact,
     ReconciliationStatus,
+    SemanticState,
     SourceObservation,
     VerifiedPublicationReceipt,
 )
@@ -46,6 +48,19 @@ from llm_evaluation.authority_store.reconciliation import (
 FILE_ID = "fake-file-id-1234567890"
 PARENT_ID = "fake-parent-id-1234567890"
 MIME = "application/vnd.google-apps.document"
+
+
+def semantic_state(
+    *,
+    logical_role: str = "README",
+    projection_schema: str = "native-doc-text-v1",
+    sha256: str = "a" * 64,
+) -> SemanticState:
+    return SemanticState(
+        logical_role=logical_role,
+        projection_schema=projection_schema,
+        sha256=sha256,
+    )
 
 
 def identity() -> AuthorityObjectIdentity:
@@ -287,9 +302,11 @@ class AcquisitionTests(unittest.TestCase):
 
 class ReconciliationTests(unittest.TestCase):
     def test_four_way_classification_does_not_collapse(self):
-        current = "a" * 64
-        same = LastReconciledState(semantic_sha256=current, public_commit="1" * 40)
-        old = LastReconciledState(semantic_sha256="b" * 64, public_commit="1" * 40)
+        current = semantic_state()
+        same = LastReconciledState.from_semantic(current, public_commit="1" * 40)
+        old = LastReconciledState.from_semantic(
+            semantic_state(sha256="b" * 64), public_commit="1" * 40
+        )
         self.assertEqual(
             classify_reconciliation(current, same, PublicImpact.REQUIRED).status,
             ReconciliationStatus.NONE,
@@ -300,12 +317,17 @@ class ReconciliationTests(unittest.TestCase):
         )
         required = classify_reconciliation(current, old, PublicImpact.REQUIRED)
         self.assertEqual(required.status, ReconciliationStatus.REQUIRED)
+        self.assertEqual(required.logical_role, current.logical_role)
+        self.assertEqual(required.projection_schema, current.projection_schema)
+        self.assertEqual(required.semantic_sha256, current.sha256)
         self.assertEqual(
             classify_reconciliation(current, old, PublicImpact.UNKNOWN).status,
             ReconciliationStatus.BLOCKED,
         )
         receipt = VerifiedPublicationReceipt(
-            semantic_sha256=current,
+            logical_role=current.logical_role,
+            projection_schema=current.projection_schema,
+            semantic_sha256=current.sha256,
             expected_base="1" * 40,
             resulting_commit="2" * 40,
             readback_commit="2" * 40,
@@ -319,6 +341,46 @@ class ReconciliationTests(unittest.TestCase):
             complete_reconciliation(
                 required, receipt.model_copy(update={"semantic_sha256": "d" * 64})
             )
+
+    def test_same_hash_cannot_complete_different_logical_role(self):
+        current = semantic_state(logical_role="README")
+        last_other_object = LastReconciledState.from_semantic(
+            semantic_state(logical_role="DECISIONS", sha256=current.sha256)
+        )
+        required = classify_reconciliation(
+            current, last_other_object, PublicImpact.REQUIRED
+        )
+        self.assertEqual(required.status, ReconciliationStatus.REQUIRED)
+        wrong_object = VerifiedPublicationReceipt(
+            logical_role="DECISIONS",
+            projection_schema=current.projection_schema,
+            semantic_sha256=current.sha256,
+            expected_base="1" * 40,
+            resulting_commit="2" * 40,
+            readback_commit="2" * 40,
+            public_payload_sha256="c" * 64,
+        )
+        with self.assertRaisesRegex(ValueError, "semantic identity"):
+            complete_reconciliation(required, wrong_object)
+
+    def test_same_role_and_hash_cannot_cross_projection_schema(self):
+        current = semantic_state(projection_schema="native-doc-text-v2")
+        last = LastReconciledState.from_semantic(
+            semantic_state(projection_schema="native-doc-text-v1")
+        )
+        required = classify_reconciliation(current, last, PublicImpact.REQUIRED)
+        self.assertEqual(required.status, ReconciliationStatus.REQUIRED)
+        wrong_schema = VerifiedPublicationReceipt(
+            logical_role=current.logical_role,
+            projection_schema="native-doc-text-v1",
+            semantic_sha256=current.sha256,
+            expected_base="1" * 40,
+            resulting_commit="2" * 40,
+            readback_commit="2" * 40,
+            public_payload_sha256="c" * 64,
+        )
+        with self.assertRaisesRegex(ValueError, "semantic identity"):
+            complete_reconciliation(required, wrong_schema)
 
     def test_publication_filter_has_positive_and_negative_controls(self):
         safe = b"Derived public implication only.\n"
@@ -349,16 +411,43 @@ class ReconciliationTests(unittest.TestCase):
             verify_remote_base("a" * 40, "b" * 40)
 
     def test_last_reconciled_checkpoint_is_private_minimal_and_read_back(self):
-        state = LastReconciledState(semantic_sha256="a" * 64, public_commit="b" * 40)
+        state = LastReconciledState.from_semantic(
+            semantic_state(), public_commit="b" * 40
+        )
         with tempfile.TemporaryDirectory() as td:
             private = Path(td) / ".private-drive-cache" / "last.json"
             write_last_reconciled_state(private, state)
             self.assertEqual(read_last_reconciled_state(private), state)
             raw = private.read_text()
+            self.assertIn('"logical_role":"README"', raw)
+            self.assertIn('"projection_schema":"native-doc-text-v1"', raw)
+            self.assertIn('"semantic_sha256":"' + "a" * 64 + '"', raw)
             self.assertNotIn(FILE_ID, raw)
             self.assertNotIn(PARENT_ID, raw)
+            legacy = Path(td) / ".private-drive-cache" / "legacy-v1.json"
+            legacy.write_text(
+                json.dumps(
+                    {
+                        "schema": "llm-evaluation-last-reconciled-v1",
+                        "semantic_sha256": "a" * 64,
+                        "public_commit": "b" * 40,
+                    }
+                )
+            )
+            with self.assertRaises(ValueError):
+                read_last_reconciled_state(legacy)
             with self.assertRaises(ValueError):
                 write_last_reconciled_state(Path(td) / "tracked.json", state)
+
+
+class PackagingTests(unittest.TestCase):
+    def test_google_clients_are_optional_drive_extra(self):
+        config = tomllib.loads(Path("pyproject.toml").read_text())
+        base = config["project"]["dependencies"]
+        drive = config["project"]["optional-dependencies"]["drive"]
+        self.assertFalse(any(item.startswith("google-") for item in base))
+        self.assertIn("google-api-python-client==2.201.0", drive)
+        self.assertIn("google-auth==2.62.0", drive)
 
 
 class TransportTests(unittest.TestCase):
