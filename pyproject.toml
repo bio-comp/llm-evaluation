@@ -7,7 +7,11 @@ name = "llm-evaluation"
 version = "0.1.0"
 description = "Public, reproducible evaluation-methodology diagnostics"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "google-api-python-client==2.201.0",
+    "google-auth==2.62.0",
+    "pydantic==2.14.1",
+]
 
 [project.scripts]
 llm-evaluation = "llm_evaluation.cli:main"
