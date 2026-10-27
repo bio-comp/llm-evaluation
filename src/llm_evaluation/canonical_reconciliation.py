@@ -13,9 +13,9 @@ from canonical_sync.records import GitPublicationReceiptRecord
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _GIT_OID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
-_PUBLIC_REPOSITORY = "bio-comp/llm-evaluation"
-_PUBLIC_MAIN_REF = "refs/heads/main"
-_PUBLIC_VERIFY_CHECK = "verify"
+_PUBLIC_REPOSITORY: Literal["bio-comp/llm-evaluation"] = "bio-comp/llm-evaluation"
+_PUBLIC_MAIN_REF: Literal["refs/heads/main"] = "refs/heads/main"
+_PUBLIC_VERIFY_CHECK: Literal["verify"] = "verify"
 _PUBLIC_GIT_REMOTES = frozenset(
     {
         "https://github.com/bio-comp/llm-evaluation.git",
