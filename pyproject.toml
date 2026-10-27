@@ -35,3 +35,8 @@ canonical-sync = { workspace = true }
 
 [tool.uv.workspace]
 members = ["packages/canonical-sync"]
+
+[tool.pytest.ini_options]
+markers = [
+    "live_drive: explicit read-only Google Drive authority verification",
+]
