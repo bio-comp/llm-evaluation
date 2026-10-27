@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import hashlib
+import platform
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from importlib.metadata import PackageNotFoundError, version
 
 from .codec import canonical_record_hash
 from .domain import AuthorityObjectSpec, AuthorityProfile, SourceContent, SourceObservation
 from .errors import AuthorityMismatchError, SourceMovementError
 from .records import (
+    AcquisitionProvenanceRecord,
     SemanticEntryRecord,
     SnapshotObservationRecord,
     SnapshotStateRecord,
@@ -81,6 +84,23 @@ def _observe_memberships(
     return result
 
 
+def _acquisition_provenance(transport: SourceTransport) -> AcquisitionProvenanceRecord:
+    try:
+        runner_version = version("canonical-sync")
+    except PackageNotFoundError:
+        runner_version = "uninstalled"
+    transport_provenance = transport.provenance
+    return AcquisitionProvenanceRecord(
+        runner_name="canonical-sync",
+        runner_version=runner_version,
+        python_implementation=platform.python_implementation(),
+        python_version=platform.python_version(),
+        transport_name=transport_provenance.transport_name,
+        transport_version=transport_provenance.transport_version,
+        auth_provenance=transport_provenance.auth_provenance,
+    )
+
+
 def _acquire_one_attempt(
     transport: SourceTransport,
     profile: AuthorityProfile,
@@ -143,6 +163,7 @@ def _acquire_one_attempt(
         authority_spec_sha256=profile.spec_sha256,
         acquired_at=clock(),
         attempt_count=attempt_count,
+        provenance=_acquisition_provenance(transport),
         sources=tuple(
             SourceObservationRecord(
                 logical_path=spec.logical_path,

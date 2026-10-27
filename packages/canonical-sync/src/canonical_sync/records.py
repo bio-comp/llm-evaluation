@@ -240,13 +240,13 @@ class SemanticEntryRecord(StrictFrozenRecord):
 
 class SnapshotStateRecord(StrictFrozenRecord):
     record_type: Literal["snapshot_state"] = "snapshot_state"
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     authority_spec_sha256: str
     entries: tuple[SemanticEntryRecord, ...]
 
     @field_validator("authority_spec_sha256")
     @classmethod
-    def validate_profile_hash(cls, value: str) -> str:
+    def validate_authority_spec_hash(cls, value: str) -> str:
         return _sha256(value)
 
     @field_validator("entries")
@@ -312,13 +312,37 @@ class SourceObservationRecord(StrictFrozenRecord):
         return _sha256(value)
 
 
+class AcquisitionProvenanceRecord(StrictFrozenRecord):
+    runner_name: str
+    runner_version: str
+    python_implementation: str
+    python_version: str
+    transport_name: str
+    transport_version: str
+    auth_provenance: str
+
+    @field_validator(
+        "runner_name",
+        "runner_version",
+        "python_implementation",
+        "python_version",
+        "transport_name",
+        "transport_version",
+        "auth_provenance",
+    )
+    @classmethod
+    def validate_provenance_strings(cls, value: str) -> str:
+        return _nonempty_trimmed(value, label="acquisition provenance field")
+
+
 class SnapshotObservationRecord(StrictFrozenRecord):
     record_type: Literal["snapshot_observation"] = "snapshot_observation"
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     snapshot_state_sha256: str
     authority_spec_sha256: str
     acquired_at: datetime
     attempt_count: int
+    provenance: AcquisitionProvenanceRecord
     sources: tuple[SourceObservationRecord, ...]
 
     @field_validator("snapshot_state_sha256", "authority_spec_sha256")
@@ -360,7 +384,7 @@ class SnapshotObservationRecord(StrictFrozenRecord):
 
 class AcquisitionReceiptRecord(StrictFrozenRecord):
     record_type: Literal["acquisition_receipt"] = "acquisition_receipt"
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     started_at: datetime
     ended_at: datetime
     authority_spec_sha256: str

@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from collections import Counter
 
-from canonical_sync.domain import AuthorityObjectSpec, SourceContent, SourceObservation
+from canonical_sync.domain import (
+    AuthorityObjectSpec,
+    SourceContent,
+    SourceObservation,
+    TransportProvenance,
+)
 
 
 class FakeTransport:
@@ -22,6 +27,14 @@ class FakeTransport:
         self._failures = failures or {}
         self.calls: Counter[tuple[str, str]] = Counter()
         self.read_order: list[str] = []
+
+    @property
+    def provenance(self) -> TransportProvenance:
+        return TransportProvenance(
+            transport_name="fake-transport",
+            transport_version="test-v1",
+            auth_provenance="test-injected",
+        )
 
     def _maybe_fail(self, operation: str, key: str) -> None:
         failure = self._failures.get((operation, key))

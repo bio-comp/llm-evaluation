@@ -63,6 +63,13 @@ class SourceContent:
     data: bytes
 
 
+@dataclass(frozen=True, slots=True)
+class TransportProvenance:
+    transport_name: str
+    transport_version: str
+    auth_provenance: str
+
+
 def profile_from_record(record: AuthorityProfileRecord) -> AuthorityProfile:
     specification = AuthoritySpecificationRecord(
         objects=record.objects,

@@ -5,11 +5,12 @@ import re
 import time
 from collections.abc import Callable
 from datetime import datetime
+from importlib.metadata import PackageNotFoundError, version
 from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from .domain import AuthorityObjectSpec, SourceContent, SourceObservation
+from .domain import AuthorityObjectSpec, SourceContent, SourceObservation, TransportProvenance
 from .errors import (
     TransportAuthError,
     TransportNotFoundError,
@@ -148,6 +149,8 @@ class GoogleDriveTransport:
         http_error_types: tuple[type[BaseException], ...],
         request_attempts: int = 3,
         sleeper: Callable[[float], None] = time.sleep,
+        transport_version: str = "injected-client",
+        auth_provenance: str = "injected-client",
     ) -> None:
         if type(request_attempts) is not int or request_attempts < 1:
             raise ValueError("request_attempts must be a positive integer")
@@ -155,6 +158,15 @@ class GoogleDriveTransport:
         self._http_error_types = http_error_types
         self._request_attempts = request_attempts
         self._sleeper = sleeper
+        self._provenance = TransportProvenance(
+            transport_name="google-drive-v3",
+            transport_version=transport_version,
+            auth_provenance=auth_provenance,
+        )
+
+    @property
+    def provenance(self) -> TransportProvenance:
+        return self._provenance
 
     @classmethod
     def from_application_default(cls, *, request_attempts: int = 3) -> GoogleDriveTransport:
@@ -170,10 +182,17 @@ class GoogleDriveTransport:
             drive_service = build("drive", "v3", credentials=credentials, cache_discovery=False)
         except (DefaultCredentialsError, GoogleAuthError, OSError) as exc:
             raise TransportAuthError("Google application-default read credentials are unavailable") from exc
+        try:
+            client_version = version("google-api-python-client")
+        except PackageNotFoundError:
+            client_version = "unknown"
+        credential_type = f"{type(credentials).__module__}.{type(credentials).__qualname__}"
         return cls(
             drive_service=drive_service,
             http_error_types=(HttpError,),
             request_attempts=request_attempts,
+            transport_version=client_version,
+            auth_provenance=f"adc:{credential_type}",
         )
 
     def _execute(self, factory: Callable[[], _Request]) -> object:

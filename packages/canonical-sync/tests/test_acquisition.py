@@ -110,6 +110,19 @@ def test_stable_multi_object_acquisition_builds_deterministic_semantic_state() -
     assert {entry.logical_path for entry in result.state.entries} == {"README.md", "DECISIONS.md"}
 
 
+def test_observation_identity_records_transport_runtime_and_auth_provenance() -> None:
+    result = acquire_stable_candidate(stable_transport(), profile(), clock=lambda: T0)
+
+    provenance = result.observation.provenance
+    assert provenance.runner_name == "canonical-sync"
+    assert provenance.runner_version
+    assert provenance.python_implementation
+    assert provenance.python_version
+    assert provenance.transport_name == "fake-transport"
+    assert provenance.transport_version == "test-v1"
+    assert provenance.auth_provenance == "test-injected"
+
+
 def test_metadata_only_churn_changes_observation_not_semantic_state() -> None:
     first = acquire_stable_candidate(stable_transport(version=1), profile(), clock=lambda: T0)
     second = acquire_stable_candidate(

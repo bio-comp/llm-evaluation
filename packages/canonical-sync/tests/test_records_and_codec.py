@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 from pydantic import ValidationError
@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from canonical_sync.codec import canonical_record_bytes, canonical_record_hash, parse_canonical_record
 from canonical_sync.domain import profile_from_record
 from canonical_sync.records import (
+    AcquisitionProvenanceRecord,
     AuthorityObjectSpecRecord,
     AuthorityProfileRecord,
     ExactMembershipSpecRecord,
@@ -67,6 +68,15 @@ def observation(*, snapshot_hash: str, version: int = 7, acquired_at: datetime =
         authority_spec_sha256=H1,
         acquired_at=acquired_at,
         attempt_count=1,
+        provenance=AcquisitionProvenanceRecord(
+            runner_name="canonical-sync",
+            runner_version="test",
+            python_implementation="CPython",
+            python_version="3.11.13",
+            transport_name="fake-transport",
+            transport_version="test-v1",
+            auth_provenance="test-injected",
+        ),
         sources=(
             SourceObservationRecord(
                 logical_path="README.md",
@@ -140,6 +150,19 @@ def test_canonical_round_trip_is_byte_identical_and_noncanonical_json_is_rejecte
     assert noncanonical != encoded
     with pytest.raises(ValueError, match="canonical"):
         parse_canonical_record(noncanonical, SnapshotStateRecord)
+
+
+def test_canonical_datetime_identity_normalizes_equivalent_instants() -> None:
+    snapshot_hash = canonical_record_hash(state())
+    first = observation(snapshot_hash=snapshot_hash, acquired_at=T0)
+    equivalent = observation(
+        snapshot_hash=snapshot_hash,
+        acquired_at=T0.astimezone(timezone(timedelta(hours=-6))),
+    )
+
+    assert first.acquired_at != equivalent.acquired_at or first.acquired_at.utcoffset() != equivalent.acquired_at.utcoffset()
+    assert canonical_record_bytes(first) == canonical_record_bytes(equivalent)
+    assert canonical_record_hash(first) == canonical_record_hash(equivalent)
 
 
 def test_profile_label_does_not_change_registered_authority_spec_identity() -> None:
