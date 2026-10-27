@@ -50,7 +50,7 @@ def acquire_and_publish(
         receipt = AcquisitionReceiptRecord(
             started_at=started_at,
             ended_at=ended_at,
-            authority_profile_sha256=profile.spec_sha256,
+            authority_spec_sha256=profile.spec_sha256,
             transaction_attempt_count=attempts,
             status="failed",
             error_code=type(exc).__name__,
@@ -61,7 +61,7 @@ def acquire_and_publish(
     receipt = AcquisitionReceiptRecord(
         started_at=started_at,
         ended_at=actual_clock(),
-        authority_profile_sha256=profile.spec_sha256,
+        authority_spec_sha256=profile.spec_sha256,
         transaction_attempt_count=candidate.attempt_count,
         status="success",
         snapshot_state_sha256=publication.state_sha256,

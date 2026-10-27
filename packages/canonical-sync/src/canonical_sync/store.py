@@ -138,8 +138,8 @@ class SnapshotStore:
         state_hash = canonical_record_hash(candidate.state)
         if state_hash != candidate.observation.snapshot_state_sha256:
             raise SnapshotIntegrityError("snapshot state hash does not match observation")
-        if candidate.state.authority_profile_sha256 != candidate.observation.authority_profile_sha256:
-            raise SnapshotIntegrityError("authority profile hash does not match observation")
+        if candidate.state.authority_spec_sha256 != candidate.observation.authority_spec_sha256:
+            raise SnapshotIntegrityError("authority specification hash does not match observation")
         state_entries = {entry.logical_path: entry for entry in candidate.state.entries}
         observation_entries = {entry.logical_path: entry for entry in candidate.observation.sources}
         representations = {entry.logical_path: entry for entry in candidate.representations}
@@ -273,7 +273,7 @@ class SnapshotStore:
         observation = self._verify_observation_dir(staged_observation, staged.observation_sha256)
         if observation.snapshot_state_sha256 != staged.state_sha256:
             raise SnapshotIntegrityError("staged observation points at the wrong semantic state")
-        if observation.authority_profile_sha256 != state.authority_profile_sha256:
+        if observation.authority_spec_sha256 != state.authority_spec_sha256:
             raise SnapshotIntegrityError("staged authority identity is inconsistent")
 
         published_state = False
@@ -382,7 +382,7 @@ class SnapshotStore:
         state, representations = self._verify_snapshot_dir(
             snapshot_path, observation.snapshot_state_sha256
         )
-        if state.authority_profile_sha256 != observation.authority_profile_sha256:
+        if state.authority_spec_sha256 != observation.authority_spec_sha256:
             raise SnapshotIntegrityError("persisted state and observation authority identities differ")
         state_entries = {entry.logical_path: entry for entry in state.entries}
         observation_entries = {entry.logical_path: entry for entry in observation.sources}

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from .codec import canonical_record_hash
-from .records import AuthorityProfileRecord
+from .records import AuthorityProfileRecord, AuthoritySpecificationRecord
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,9 +64,13 @@ class SourceContent:
 
 
 def profile_from_record(record: AuthorityProfileRecord) -> AuthorityProfile:
+    specification = AuthoritySpecificationRecord(
+        objects=record.objects,
+        memberships=record.memberships,
+    )
     return AuthorityProfile(
         profile_name=record.profile_name,
-        spec_sha256=canonical_record_hash(record),
+        spec_sha256=canonical_record_hash(specification),
         objects=tuple(
             AuthorityObjectSpec(
                 logical_path=item.logical_path,

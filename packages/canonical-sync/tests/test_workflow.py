@@ -114,7 +114,7 @@ def test_acquisition_receipt_status_invariants_are_strict() -> None:
         AcquisitionReceiptRecord(
             started_at=T0,
             ended_at=T0,
-            authority_profile_sha256="1" * 64,
+            authority_spec_sha256="1" * 64,
             transaction_attempt_count=1,
             status="success",
             error_code=None,
@@ -126,7 +126,7 @@ def test_acquisition_receipt_status_invariants_are_strict() -> None:
         AcquisitionReceiptRecord(
             started_at=T0,
             ended_at=T0 - timedelta(seconds=1),
-            authority_profile_sha256="1" * 64,
+            authority_spec_sha256="1" * 64,
             transaction_attempt_count=0,
             status="failed",
             error_code="AuthorityMismatchError",

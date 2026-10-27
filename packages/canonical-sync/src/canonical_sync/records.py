@@ -171,6 +171,52 @@ class AuthorityProfileRecord(StrictFrozenRecord):
         return self
 
 
+class AuthoritySpecificationRecord(StrictFrozenRecord):
+    record_type: Literal["authority_specification"] = "authority_specification"
+    schema_version: Literal[1] = 1
+    objects: tuple[AuthorityObjectSpecRecord, ...]
+    memberships: tuple[ExactMembershipSpecRecord, ...] = ()
+
+    @field_validator("objects")
+    @classmethod
+    def normalize_objects(
+        cls, value: tuple[AuthorityObjectSpecRecord, ...]
+    ) -> tuple[AuthorityObjectSpecRecord, ...]:
+        if not value:
+            raise ValueError("authority specification requires at least one object")
+        ordered = tuple(sorted(value, key=lambda item: item.logical_path))
+        folded_paths = tuple(_portable_path_key(item.logical_path) for item in ordered)
+        if len(folded_paths) != len(set(folded_paths)):
+            raise ValueError("authority logical paths collide portably")
+        object_ids = tuple(item.object_id for item in ordered)
+        if len(object_ids) != len(set(object_ids)):
+            raise ValueError("authority object IDs must be unique")
+        return ordered
+
+    @field_validator("memberships")
+    @classmethod
+    def normalize_memberships(
+        cls, value: tuple[ExactMembershipSpecRecord, ...]
+    ) -> tuple[ExactMembershipSpecRecord, ...]:
+        ordered = tuple(sorted(value, key=lambda item: item.parent_id))
+        parents = tuple(item.parent_id for item in ordered)
+        if len(parents) != len(set(parents)):
+            raise ValueError("membership parents must be unique")
+        return ordered
+
+    @model_validator(mode="after")
+    def validate_membership_coherence(self) -> Self:
+        by_id = {item.object_id: item for item in self.objects}
+        for membership in self.memberships:
+            for child_id in membership.expected_child_ids:
+                child = by_id.get(child_id)
+                if child is None:
+                    raise ValueError("exact membership references an undeclared authority object")
+                if child.expected_parent_id != membership.parent_id:
+                    raise ValueError("exact membership parent conflicts with object authority")
+        return self
+
+
 class SemanticEntryRecord(StrictFrozenRecord):
     logical_path: str
     representation_schema: str
@@ -195,10 +241,10 @@ class SemanticEntryRecord(StrictFrozenRecord):
 class SnapshotStateRecord(StrictFrozenRecord):
     record_type: Literal["snapshot_state"] = "snapshot_state"
     schema_version: Literal[1] = 1
-    authority_profile_sha256: str
+    authority_spec_sha256: str
     entries: tuple[SemanticEntryRecord, ...]
 
-    @field_validator("authority_profile_sha256")
+    @field_validator("authority_spec_sha256")
     @classmethod
     def validate_profile_hash(cls, value: str) -> str:
         return _sha256(value)
@@ -270,12 +316,12 @@ class SnapshotObservationRecord(StrictFrozenRecord):
     record_type: Literal["snapshot_observation"] = "snapshot_observation"
     schema_version: Literal[1] = 1
     snapshot_state_sha256: str
-    authority_profile_sha256: str
+    authority_spec_sha256: str
     acquired_at: datetime
     attempt_count: int
     sources: tuple[SourceObservationRecord, ...]
 
-    @field_validator("snapshot_state_sha256", "authority_profile_sha256")
+    @field_validator("snapshot_state_sha256", "authority_spec_sha256")
     @classmethod
     def validate_hashes(cls, value: str) -> str:
         return _sha256(value)
@@ -317,7 +363,7 @@ class AcquisitionReceiptRecord(StrictFrozenRecord):
     schema_version: Literal[1] = 1
     started_at: datetime
     ended_at: datetime
-    authority_profile_sha256: str
+    authority_spec_sha256: str
     transaction_attempt_count: int
     status: Literal["success", "failed"]
     error_code: str | None = None
@@ -329,7 +375,7 @@ class AcquisitionReceiptRecord(StrictFrozenRecord):
     def validate_times(cls, value: datetime) -> datetime:
         return _aware(value)
 
-    @field_validator("authority_profile_sha256")
+    @field_validator("authority_spec_sha256")
     @classmethod
     def validate_authority_hash(cls, value: str) -> str:
         return _sha256(value)

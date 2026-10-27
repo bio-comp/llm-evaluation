@@ -127,7 +127,7 @@ def _acquire_one_attempt(
             raise SourceMovementError("source membership moved during acquisition attempt")
 
     state = SnapshotStateRecord(
-        authority_profile_sha256=profile.spec_sha256,
+        authority_spec_sha256=profile.spec_sha256,
         entries=tuple(
             SemanticEntryRecord(
                 logical_path=item.logical_path,
@@ -140,7 +140,7 @@ def _acquire_one_attempt(
     state_hash = canonical_record_hash(state)
     observation = SnapshotObservationRecord(
         snapshot_state_sha256=state_hash,
-        authority_profile_sha256=profile.spec_sha256,
+        authority_spec_sha256=profile.spec_sha256,
         acquired_at=clock(),
         attempt_count=attempt_count,
         sources=tuple(

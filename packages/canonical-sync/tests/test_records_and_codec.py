@@ -45,7 +45,7 @@ def profile() -> AuthorityProfileRecord:
 
 def state(*, authority_hash: str = H1, first_content_hash: str = H2) -> SnapshotStateRecord:
     return SnapshotStateRecord(
-        authority_profile_sha256=authority_hash,
+        authority_spec_sha256=authority_hash,
         entries=(
             SemanticEntryRecord(
                 logical_path="README.md",
@@ -64,7 +64,7 @@ def state(*, authority_hash: str = H1, first_content_hash: str = H2) -> Snapshot
 def observation(*, snapshot_hash: str, version: int = 7, acquired_at: datetime = T0) -> SnapshotObservationRecord:
     return SnapshotObservationRecord(
         snapshot_state_sha256=snapshot_hash,
-        authority_profile_sha256=H1,
+        authority_spec_sha256=H1,
         acquired_at=acquired_at,
         attempt_count=1,
         sources=(
@@ -142,10 +142,17 @@ def test_canonical_round_trip_is_byte_identical_and_noncanonical_json_is_rejecte
         parse_canonical_record(noncanonical, SnapshotStateRecord)
 
 
+def test_profile_label_does_not_change_registered_authority_spec_identity() -> None:
+    original = profile()
+    renamed = original.model_copy(update={"profile_name": "renamed-profile"})
+
+    assert profile_from_record(original).spec_sha256 == profile_from_record(renamed).spec_sha256
+
+
 def test_semantic_state_identity_is_order_independent_but_content_and_authority_sensitive() -> None:
     first = state()
     reordered = SnapshotStateRecord(
-        authority_profile_sha256=H1,
+        authority_spec_sha256=H1,
         entries=tuple(reversed(first.entries)),
     )
     content_changed = state(first_content_hash="4" * 64)
