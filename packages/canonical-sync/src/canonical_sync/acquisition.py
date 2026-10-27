@@ -84,7 +84,7 @@ def _observe_memberships(
     return result
 
 
-def _acquisition_provenance(transport: SourceTransport) -> AcquisitionProvenanceRecord:
+def acquisition_provenance(transport: SourceTransport) -> AcquisitionProvenanceRecord:
     try:
         runner_version = version("canonical-sync")
     except PackageNotFoundError:
@@ -107,6 +107,7 @@ def _acquire_one_attempt(
     *,
     attempt_count: int,
     clock: Callable[[], datetime],
+    provenance: AcquisitionProvenanceRecord,
 ) -> AcquisitionCandidate:
     pre: dict[str, SourceObservation] = {}
     for spec in profile.objects:
@@ -163,7 +164,7 @@ def _acquire_one_attempt(
         authority_spec_sha256=profile.spec_sha256,
         acquired_at=clock(),
         attempt_count=attempt_count,
-        provenance=_acquisition_provenance(transport),
+        provenance=provenance,
         sources=tuple(
             SourceObservationRecord(
                 logical_path=spec.logical_path,
@@ -195,10 +196,12 @@ def acquire_stable_candidate(
     *,
     max_movement_attempts: int = 3,
     clock: Callable[[], datetime] | None = None,
+    provenance: AcquisitionProvenanceRecord | None = None,
 ) -> AcquisitionCandidate:
     if type(max_movement_attempts) is not int or max_movement_attempts < 1:
         raise ValueError("max_movement_attempts must be a positive integer")
     actual_clock = clock or (lambda: datetime.now(UTC))
+    actual_provenance = provenance or acquisition_provenance(transport)
     last_movement: SourceMovementError | None = None
     for attempt in range(1, max_movement_attempts + 1):
         try:
@@ -207,6 +210,7 @@ def acquire_stable_candidate(
                 profile,
                 attempt_count=attempt,
                 clock=actual_clock,
+                provenance=actual_provenance,
             )
         except SourceMovementError as exc:
             last_movement = exc

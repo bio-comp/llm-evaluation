@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from .acquisition import AcquisitionCandidate, acquire_stable_candidate
+from .acquisition import AcquisitionCandidate, acquire_stable_candidate, acquisition_provenance
 from .domain import AuthorityProfile
 from .errors import CanonicalSyncError, SourceMovementError
 from .records import AcquisitionReceiptRecord
@@ -30,6 +30,7 @@ def acquire_and_publish(
 ) -> AcquisitionRunResult:
     actual_clock = clock or (lambda: datetime.now(UTC))
     started_at = actual_clock()
+    provenance = acquisition_provenance(transport)
     candidate: AcquisitionCandidate | None = None
     try:
         candidate = acquire_stable_candidate(
@@ -37,6 +38,7 @@ def acquire_and_publish(
             profile,
             max_movement_attempts=max_movement_attempts,
             clock=actual_clock,
+            provenance=provenance,
         )
         publication = store.publish(store.stage(candidate))
     except CanonicalSyncError as exc:
@@ -51,6 +53,7 @@ def acquire_and_publish(
             started_at=started_at,
             ended_at=ended_at,
             authority_spec_sha256=profile.spec_sha256,
+            provenance=provenance,
             transaction_attempt_count=attempts,
             status="failed",
             error_code=type(exc).__name__,
@@ -62,6 +65,7 @@ def acquire_and_publish(
         started_at=started_at,
         ended_at=actual_clock(),
         authority_spec_sha256=profile.spec_sha256,
+        provenance=provenance,
         transaction_attempt_count=candidate.attempt_count,
         status="success",
         snapshot_state_sha256=publication.state_sha256,

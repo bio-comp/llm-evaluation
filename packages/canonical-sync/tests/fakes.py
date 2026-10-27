@@ -18,6 +18,7 @@ class FakeTransport:
         contents: dict[str, SourceContent],
         memberships: dict[str, list[tuple[SourceObservation, ...]]] | None = None,
         failures: dict[tuple[str, str], BaseException] | None = None,
+        provenance: TransportProvenance | None = None,
     ) -> None:
         self._observations = {key: list(value) for key, value in observations.items()}
         self._contents = contents
@@ -25,16 +26,17 @@ class FakeTransport:
             key: list(value) for key, value in (memberships or {}).items()
         }
         self._failures = failures or {}
+        self._provenance = provenance or TransportProvenance(
+            transport_name="fake-transport",
+            transport_version="test-v1",
+            auth_provenance="test-injected",
+        )
         self.calls: Counter[tuple[str, str]] = Counter()
         self.read_order: list[str] = []
 
     @property
     def provenance(self) -> TransportProvenance:
-        return TransportProvenance(
-            transport_name="fake-transport",
-            transport_version="test-v1",
-            auth_provenance="test-injected",
-        )
+        return self._provenance
 
     def _maybe_fail(self, operation: str, key: str) -> None:
         failure = self._failures.get((operation, key))

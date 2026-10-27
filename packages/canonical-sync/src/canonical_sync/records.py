@@ -394,10 +394,11 @@ class AcquisitionReceiptRecord(StrictFrozenRecord):
     canonical_identity_domain: ClassVar[str] = "canonical-sync.acquisition-receipt"
     canonical_identity_version: ClassVar[int] = 1
     record_type: Literal["acquisition_receipt"] = "acquisition_receipt"
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     started_at: datetime
     ended_at: datetime
     authority_spec_sha256: str
+    provenance: AcquisitionProvenanceRecord
     transaction_attempt_count: int
     status: Literal["success", "failed"]
     error_code: str | None = None
