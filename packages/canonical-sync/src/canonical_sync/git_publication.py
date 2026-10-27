@@ -72,6 +72,25 @@ class GitPublisher:
     @staticmethod
     def _env() -> dict[str, str]:
         env = dict(os.environ)
+        for key in tuple(env):
+            if key.startswith("GIT_CONFIG_"):
+                env.pop(key, None)
+        for key in (
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_COMMON_DIR",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_NAMESPACE",
+            "GIT_SHALLOW_FILE",
+            "GIT_REPLACE_REF_BASE",
+            "GIT_SSH",
+            "GIT_SSH_COMMAND",
+            "GIT_PROXY_COMMAND",
+            "GIT_TEMPLATE_DIR",
+        ):
+            env.pop(key, None)
         env.update(
             GIT_TERMINAL_PROMPT="0",
             GIT_CONFIG_NOSYSTEM="1",
@@ -81,16 +100,6 @@ class GitPublisher:
             GIT_COMMITTER_NAME="canonical-sync",
             GIT_COMMITTER_EMAIL="canonical-sync@example.invalid",
         )
-        for key in (
-            "GIT_DIR",
-            "GIT_WORK_TREE",
-            "GIT_INDEX_FILE",
-            "GIT_OBJECT_DIRECTORY",
-            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-            "GIT_NAMESPACE",
-            "GIT_SHALLOW_FILE",
-        ):
-            env.pop(key, None)
         return env
 
     def _git(self, repo: Path, *args: str, data: bytes | None = None) -> bytes:

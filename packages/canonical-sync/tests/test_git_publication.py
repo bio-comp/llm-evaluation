@@ -84,3 +84,24 @@ def test_generic_git_layer_does_not_accept_verified_snapshot_or_project_policy(t
     publisher = GitPublisher(str(remote), ref="refs/heads/canonical-sync-test")
     with pytest.raises(TypeError, match="PublicationTree"):
         publisher.publish(object(), expected_base=None, commit_message="not a tree")  # type: ignore[arg-type]
+
+
+def test_environment_url_rewrite_cannot_redirect_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    intended = tmp_path / "intended.git"
+    victim = tmp_path / "victim.git"
+    subprocess.run(["git", "init", "--bare", str(intended)], check=True, capture_output=True)
+    subprocess.run(["git", "init", "--bare", str(victim)], check=True, capture_output=True)
+
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", f"url.{victim}.insteadOf")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(intended))
+    publisher = GitPublisher(str(intended), ref="refs/heads/canonical-sync-test")
+    publisher.publish(tree(), expected_base=None, commit_message="publish intended remote")
+
+    monkeypatch.delenv("GIT_CONFIG_COUNT")
+    monkeypatch.delenv("GIT_CONFIG_KEY_0")
+    monkeypatch.delenv("GIT_CONFIG_VALUE_0")
+    assert git(intended, "rev-parse", "refs/heads/canonical-sync-test")
+    assert git(victim, "for-each-ref") == ""
