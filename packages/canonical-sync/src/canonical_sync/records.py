@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import hashlib
+from urllib.parse import urlsplit
 import unicodedata
 from datetime import datetime
 from pathlib import PurePosixPath
@@ -345,7 +347,7 @@ class SnapshotObservationRecord(StrictFrozenRecord):
     canonical_identity_domain: ClassVar[str] = "canonical-sync.observation"
     canonical_identity_version: ClassVar[int] = 1
     record_type: Literal["snapshot_observation"] = "snapshot_observation"
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     snapshot_state_sha256: str
     authority_spec_sha256: str
     acquired_at: datetime
@@ -394,7 +396,7 @@ class AcquisitionReceiptRecord(StrictFrozenRecord):
     canonical_identity_domain: ClassVar[str] = "canonical-sync.acquisition-receipt"
     canonical_identity_version: ClassVar[int] = 1
     record_type: Literal["acquisition_receipt"] = "acquisition_receipt"
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     started_at: datetime
     ended_at: datetime
     authority_spec_sha256: str
@@ -455,11 +457,33 @@ class AcquisitionReceiptRecord(StrictFrozenRecord):
         return self
 
 
+def safe_remote_identity(value: str) -> str:
+    """Retain repository identity, never transport credentials or local paths."""
+    _nonempty_trimmed(value, label="publication remote")
+    if re.fullmatch(r"opaque-sha256:[0-9a-f]{64}", value):
+        return value
+    locator = value
+    if re.fullmatch(r"git@[^/:]+:[^?#]+", value):
+        locator = "ssh://" + value.replace(":", "/", 1)
+    try:
+        parsed = urlsplit(locator)
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        host = None
+    if (host and parsed.scheme in {"https", "ssh"}
+            and re.fullmatch(r"[A-Za-z0-9.-]+", host)
+            and re.fullmatch(r"/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", parsed.path)):
+        endpoint = host.lower() + (f":{port}" if port is not None else "")
+        return f"https://{endpoint}{parsed.path}"
+    return "opaque-sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
 class GitPublicationReceiptRecord(StrictFrozenRecord):
     canonical_identity_domain: ClassVar[str] = "canonical-sync.git-publication-receipt"
     canonical_identity_version: ClassVar[int] = 1
     record_type: Literal["git_publication_receipt"] = "git_publication_receipt"
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     status: Literal["published", "unchanged"]
     remote: str
     remote_ref: str
@@ -474,7 +498,7 @@ class GitPublicationReceiptRecord(StrictFrozenRecord):
     @field_validator("remote")
     @classmethod
     def validate_remote(cls, value: str) -> str:
-        return _nonempty_trimmed(value, label="publication remote")
+        return safe_remote_identity(value)
 
     @field_validator("remote_ref")
     @classmethod

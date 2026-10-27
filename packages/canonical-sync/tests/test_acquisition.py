@@ -118,8 +118,8 @@ def test_observation_identity_records_transport_runtime_and_auth_provenance() ->
     assert provenance.runner_version
     assert provenance.python_implementation
     assert provenance.python_version
-    assert provenance.transport_name == "fake-transport"
-    assert provenance.transport_version == "test-v1"
+    assert provenance.transport_name.startswith("opaque-sha256:")
+    assert provenance.transport_version.startswith("opaque-sha256:")
     assert provenance.auth_provenance == "test-injected"
 
 

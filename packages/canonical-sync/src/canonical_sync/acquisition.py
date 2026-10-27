@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import platform
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -84,6 +85,14 @@ def _observe_memberships(
     return result
 
 
+def _safe_transport_metadata(
+    value: str, *, known: frozenset[str], numeric_version: bool = False
+) -> str:
+    if value in known or (numeric_version and re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,3}", value)):
+        return value
+    return "opaque-sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
 def acquisition_provenance(transport: SourceTransport) -> AcquisitionProvenanceRecord:
     try:
         runner_version = version("canonical-sync")
@@ -95,9 +104,14 @@ def acquisition_provenance(transport: SourceTransport) -> AcquisitionProvenanceR
         runner_version=runner_version,
         python_implementation=platform.python_implementation(),
         python_version=platform.python_version(),
-        transport_name=transport_provenance.transport_name,
-        transport_version=transport_provenance.transport_version,
-        auth_provenance=transport_provenance.auth_provenance,
+        transport_name=_safe_transport_metadata(transport_provenance.transport_name,
+            known=frozenset({"google-drive-v3"})),
+        transport_version=_safe_transport_metadata(transport_provenance.transport_version,
+            known=frozenset({"unknown", "injected-client"}), numeric_version=True),
+        auth_provenance=_safe_transport_metadata(transport_provenance.auth_provenance,
+            known=frozenset({"injected-client", "test-injected", "adc:authorized-user",
+                "adc:workload-identity-service-account", "adc:google.oauth2.credentials.Credentials",
+                "adc:google.oauth2.service_account.Credentials", "adc:google.auth.identity_pool.Credentials"})),
     )
 
 

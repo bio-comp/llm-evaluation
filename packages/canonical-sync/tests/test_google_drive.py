@@ -237,3 +237,10 @@ def test_rate_limit_403_parsing_is_not_whitespace_sensitive() -> None:
     value, resource = transport(gets=[FakeHttpError(403, rate), metadata()])
     assert value.observe(spec()).version == 7
     assert len(resource.get_calls) == 2
+
+
+def test_network_failure_is_bounded_and_typed():
+    value, resource = transport(gets=[TimeoutError('FAKE_NETWORK_SECRET')] * 2)
+    with pytest.raises(TransportTransientError):
+        value.observe(spec())
+    assert len(resource.get_calls) == 2

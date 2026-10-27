@@ -175,3 +175,73 @@ def test_environment_url_rewrite_cannot_redirect_publication(
     monkeypatch.delenv("GIT_CONFIG_VALUE_0")
     assert git(intended, "rev-parse", "refs/heads/canonical-sync-test")
     assert git(victim, "for-each-ref") == ""
+
+
+@pytest.mark.parametrize(('base_path', 'projected'), [('dir/KEEP.txt', 'dir'), ('a', 'a/b')])
+def test_path_hierarchy_collision_fails_before_remote_mutation(tmp_path, base_path, projected):
+    from canonical_sync.errors import GitPublicationError
+    remote = tmp_path / 'remote.git'
+    subprocess.run(['git', 'init', '--bare', str(remote)], check=True, capture_output=True)
+    publisher = GitPublisher(str(remote), ref='refs/heads/main')
+    base = publisher.publish(PublicationTree((PublicationFile(base_path, b'keep'),)),
+                             expected_base=None, commit_message='base')
+    with pytest.raises(GitPublicationError):
+        publisher.publish(PublicationTree((PublicationFile(projected, b'replace'),)),
+                          expected_base=base.resulting_commit, commit_message='collision')
+    assert git(remote, 'rev-parse', 'refs/heads/main') == base.resulting_commit
+    assert git_bytes(remote, 'show', f'{base.resulting_commit}:{base_path}') == b'keep'
+
+
+def test_readback_mismatch_never_commits_or_pushes(tmp_path, monkeypatch):
+    from canonical_sync.errors import RemoteVerificationError
+    remote = tmp_path / 'remote.git'
+    subprocess.run(['git', 'init', '--bare', str(remote)], check=True, capture_output=True)
+    publisher = GitPublisher(str(remote), ref='refs/heads/main')
+    base = publisher.publish(tree(), expected_base=None, commit_message='base')
+    commands = []
+    original = publisher._git
+    def track(repo, *args, **kwargs):
+        commands.append(args[0])
+        return original(repo, *args, **kwargs)
+    monkeypatch.setattr(publisher, '_git', track)
+    with pytest.raises(RemoteVerificationError):
+        publisher.verify(PublicationTree((PublicationFile('docs/note.txt', b'wrong'),)),
+                         expected_commit=base.resulting_commit)
+    assert not {'push', 'commit-tree', 'hash-object', 'mktree'} & set(commands)
+    assert git(remote, 'rev-parse', 'refs/heads/main') == base.resulting_commit
+    assert publisher.verify(tree(), expected_commit=base.resulting_commit).status == 'unchanged'
+
+
+def test_receipt_remote_drops_transport_secrets(tmp_path):
+    from canonical_sync.codec import canonical_record_bytes
+    remote = tmp_path / 'remote.git'
+    subprocess.run(['git', 'init', '--bare', str(remote)], check=True, capture_output=True)
+    receipt = GitPublisher(str(remote), ref='refs/heads/main').publish(
+        tree(), expected_base=None, commit_message='base')
+    raw = receipt.model_dump()
+    raw['remote'] = 'https://user:FAKE_TOKEN@github.com/bio-comp/llm-evaluation.git?key=FAKE_QUERY#FAKE_FRAGMENT'
+    safe = GitPublicationReceiptRecord.model_validate(raw)
+    payload = canonical_record_bytes(safe)
+    assert all(x not in payload for x in (b'FAKE_TOKEN', b'FAKE_QUERY', b'FAKE_FRAGMENT'))
+    assert str(tmp_path).encode() not in canonical_record_bytes(receipt)
+
+
+@pytest.mark.parametrize('mode', ['100755', '120000'])
+def test_unsupported_base_mode_rejected_before_remote_mutation(tmp_path, mode):
+    from canonical_sync.errors import RemoteVerificationError
+    remote = tmp_path / 'remote.git'
+    subprocess.run(['git', 'init', '--bare', str(remote)], check=True, capture_output=True)
+    blob = subprocess.run(['git', '-C', str(remote), 'hash-object', '-w', '--stdin'],
+                          input=b'preserve', capture_output=True, check=True).stdout.strip()
+    oid = subprocess.run(['git', '-C', str(remote), 'mktree'],
+                         input=mode.encode() + b' blob ' + blob + b'\tKEEP\n',
+                         capture_output=True, check=True).stdout.strip().decode()
+    commit = git(remote, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+                 'commit-tree', oid, '-m', 'mode base')
+    git(remote, 'update-ref', 'refs/heads/main', commit)
+    before = git_bytes(remote, 'ls-tree', '-r', commit)
+    with pytest.raises(RemoteVerificationError):
+        GitPublisher(str(remote), ref='refs/heads/main').publish(
+            tree(), expected_base=commit, commit_message='must not change mode')
+    assert git(remote, 'rev-parse', 'refs/heads/main') == commit
+    assert git_bytes(remote, 'ls-tree', '-r', commit) == before

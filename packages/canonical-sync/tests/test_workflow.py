@@ -122,7 +122,7 @@ def test_failed_workflow_persists_sanitized_failure_receipt_then_reraises(tmp_pa
     assert receipt.status == "failed"
     assert receipt.transaction_attempt_count == 1
     assert receipt.error_code == "AuthorityMismatchError"
-    assert receipt.provenance.transport_name == "fake-transport"
+    assert receipt.provenance.transport_name.startswith("opaque-sha256:")
     assert receipt.provenance.auth_provenance == "test-injected"
     assert receipt.snapshot_state_sha256 is None
     assert receipt.snapshot_observation_sha256 is None
@@ -192,7 +192,7 @@ def test_failed_receipt_identity_includes_safe_provenance_but_not_raw_error_body
         receipt = store.verify_receipt(hashes[0])
         assert receipt.status == "failed"
         assert receipt.error_code == "TransportAuthError"
-        assert receipt.provenance.transport_version == provenance.transport_version
+        assert receipt.provenance.transport_version.startswith("opaque-sha256:")
         assert receipt.provenance.auth_provenance == provenance.auth_provenance
         receipt_hashes.append(hashes[0])
         receipt_payloads.append(canonical_record_bytes(receipt))
@@ -216,3 +216,38 @@ def test_programming_errors_propagate_without_manufacturing_failure_receipt(tmp_
         )
 
     assert store.list_receipt_hashes() == ()
+
+
+def test_staging_io_failure_gets_sanitized_receipt(tmp_path, monkeypatch):
+    import canonical_sync.store as module
+    from canonical_sync.errors import SnapshotIntegrityError
+    store = SnapshotStore(tmp_path / 'store')
+    def fail(*args, **kwargs):
+        raise PermissionError('FAKE_PATH_SECRET /private/credential')
+    monkeypatch.setattr(module.tempfile, 'mkdtemp', fail)
+    with pytest.raises(SnapshotIntegrityError):
+        acquire_and_publish(_transport(), _profile(), store)
+    receipt = store.verify_receipt(store.list_receipt_hashes()[0])
+    assert b'FAKE_PATH_SECRET' not in canonical_record_bytes(receipt)
+
+
+def test_untrusted_transport_metadata_never_enters_receipt(tmp_path):
+    transport = _transport()
+    transport._provenance = TransportProvenance(
+        transport_name='FAKE_PROVIDER_SECRET',
+        transport_version='/private/FAKE_VERSION_SECRET',
+        auth_provenance='token=FAKE_AUTH_SECRET')
+    result = acquire_and_publish(transport, _profile(), SnapshotStore(tmp_path / 'store'))
+    payload = canonical_record_bytes(result.receipt)
+    assert all(x not in payload for x in
+               (b'FAKE_PROVIDER_SECRET', b'FAKE_VERSION_SECRET', b'FAKE_AUTH_SECRET'))
+
+
+def test_historical_receipts_are_rejected_without_reinterpretation(tmp_path):
+    from canonical_sync.codec import parse_canonical_record
+    result = acquire_and_publish(_transport(), _profile(), SnapshotStore(tmp_path / 'store'))
+    for old in (1, 2, 3):
+        raw = result.receipt.model_copy(update={'schema_version': old})
+        with pytest.raises(ValidationError):
+            parse_canonical_record(canonical_record_bytes(raw), AcquisitionReceiptRecord)
+    assert result.receipt.schema_version == 4

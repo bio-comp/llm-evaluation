@@ -149,6 +149,8 @@ class GoogleDriveTransport:
         http_error_types: tuple[type[BaseException], ...],
         request_attempts: int = 3,
         sleeper: Callable[[float], None] = time.sleep,
+        network_error_types: tuple[type[BaseException], ...] = (OSError,),
+        auth_error_types: tuple[type[BaseException], ...] = (),
         transport_version: str = "injected-client",
         auth_provenance: str = "injected-client",
     ) -> None:
@@ -156,6 +158,8 @@ class GoogleDriveTransport:
             raise ValueError("request_attempts must be a positive integer")
         self._drive = drive_service
         self._http_error_types = http_error_types
+        self._network_error_types = network_error_types
+        self._auth_error_types = auth_error_types
         self._request_attempts = request_attempts
         self._sleeper = sleeper
         self._provenance = TransportProvenance(
@@ -173,6 +177,8 @@ class GoogleDriveTransport:
         try:
             import google.auth
             from google.auth.exceptions import DefaultCredentialsError, GoogleAuthError
+            from google.auth.exceptions import TransportError as GoogleTransportError
+            from httplib2 import HttpLib2Error  # type: ignore[import-untyped]
             from googleapiclient.discovery import build  # type: ignore[import-untyped]
             from googleapiclient.errors import HttpError  # type: ignore[import-untyped]
         except ImportError as exc:
@@ -190,6 +196,8 @@ class GoogleDriveTransport:
         return cls(
             drive_service=drive_service,
             http_error_types=(HttpError,),
+            network_error_types=(OSError, HttpLib2Error, GoogleTransportError),
+            auth_error_types=(GoogleAuthError,),
             request_attempts=request_attempts,
             transport_version=client_version,
             auth_provenance=f"adc:{credential_type}",
@@ -200,6 +208,14 @@ class GoogleDriveTransport:
         for attempt in range(self._request_attempts):
             try:
                 return factory().execute()
+            except self._network_error_types as exc:
+                last_transient = exc
+                if attempt + 1 < self._request_attempts:
+                    self._sleeper(float(2**attempt))
+                    continue
+                break
+            except self._auth_error_types:
+                raise TransportAuthError("Google credential refresh failed") from None
             except self._http_error_types as exc:
                 status = _http_status(exc)
                 transient = status in _TRANSIENT_STATUSES or _rate_limited_403(exc)

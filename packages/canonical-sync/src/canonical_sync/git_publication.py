@@ -171,6 +171,38 @@ class GitPublisher:
             files[path] = self._git(repo, "cat-file", "blob", oid.decode("ascii"))
         return files
 
+    def verify(
+        self, tree: PublicationTree, *, expected_commit: str
+    ) -> GitPublicationReceiptRecord:
+        """Read back a fixed remote commit; never create a commit or push."""
+        if not isinstance(tree, PublicationTree):
+            raise TypeError("Git verification requires a PublicationTree")
+        if (len(expected_commit) not in {40, 64}
+                or any(c not in "0123456789abcdef" for c in expected_commit)):
+            raise ValueError("expected commit must be a lowercase Git object ID")
+        with tempfile.TemporaryDirectory(prefix="canonical-sync-readback-") as temporary:
+            repo = Path(temporary)
+            self._git(repo, "init", "--bare", "--template=", ".")
+            self._git(repo, "remote", "add", "origin", self.remote)
+            if self._tip(repo) != expected_commit:
+                raise RemoteVerificationError("remote commit differs from expected readback")
+            self._git(repo, "fetch", "--no-tags", "origin", self.ref)
+            fetched = self._git(repo, "rev-parse", "FETCH_HEAD").decode().strip()
+            if fetched != expected_commit:
+                raise RemoteVerificationError("remote moved during readback")
+            actual = self._read_tree(repo, fetched)
+            if any(actual.get(item.path) != item.data for item in tree.files):
+                raise RemoteVerificationError("remote projection differs from expected readback")
+            if self._tip(repo) != expected_commit:
+                raise RemoteVerificationError("remote moved during readback")
+            return GitPublicationReceiptRecord(
+                status="unchanged", remote=self.remote, remote_ref=self.ref,
+                expected_base_commit=expected_commit, resulting_commit=expected_commit,
+                git_tree_oid=self._git(repo, "rev-parse", fetched + "^{tree}").decode().strip(),
+                publication_tree_sha256=tree.sha256, verified_remote_commit=expected_commit,
+                readback_verified=True, fast_forward_only=True,
+            )
+
     def publish(
         self,
         tree: PublicationTree,
@@ -222,6 +254,11 @@ class GitPublisher:
                         fast_forward_only=True,
                     )
 
+            paths = set(desired_tree)
+            for path in paths:
+                if any(str(parent) in paths for parent in PurePosixPath(path).parents
+                       if str(parent) != "."):
+                    raise GitPublicationError("projection would retype a base path or directory")
             git_tree = self._write_tree(repo, desired_tree)
             parents: tuple[str, ...] = () if expected_base is None else ("-p", expected_base)
             commit = self._git(

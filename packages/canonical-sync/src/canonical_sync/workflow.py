@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 from .acquisition import AcquisitionCandidate, acquire_stable_candidate, acquisition_provenance
 from .domain import AuthorityProfile
-from .errors import CanonicalSyncError, SourceMovementError
+from .errors import CanonicalSyncError, SourceMovementError, SnapshotIntegrityError
 from .records import AcquisitionReceiptRecord
 from .store import PublicationResult, SnapshotStore
 from .transport import SourceTransport
@@ -40,7 +40,10 @@ def acquire_and_publish(
             clock=actual_clock,
             provenance=provenance,
         )
-        publication = store.publish(store.stage(candidate))
+        try:
+            publication = store.publish(store.stage(candidate))
+        except OSError:
+            raise SnapshotIntegrityError("snapshot staging/publication I/O failed") from None
     except CanonicalSyncError as exc:
         ended_at = actual_clock()
         if candidate is not None:
