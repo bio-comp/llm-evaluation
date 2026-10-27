@@ -148,7 +148,7 @@
 
 **Commit:** `feat: add reconciliation and publication boundaries`
 
-## Task 5 — Generic Google Drive/Docs adapter
+## Task 5 — Generic Google Drive adapter
 
 **Files:**
 - add `packages/canonical-sync/src/canonical_sync/google_drive.py`
@@ -158,27 +158,29 @@
 - update `uv.lock`
 
 **Interfaces:**
-- `GoogleDriveDocsTransport` implementing `SourceTransport`;
+- `GoogleDriveTransport` implementing `SourceTransport`;
 - exact `drive.readonly` scope;
 - bounded request-level transient retries with typed permanent failures;
-- strict Pydantic validation of Drive metadata and Docs wire responses before trusted dataclasses;
-- `google-docs-visible-text-v1` deterministic representation for the current native-Docs profile;
+- strict Pydantic validation of Drive metadata/list responses before trusted dataclasses;
+- `google-drive-export-markdown-v1` exact `text/markdown` Drive-export representation for the current native-Docs profile;
 - list-members support for exact direct-child membership when requested.
 
 **RED tests:**
 - exact OAuth scope and request fields/options;
 - malformed metadata/docs response rejected;
 - 401/403/404 classified distinctly; 429/5xx/specific rate-limit 403 retry boundedly; raw provider error/credential text never reaches durable error text;
-- document ID/title/suggestions view must match the declared source;
-- deterministic representation is stable across irrelevant dictionary ordering;
-- unsupported semantic structures fail closed rather than being silently dropped;
-- metadata-only Drive version change does not alter representation bytes;
+- Markdown export uses exact returned bytes without normalization;
+- unsupported representation schemas or non-byte exports fail closed;
+- metadata-only Drive version change does not alter exported representation bytes;
 - Google clients remain optional and are not installed by the base `canonical-sync` wheel.
 
 **GREEN:** port only reusable provider mechanics from the existing prototype/prlab behavior; do not carry project names or IDs.
 
 **Verify:**
 `uv run --all-packages --extra drive pytest packages/canonical-sync/tests/test_google_drive.py -q`
+
+
+**Live correction after initial Task-5 implementation:** local OAuth verification showed Drive metadata access succeeded but Docs `documents.get` returned `SERVICE_DISABLED`; the same `drive.readonly` credential successfully exported `text/markdown`. Repeated exports were byte-stable across all four registered objects while Drive versions were unchanged. The final adapter therefore uses Drive v3 metadata + `files.export` only and does not require enabling the Docs API.
 
 **Commit:** `feat: add read-only Google canonical transport`
 

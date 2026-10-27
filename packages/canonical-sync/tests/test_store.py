@@ -23,12 +23,12 @@ def _candidate():
         AuthorityObjectSpecRecord(
             logical_path="README.md", provider="google_drive", object_id="object-001",
             expected_name="README.md", expected_mime_type=MIME, expected_parent_id="parent-001",
-            representation_schema="google-docs-visible-text-v1",
+            representation_schema="test-representation-v1",
         ),
         AuthorityObjectSpecRecord(
             logical_path="Research/DECISIONS.md", provider="google_drive", object_id="object-002",
             expected_name="DECISIONS.md", expected_mime_type=MIME, expected_parent_id="parent-001",
-            representation_schema="google-docs-visible-text-v1",
+            representation_schema="test-representation-v1",
         ),
     )
     profile = profile_from_record(AuthorityProfileRecord(profile_name="store-test", objects=specs))
@@ -43,8 +43,8 @@ def _candidate():
             "object-002": [obs("object-002", "DECISIONS.md"), obs("object-002", "DECISIONS.md")],
         },
         contents={
-            "object-001": SourceContent("google-docs-visible-text-v1", b"README\n"),
-            "object-002": SourceContent("google-docs-visible-text-v1", b"DECISIONS\n"),
+            "object-001": SourceContent("test-representation-v1", b"README\n"),
+            "object-002": SourceContent("test-representation-v1", b"DECISIONS\n"),
         },
     )
     return acquire_stable_candidate(transport, profile, clock=lambda: T0)

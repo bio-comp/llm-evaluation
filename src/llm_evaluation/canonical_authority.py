@@ -12,7 +12,7 @@ D016_REQUIRED_ROLES = frozenset(
     {"README.md", "DECISIONS.md", "EXPERIMENTS.md", "REVIEW_LEDGER.md"}
 )
 _GOOGLE_DOC_MIME = "application/vnd.google-apps.document"
-_REPRESENTATION = "google-docs-visible-text-v1"
+_REPRESENTATION = "google-drive-export-markdown-v1"
 
 
 def load_d016_authority_profile(path: Path) -> AuthorityProfile:

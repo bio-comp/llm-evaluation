@@ -21,7 +21,7 @@ object_id = "<private registered Drive object ID>"
 expected_name = "README.md"
 expected_mime_type = "application/vnd.google-apps.document"
 expected_parent_id = "<private registered parent ID>"
-representation_schema = "google-docs-visible-text-v1"
+representation_schema = "google-drive-export-markdown-v1"
 ```
 
 Repeat the object table for the other required roles. Do not commit the populated profile, OAuth client material, ADC files, tokens, private snapshots, or copied canonical bodies.

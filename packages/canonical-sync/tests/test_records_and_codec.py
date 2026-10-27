@@ -31,7 +31,7 @@ def object_spec(*, path: str = "README.md", object_id: str = "opaque-object-001"
         expected_name=path.rsplit("/", 1)[-1],
         expected_mime_type="application/vnd.google-apps.document",
         expected_parent_id="opaque-parent-001",
-        representation_schema="google-docs-visible-text-v1",
+        representation_schema="test-representation-v1",
     )
 
 
@@ -48,12 +48,12 @@ def state(*, authority_hash: str = H1, first_content_hash: str = H2) -> Snapshot
         entries=(
             SemanticEntryRecord(
                 logical_path="README.md",
-                representation_schema="google-docs-visible-text-v1",
+                representation_schema="test-representation-v1",
                 content_sha256=first_content_hash,
             ),
             SemanticEntryRecord(
                 logical_path="DECISIONS.md",
-                representation_schema="google-docs-visible-text-v1",
+                representation_schema="test-representation-v1",
                 content_sha256=H3,
             ),
         ),
@@ -77,7 +77,7 @@ def observation(*, snapshot_hash: str, version: int = 7, acquired_at: datetime =
                 parent_ids=("opaque-parent-001",),
                 trashed=False,
                 can_download=True,
-                representation_schema="google-docs-visible-text-v1",
+                representation_schema="test-representation-v1",
                 content_sha256=H2,
             ),
         ),
@@ -98,7 +98,7 @@ def test_strict_boundary_rejects_unknown_fields_and_type_coercion() -> None:
             parent_ids=("opaque-parent-001",),
             trashed=False,
             can_download=True,
-            representation_schema="google-docs-visible-text-v1",
+            representation_schema="test-representation-v1",
             content_sha256=H2,
         )
 
@@ -174,7 +174,7 @@ def test_hash_fields_are_lowercase_sha256_only() -> None:
     with pytest.raises(ValidationError):
         SemanticEntryRecord(
             logical_path="README.md",
-            representation_schema="google-docs-visible-text-v1",
+            representation_schema="test-representation-v1",
             content_sha256="not-a-hash",
         )
     with pytest.raises(ValidationError):

@@ -123,13 +123,13 @@ list_members(parent_id) -> tuple[SourceObservation, ...]  # only when requested
 
 Transport exceptions are typed: authentication, permission, not-found, unsupported representation, permanent provider failure, and transient provider failure. Provider response bodies, credential paths, tokens, and raw exception text do not enter durable records.
 
-### Google Drive / Docs adapter
+### Google Drive adapter
 
-The first Google adapter uses only `drive.readonly` and official Drive v3 + Docs v1 APIs.
+The first Google adapter uses only `drive.readonly` and the official Drive v3 API.
 
-For native Google Docs, the initial representation is `google-docs-visible-text-v1`: a deterministic, versioned canonical representation of the visible base document text from all requested tabs with suggestions excluded. The projector validates the exact API response shape it consumes and fails closed on structures it cannot represent without semantic loss. It does not claim that these bytes are raw Drive storage bytes.
+For native Google Docs, the representation is `google-drive-export-markdown-v1`: the exact bytes returned by Drive `files.export` with MIME type `text/markdown`. The package does not normalize, reformat, or parse those bytes before hashing. These are deterministic export-representation bytes, not raw native-Docs storage bytes. Live Stage-A verification showed repeated Markdown exports were byte-stable for all four registered D-016 objects while their Drive versions were unchanged. The same local OAuth client had the Docs API disabled, so requiring Docs v1 would add an unnecessary second service dependency without improving the authority guarantee.
 
-For movement identity, Drive `version` is used as a monotonic server-side change observation together with object ID, name, MIME type, modified time, parent IDs, trashed state, and relevant capabilities. PRE/POST equality is required. Docs `revisionId` is deliberately not required for read-only acquisition because it is not populated for view-only access and is not a durable sequential identifier.
+For movement identity, Drive `version` is used as a monotonic server-side change observation together with object ID, name, MIME type, modified time, parent IDs, trashed state, and relevant capabilities. PRE/POST equality is required. No Docs `revisionId` is required; semantic identity is the declared authority profile plus exact exported Markdown bytes, while provider observations remain distinct provenance.
 
 Provider-level transient retries are bounded and distinct from whole-transaction source-movement retries. Permanent/auth/identity/representation/checksum failures are not retried as movement.
 

@@ -7,7 +7,7 @@ import pytest
 
 from canonical_sync.acquisition import acquire_stable_candidate
 from canonical_sync.errors import AuthorityMismatchError, CanonicalSyncError
-from canonical_sync.google_drive import GoogleDriveDocsTransport
+from canonical_sync.google_drive import GoogleDriveTransport
 from canonical_sync.store import SnapshotStore
 from llm_evaluation.canonical_authority import load_d016_authority_profile
 from llm_evaluation.canonical_live import live_drive_config_from_environment
@@ -36,7 +36,7 @@ def test_registered_d016_authority_live(tmp_path: Path) -> None:
 
     try:
         profile = load_d016_authority_profile(config.profile_path)
-        transport = GoogleDriveDocsTransport.from_application_default()
+        transport = GoogleDriveTransport.from_application_default()
         candidate = acquire_stable_candidate(transport, profile, max_movement_attempts=3)
         store = SnapshotStore(tmp_path / "private-snapshot-store")
         publication = store.publish(store.stage(candidate))

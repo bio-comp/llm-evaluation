@@ -37,7 +37,7 @@ def _write_profile(path: Path, *, roles: tuple[str, ...] | None = None) -> None:
                 f'expected_name = "{role}"',
                 'expected_mime_type = "application/vnd.google-apps.document"',
                 'expected_parent_id = "private-parent"',
-                'representation_schema = "google-docs-visible-text-v1"',
+                'representation_schema = "google-drive-export-markdown-v1"',
             ]
         )
     path.write_text("\n".join(lines) + "\n")

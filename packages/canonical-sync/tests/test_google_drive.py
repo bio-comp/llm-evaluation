@@ -16,10 +16,10 @@ from canonical_sync.errors import (
     UnsupportedRepresentationError,
 )
 from canonical_sync.google_drive import (
-    DOCS_FIELDS,
     DRIVE_METADATA_FIELDS,
     DRIVE_READONLY_SCOPE,
-    GoogleDriveDocsTransport,
+    GOOGLE_DOC_MARKDOWN_REPRESENTATION,
+    GoogleDriveTransport,
 )
 
 
@@ -42,38 +42,39 @@ class Request:
 
 
 class Resource:
-    def __init__(self, values: list[object]) -> None:
-        self.values = list(values)
-        self.calls: list[dict[str, object]] = []
+    def __init__(self, *, gets=(), exports=(), lists=()) -> None:
+        self.get_values = list(gets)
+        self.export_values = list(exports)
+        self.list_values = list(lists)
+        self.get_calls: list[dict[str, object]] = []
+        self.export_calls: list[dict[str, object]] = []
+        self.list_calls: list[dict[str, object]] = []
+
+    @staticmethod
+    def _request(values: list[object]):
+        value = values.pop(0)
+        if isinstance(value, BaseException):
+            return Request(error=value)
+        return Request(value=value)
 
     def get(self, **kwargs):
-        self.calls.append(kwargs)
-        value = self.values.pop(0)
-        if isinstance(value, BaseException):
-            return Request(error=value)
-        return Request(value=value)
+        self.get_calls.append(kwargs)
+        return self._request(self.get_values)
+
+    def export(self, **kwargs):
+        self.export_calls.append(kwargs)
+        return self._request(self.export_values)
 
     def list(self, **kwargs):
-        self.calls.append(kwargs)
-        value = self.values.pop(0)
-        if isinstance(value, BaseException):
-            return Request(error=value)
-        return Request(value=value)
+        self.list_calls.append(kwargs)
+        return self._request(self.list_values)
 
 
 class DriveService:
-    def __init__(self, values: list[object]) -> None:
-        self.resource = Resource(values)
+    def __init__(self, resource: Resource) -> None:
+        self.resource = resource
 
     def files(self):
-        return self.resource
-
-
-class DocsService:
-    def __init__(self, values: list[object]) -> None:
-        self.resource = Resource(values)
-
-    def documents(self):
         return self.resource
 
 
@@ -90,46 +91,7 @@ def metadata(*, version: str = "7", object_id: str = "object-001", name: str = "
     }
 
 
-def docs(*, table: bool = False):
-    content = (
-        [{"table": {"tableRows": []}}]
-        if table
-        else [
-            {"sectionBreak": {"sectionStyle": {"columnSeparatorStyle": "NONE"}}},
-            {
-                "paragraph": {
-                    "paragraphStyle": {"namedStyleType": "HEADING_1"},
-                    "elements": [
-                        {
-                            "startIndex": 1,
-                            "endIndex": 9,
-                            "textRun": {"content": "Heading\n", "textStyle": {"bold": True}},
-                        }
-                    ],
-                }
-            },
-            {
-                "paragraph": {
-                    "paragraphStyle": {"namedStyleType": "NORMAL_TEXT"},
-                    "elements": [{"textRun": {"content": "Body\n"}}],
-                }
-            },
-        ]
-    )
-    return {
-        "documentId": "object-001",
-        "title": "README.md",
-        "tabs": [
-            {
-                "tabProperties": {"tabId": "t.0", "title": "Tab 1", "index": 0},
-                "documentTab": {"body": {"content": content}},
-                "childTabs": [],
-            }
-        ],
-    }
-
-
-def spec() -> AuthorityObjectSpec:
+def spec(*, representation: str = GOOGLE_DOC_MARKDOWN_REPRESENTATION) -> AuthorityObjectSpec:
     return AuthorityObjectSpec(
         logical_path="README.md",
         provider="google_drive",
@@ -137,71 +99,60 @@ def spec() -> AuthorityObjectSpec:
         expected_name="README.md",
         expected_mime_type="application/vnd.google-apps.document",
         expected_parent_id="parent-001",
-        representation_schema="google-docs-visible-text-v1",
+        representation_schema=representation,
     )
 
 
-def transport(drive_values, docs_values=()):
-    drive = DriveService(list(drive_values))
-    docs_service = DocsService(list(docs_values))
-    value = GoogleDriveDocsTransport(
-        drive_service=drive,
-        docs_service=docs_service,
+def transport(*, gets=(), exports=(), lists=(), attempts: int = 2):
+    resource = Resource(gets=gets, exports=exports, lists=lists)
+    value = GoogleDriveTransport(
+        drive_service=DriveService(resource),
         http_error_types=(FakeHttpError,),
-        request_attempts=2,
+        request_attempts=attempts,
         sleeper=lambda _: None,
     )
-    return value, drive, docs_service
+    return value, resource
 
 
-def test_exact_readonly_scope_and_request_fields_options() -> None:
-    value, drive, docs_service = transport([metadata()], [docs()])
+def test_exact_readonly_scope_metadata_and_markdown_export_requests() -> None:
+    markdown = b"# Heading\n\nBody\n"
+    value, resource = transport(gets=[metadata()], exports=[markdown])
     observed = value.observe(spec())
     acquired = value.read(spec())
 
     assert DRIVE_READONLY_SCOPE == "https://www.googleapis.com/auth/drive.readonly"
     assert observed.version == 7
-    assert drive.resource.calls == [{
+    assert resource.get_calls == [{
         "fileId": "object-001",
         "fields": DRIVE_METADATA_FIELDS,
         "supportsAllDrives": True,
     }]
-    assert docs_service.resource.calls == [{
-        "documentId": "object-001",
-        "includeTabsContent": True,
-        "suggestionsViewMode": "PREVIEW_WITHOUT_SUGGESTIONS",
-        "fields": DOCS_FIELDS,
-    }]
-    assert acquired.representation_schema == "google-docs-visible-text-v1"
-    assert b"Heading" in acquired.data and b"Body" in acquired.data
+    assert resource.export_calls == [{"fileId": "object-001", "mimeType": "text/markdown"}]
+    assert acquired.representation_schema == GOOGLE_DOC_MARKDOWN_REPRESENTATION
+    assert acquired.data == markdown
 
 
-def test_representation_is_deterministic_across_irrelevant_mapping_order() -> None:
-    first = docs()
-    second = copy.deepcopy(first)
-    second["tabs"][0]["tabProperties"] = dict(
-        reversed(list(second["tabs"][0]["tabProperties"].items()))
-    )
-    a, _, _ = transport([], [first])
-    b, _, _ = transport([], [second])
-    assert a.read(spec()).data == b.read(spec()).data
+def test_export_bytes_are_used_exactly_without_normalization() -> None:
+    markdown = b"# Heading\r\n\r\n- item  \n"
+    value, _ = transport(exports=[markdown])
+    assert value.read(spec()).data == markdown
 
 
-def test_unsupported_document_structure_fails_closed() -> None:
-    value, _, _ = transport([], [docs(table=True)])
-    with pytest.raises(UnsupportedRepresentationError, match="table"):
+def test_unsupported_representation_and_nonbytes_export_fail_closed() -> None:
+    value, resource = transport(exports=[])
+    with pytest.raises(UnsupportedRepresentationError, match="representation"):
+        value.read(spec(representation="other-v1"))
+    assert resource.export_calls == []
+
+    value, _ = transport(exports=["not-bytes"])
+    with pytest.raises(TransportPermanentError, match="bytes"):
         value.read(spec())
 
 
-def test_malformed_or_mismatched_provider_responses_fail_without_raw_body() -> None:
-    value, _, _ = transport([metadata(version="not-an-int")])
+def test_malformed_metadata_fails_without_raw_provider_body() -> None:
+    value, _ = transport(gets=[metadata(version="not-an-int")])
     with pytest.raises(TransportPermanentError, match="metadata"):
         value.observe(spec())
-    wrong = docs()
-    wrong["documentId"] = "wrong"
-    value, _, _ = transport([], [wrong])
-    with pytest.raises(TransportPermanentError, match="document identity"):
-        value.read(spec())
 
 
 @pytest.mark.parametrize(
@@ -216,28 +167,41 @@ def test_malformed_or_mismatched_provider_responses_fail_without_raw_body() -> N
 def test_nonretryable_http_errors_are_typed_and_sanitized(
     status: int, body: bytes, expected: type[Exception]
 ) -> None:
-    value, _, _ = transport([FakeHttpError(status, body)])
+    value, _ = transport(gets=[FakeHttpError(status, body)])
     with pytest.raises(expected) as caught:
         value.observe(spec())
     assert "SECRET" not in str(caught.value)
 
 
 def test_transient_http_retries_boundedly_and_sanitizes_failure() -> None:
-    value, drive, _ = transport([
-        FakeHttpError(503, b"SECRET first"),
-        FakeHttpError(503, b"SECRET second"),
-    ])
+    value, resource = transport(
+        gets=[FakeHttpError(503, b"SECRET first"), FakeHttpError(503, b"SECRET second")]
+    )
     with pytest.raises(TransportTransientError) as caught:
         value.observe(spec())
-    assert len(drive.resource.calls) == 2
+    assert len(resource.get_calls) == 2
     assert "SECRET" not in str(caught.value)
 
 
 def test_rate_limit_403_is_transient_but_other_403_is_permission() -> None:
     rate = b'{"error":{"errors":[{"reason":"rateLimitExceeded"}]}}'
-    value, drive, _ = transport([FakeHttpError(403, rate), metadata()])
+    value, resource = transport(gets=[FakeHttpError(403, rate), metadata()])
     assert value.observe(spec()).version == 7
-    assert len(drive.resource.calls) == 2
+    assert len(resource.get_calls) == 2
+
+
+def test_exact_membership_listing_handles_pagination() -> None:
+    first_page = {
+        "files": [metadata(object_id="object-002", name="DECISIONS.md")],
+        "nextPageToken": "next",
+    }
+    second_page = {"files": [metadata()], "nextPageToken": None}
+    value, resource = transport(lists=[first_page, second_page])
+    members = value.list_members("parent-001")
+    assert [item.object_id for item in members] == ["object-001", "object-002"]
+    assert len(resource.list_calls) == 2
+    assert resource.list_calls[0]["q"] == "'parent-001' in parents and trashed = false"
+    assert resource.list_calls[1]["pageToken"] == "next"
 
 
 def test_package_google_clients_are_optional() -> None:

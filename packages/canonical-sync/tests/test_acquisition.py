@@ -34,7 +34,7 @@ def spec(path: str, object_id: str) -> AuthorityObjectSpecRecord:
         expected_name=path,
         expected_mime_type=MIME,
         expected_parent_id="parent-001",
-        representation_schema="google-docs-visible-text-v1",
+        representation_schema="test-representation-v1",
     )
 
 
@@ -77,7 +77,7 @@ def observed(
 
 
 def content(data: bytes) -> SourceContent:
-    return SourceContent(representation_schema="google-docs-visible-text-v1", data=data)
+    return SourceContent(representation_schema="test-representation-v1", data=data)
 
 
 def stable_transport(*, version: int = 1, first_data: bytes = b"README\n") -> FakeTransport:
