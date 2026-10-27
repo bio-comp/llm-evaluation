@@ -91,9 +91,10 @@ class GitHubPullRequestMergeRecord(_StrictFrozenProjectRecord):
 
 class GitHubCIVerificationRecord(_StrictFrozenProjectRecord):
     record_type: Literal["llm_evaluation_github_ci"] = "llm_evaluation_github_ci"
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     repository: Literal["bio-comp/llm-evaluation"] = _PUBLIC_REPOSITORY
     run_id: int
+    workflow_name: Literal["Public CI"]
     check_name: Literal["verify"] = _PUBLIC_VERIFY_CHECK
     commit_sha: str
     conclusion: Literal["success"] = "success"
@@ -117,7 +118,7 @@ class VerifiedPublicationReceiptRecord(_StrictFrozenProjectRecord):
     record_type: Literal["llm_evaluation_verified_publication"] = (
         "llm_evaluation_verified_publication"
     )
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     snapshot_state_sha256: str
     public_contract_sha256: str
     publication_tree_sha256: str
@@ -155,7 +156,7 @@ class ReconciliationDispositionRecord(_StrictFrozenProjectRecord):
     record_type: Literal["llm_evaluation_reconciliation_disposition"] = (
         "llm_evaluation_reconciliation_disposition"
     )
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     current_snapshot_sha256: str
     previous_snapshot_sha256: str | None = None
     impact: ProjectImpact
