@@ -63,3 +63,38 @@ For this project, `COMPLETE` is stronger than a generic Git receipt or a Boolean
 - [`canonical-sync` implementation design](design/2026-10-26-canonical-sync-design.md)
 - [Prompt Research/prlab second-consumer compatibility check](canonical-sync-prlab-compatibility.md)
 - [Hosted GitHub OIDC → Google WIF activation design](design/canonical-sync-oidc-wif-activation.md)
+
+## Review hardening and historical records
+
+Post-merge closure must call `GitPublisher.verify(tree, expected_commit=M)` on
+`refs/heads/main`. This method reads and compares remote state; a mismatch raises
+without creating a commit or attempting a push. Never use `publish()` as a
+post-merge repair operation. The reviewed head H may differ from merged commit M;
+PR merge evidence, main readback and successful `Public CI` / `verify` evidence
+must bind M. Real closure must obtain these facts from authoritative GitHub state,
+not hand-constructed records.
+
+Publication rejects file/directory hierarchy collisions. The current publisher
+also rejects any base tree containing non-100644 entries before committing or
+pushing; it does not normalize executable files, symlinks or gitlinks.
+
+Git receipt v3 stores a normalized repository endpoint without userinfo, query
+or fragment; unsupported/local locators become opaque SHA-256 identities. Project
+completion still checks the exact authorized public endpoint. Acquisition receipt
+v4 and observation v3 preserve recognized coarse transport/auth categories and
+numeric versions; other transport metadata becomes opaque digests. Raw exception
+bodies and paths do not enter failure receipts. Operational transport and staging
+I/O failures are typed; programming errors still propagate.
+
+CI evidence v2 requires the explicit `Public CI` workflow identity. Project
+publication v3 and disposition v2 version the changed nested evidence contracts.
+The prior Git receipt v1→v2, acquisition receipt v2→v3 and project publication
+v1→v2 corrections were already versioned. Historical payloads remain untouched;
+current readers explicitly reject old schema versions and never infer missing
+provenance or completion evidence. No historical private receipt is deleted or
+migrated. Use the original versioned implementation to inspect historical records.
+
+The live Drive authority requires project-owned last-reconciled state but does
+not yet designate an exact storage object/path for `LastReconciledStateRecord`.
+That home must be resolved before real closure; no public checkpoint is created
+by this implementation or this review.
