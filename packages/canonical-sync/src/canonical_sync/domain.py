@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from .codec import canonical_record_hash
 from .records import AuthorityProfileRecord
 
 
@@ -26,6 +27,7 @@ class ExactMembershipSpec:
 @dataclass(frozen=True, slots=True)
 class AuthorityProfile:
     profile_name: str
+    spec_sha256: str
     objects: tuple[AuthorityObjectSpec, ...]
     memberships: tuple[ExactMembershipSpec, ...]
 
@@ -64,6 +66,7 @@ class SourceContent:
 def profile_from_record(record: AuthorityProfileRecord) -> AuthorityProfile:
     return AuthorityProfile(
         profile_name=record.profile_name,
+        spec_sha256=canonical_record_hash(record),
         objects=tuple(
             AuthorityObjectSpec(
                 logical_path=item.logical_path,
