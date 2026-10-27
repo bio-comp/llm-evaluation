@@ -1,0 +1,50 @@
+from __future__ import annotations
+
+import tomllib
+from pathlib import Path
+
+from pydantic import ValidationError
+
+from canonical_sync.domain import AuthorityProfile, profile_from_record
+from canonical_sync.records import AuthorityObjectSpecRecord, AuthorityProfileRecord
+
+D016_REQUIRED_ROLES = frozenset(
+    {"README.md", "DECISIONS.md", "EXPERIMENTS.md", "REVIEW_LEDGER.md"}
+)
+_GOOGLE_DOC_MIME = "application/vnd.google-apps.document"
+_REPRESENTATION = "google-docs-visible-text-v1"
+
+
+def load_d016_authority_profile(path: Path) -> AuthorityProfile:
+    try:
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ValueError("D-016 authority profile could not be read as TOML") from exc
+    if set(raw) != {"profile"} or not isinstance(raw["profile"], dict):
+        raise ValueError("D-016 authority profile must contain only a [profile] table")
+    profile_raw = raw["profile"]
+    if set(profile_raw) != {"profile_name", "objects"}:
+        raise ValueError("D-016 authority profile contains unexpected fields")
+    profile_name = profile_raw.get("profile_name")
+    objects_raw = profile_raw.get("objects")
+    if not isinstance(profile_name, str) or not isinstance(objects_raw, list):
+        raise ValueError("D-016 authority profile has invalid field types")
+    try:
+        objects = tuple(
+            AuthorityObjectSpecRecord.model_validate(item, strict=True) for item in objects_raw
+        )
+        record = AuthorityProfileRecord(profile_name=profile_name, objects=objects)
+    except ValidationError as exc:
+        raise ValueError("D-016 authority profile failed strict validation") from exc
+    roles = {item.logical_path for item in record.objects}
+    if roles != D016_REQUIRED_ROLES:
+        raise ValueError("D-016 authority profile must contain the exact D-016 roles")
+    for item in record.objects:
+        if (
+            item.provider != "google_drive"
+            or item.expected_name != item.logical_path
+            or item.expected_mime_type != _GOOGLE_DOC_MIME
+            or item.representation_schema != _REPRESENTATION
+        ):
+            raise ValueError("D-016 authority profile contains an unsupported source declaration")
+    return profile_from_record(record)

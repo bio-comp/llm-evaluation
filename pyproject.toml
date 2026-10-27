@@ -13,10 +13,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-drive = [
-    "google-api-python-client==2.201.0",
-    "google-auth==2.62.0",
-]
+drive = ["canonical-sync[drive]"]
 
 [project.scripts]
 llm-evaluation = "llm_evaluation.cli:main"

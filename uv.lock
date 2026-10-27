@@ -613,8 +613,7 @@ dependencies = [
 
 [package.optional-dependencies]
 drive = [
-    { name = "google-api-python-client" },
-    { name = "google-auth" },
+    { name = "canonical-sync", extra = ["drive"] },
 ]
 
 [package.dev-dependencies]
@@ -628,8 +627,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "canonical-sync", editable = "packages/canonical-sync" },
-    { name = "google-api-python-client", marker = "extra == 'drive'", specifier = "==2.201.0" },
-    { name = "google-auth", marker = "extra == 'drive'", specifier = "==2.62.0" },
+    { name = "canonical-sync", extras = ["drive"], marker = "extra == 'drive'", editable = "packages/canonical-sync" },
     { name = "pydantic", specifier = "==2.14.1" },
 ]
 provides-extras = ["drive"]

@@ -1,0 +1,144 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from canonical_sync.codec import canonical_record_bytes, canonical_record_hash
+from canonical_sync.records import (
+    LastReconciledStateRecord,
+    ProjectImpact,
+    ReconciliationDisposition,
+)
+from llm_evaluation.canonical_authority import D016_REQUIRED_ROLES, load_d016_authority_profile
+from llm_evaluation.canonical_reconciliation import (
+    ReconciliationPolicyContract,
+    ReviewedCanonicalImpact,
+    current_executable_policy_contract,
+    reconcile_reviewed_snapshot,
+    verify_executable_policy_contract,
+)
+
+H1 = "1" * 64
+H2 = "2" * 64
+
+
+def _write_profile(path: Path, *, roles: tuple[str, ...] | None = None) -> None:
+    selected = roles or tuple(sorted(D016_REQUIRED_ROLES))
+    lines = ['[profile]', 'profile_name = "llm-evaluation-d016"']
+    for index, role in enumerate(selected, start=1):
+        lines.extend(
+            [
+                "",
+                "[[profile.objects]]",
+                f'logical_path = "{role}"',
+                'provider = "google_drive"',
+                f'object_id = "private-object-{index}"',
+                f'expected_name = "{role}"',
+                'expected_mime_type = "application/vnd.google-apps.document"',
+                'expected_parent_id = "private-parent"',
+                'representation_schema = "google-docs-visible-text-v1"',
+            ]
+        )
+    path.write_text("\n".join(lines) + "\n")
+
+
+def test_private_d016_profile_loads_exact_roles_without_public_defaults(tmp_path: Path) -> None:
+    profile_path = tmp_path / "authority.toml"
+    _write_profile(profile_path)
+    profile = load_d016_authority_profile(profile_path)
+
+    assert {item.logical_path for item in profile.objects} == D016_REQUIRED_ROLES
+    assert {item.object_id for item in profile.objects} == {
+        "private-object-1",
+        "private-object-2",
+        "private-object-3",
+        "private-object-4",
+    }
+    public_bytes = canonical_record_bytes(current_executable_policy_contract())
+    assert all(item.object_id.encode() not in public_bytes for item in profile.objects)
+    assert b"private-parent" not in public_bytes
+
+
+def test_private_profile_rejects_missing_extra_and_unknown_top_level_state(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.toml"
+    _write_profile(missing, roles=tuple(sorted(D016_REQUIRED_ROLES))[:-1])
+    with pytest.raises(ValueError, match="exact D-016 roles"):
+        load_d016_authority_profile(missing)
+
+    extra = tmp_path / "extra.toml"
+    _write_profile(extra, roles=tuple(sorted(D016_REQUIRED_ROLES)) + ("SOURCE_INDEX.md",))
+    with pytest.raises(ValueError, match="exact D-016 roles"):
+        load_d016_authority_profile(extra)
+
+    unknown = tmp_path / "unknown.toml"
+    _write_profile(unknown)
+    unknown.write_text(unknown.read_text() + '\nunexpected = "value"\n')
+    with pytest.raises(ValueError):
+        load_d016_authority_profile(unknown)
+
+
+def test_counterfactual_authoritative_contract_fails_stale_executable_until_reconciled() -> None:
+    reconciled = current_executable_policy_contract()
+    stale_authoritative = ReconciliationPolicyContract(
+        dispositions=("NONE", "REQUIRED", "BLOCKED", "COMPLETE"),
+        complete_requires_snapshot_match=True,
+        complete_requires_contract_match=True,
+        complete_requires_readback=True,
+        complete_requires_ci=False,
+    )
+
+    with pytest.raises(ValueError, match="stale"):
+        verify_executable_policy_contract(stale_authoritative)
+    verify_executable_policy_contract(reconciled)
+
+
+def test_public_change_yields_required_contract_and_matching_identity() -> None:
+    contract = current_executable_policy_contract()
+    result = reconcile_reviewed_snapshot(
+        current_snapshot_sha256=H2,
+        previous=LastReconciledStateRecord(snapshot_state_sha256=H1),
+        reviewed=ReviewedCanonicalImpact(
+            impact=ProjectImpact.PUBLIC_CHANGE_REQUIRED,
+            public_contract=contract,
+        ),
+    )
+    assert result.disposition.disposition is ReconciliationDisposition.REQUIRED
+    assert result.public_projection == contract
+    assert result.disposition.public_contract_sha256 == canonical_record_hash(contract)
+
+
+def test_private_only_change_produces_none_and_no_public_artifact() -> None:
+    result = reconcile_reviewed_snapshot(
+        current_snapshot_sha256=H2,
+        previous=LastReconciledStateRecord(snapshot_state_sha256=H1),
+        reviewed=ReviewedCanonicalImpact(impact=ProjectImpact.NO_PUBLIC_IMPACT),
+    )
+    assert result.disposition.disposition is ReconciliationDisposition.NONE
+    assert result.public_projection is None
+
+
+def test_unknown_or_unsafe_change_blocks_without_public_artifact() -> None:
+    result = reconcile_reviewed_snapshot(
+        current_snapshot_sha256=H2,
+        previous=LastReconciledStateRecord(snapshot_state_sha256=H1),
+        reviewed=ReviewedCanonicalImpact(impact=ProjectImpact.UNKNOWN_OR_UNSAFE),
+    )
+    assert result.disposition.disposition is ReconciliationDisposition.BLOCKED
+    assert result.public_projection is None
+
+
+def test_public_contract_is_exactly_the_four_authorized_reconciliation_states() -> None:
+    contract = current_executable_policy_contract()
+    assert contract.dispositions == ("NONE", "REQUIRED", "BLOCKED", "COMPLETE")
+    assert contract.complete_requires_snapshot_match is True
+    assert contract.complete_requires_contract_match is True
+    assert contract.complete_requires_readback is True
+    assert contract.complete_requires_ci is True
+
+
+def test_public_policy_fixture_is_canonical_and_matches_executable_contract() -> None:
+    payload = Path("fixtures/reconciliation_policy_contract.json").read_bytes()
+    contract = ReconciliationPolicyContract.model_validate_json(payload, strict=True)
+    assert canonical_record_bytes(contract) == payload
+    verify_executable_policy_contract(contract)

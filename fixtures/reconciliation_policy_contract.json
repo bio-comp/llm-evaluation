@@ -1,0 +1,1 @@
+{"complete_requires_ci":true,"complete_requires_contract_match":true,"complete_requires_readback":true,"complete_requires_snapshot_match":true,"dispositions":["NONE","REQUIRED","BLOCKED","COMPLETE"],"projection_type":"llm_evaluation_reconciliation_policy","schema_version":1}
