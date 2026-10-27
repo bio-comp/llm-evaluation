@@ -211,6 +211,7 @@ class GitPublisher:
                     git_tree = self._git(repo, "rev-parse", observed + "^{tree}").decode().strip()
                     return GitPublicationReceiptRecord(
                         status="unchanged",
+                        remote=self.remote,
                         remote_ref=self.ref,
                         expected_base_commit=expected_base,
                         resulting_commit=observed,
@@ -250,6 +251,7 @@ class GitPublisher:
                 raise RemoteVerificationError("remote publication readback does not match approved tree")
             return GitPublicationReceiptRecord(
                 status="published",
+                remote=self.remote,
                 remote_ref=self.ref,
                 expected_base_commit=expected_base,
                 resulting_commit=commit,

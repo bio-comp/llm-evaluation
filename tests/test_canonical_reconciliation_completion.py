@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from canonical_sync.records import GitPublicationReceiptRecord
 from llm_evaluation.canonical_reconciliation import (
+    GitHubCIVerificationRecord,
+    GitHubPullRequestMergeRecord,
     LastReconciledStateRecord,
     ProjectImpact,
     ReconciliationDisposition,
@@ -16,20 +19,44 @@ from llm_evaluation.canonical_reconciliation import (
 
 H1 = "1" * 64
 H2 = "2" * 64
+MERGED = "a" * 40
+REVIEWED_HEAD = "c" * 40
+PUBLIC_REMOTE = "https://github.com/bio-comp/llm-evaluation.git"
 
 
-def _git_receipt(tree_sha256: str) -> GitPublicationReceiptRecord:
+def _git_receipt(
+    tree_sha256: str,
+    *,
+    remote: str = PUBLIC_REMOTE,
+    ref: str = "refs/heads/main",
+    status: str = "unchanged",
+) -> GitPublicationReceiptRecord:
+    expected_base = MERGED if status == "unchanged" else None
     return GitPublicationReceiptRecord(
-        status="published",
-        remote_ref="refs/heads/test",
-        expected_base_commit=None,
-        resulting_commit="a" * 40,
+        status=status,
+        remote=remote,
+        remote_ref=ref,
+        expected_base_commit=expected_base,
+        resulting_commit=MERGED,
         git_tree_oid="b" * 40,
         publication_tree_sha256=tree_sha256,
-        verified_remote_commit="a" * 40,
+        verified_remote_commit=MERGED,
         readback_verified=True,
         fast_forward_only=True,
     )
+
+
+def _pull_request() -> GitHubPullRequestMergeRecord:
+    return GitHubPullRequestMergeRecord(
+        pull_request_number=42,
+        head_ref="refs/heads/feat/task2-drive-reconciliation",
+        head_commit_sha=REVIEWED_HEAD,
+        merged_commit_sha=MERGED,
+    )
+
+
+def _ci(*, commit_sha: str = MERGED) -> GitHubCIVerificationRecord:
+    return GitHubCIVerificationRecord(run_id=12345, commit_sha=commit_sha)
 
 
 def _required():
@@ -45,40 +72,114 @@ def _required():
     return result
 
 
-def test_complete_binds_project_state_to_verified_generic_git_receipt() -> None:
-    required = _required()
-    disposition = required.disposition
-    assert disposition.public_contract_sha256 is not None
-    assert disposition.publication_tree_sha256 is not None
-    receipt = VerifiedPublicationReceiptRecord(
-        snapshot_state_sha256=H2,
-        public_contract_sha256=disposition.public_contract_sha256,
-        publication_tree_sha256=disposition.publication_tree_sha256,
-        git=_git_receipt(disposition.publication_tree_sha256),
-        ci_verified=True,
+def _verified_receipt(
+    *,
+    snapshot_state_sha256: str = H2,
+    public_contract_sha256: str,
+    publication_tree_sha256: str,
+    git: GitPublicationReceiptRecord | None = None,
+    ci: GitHubCIVerificationRecord | None = None,
+) -> VerifiedPublicationReceiptRecord:
+    return VerifiedPublicationReceiptRecord(
+        snapshot_state_sha256=snapshot_state_sha256,
+        public_contract_sha256=public_contract_sha256,
+        publication_tree_sha256=publication_tree_sha256,
+        git=git or _git_receipt(publication_tree_sha256),
+        pull_request=_pull_request(),
+        ci=ci or _ci(),
     )
 
-    completed = complete_reconciliation(disposition, receipt)
-    assert completed.disposition is ReconciliationDisposition.COMPLETE
-    assert completed.verified_publication == receipt
 
-
-def test_complete_rejects_project_binding_mismatch_or_missing_ci() -> None:
+def test_complete_binds_project_state_to_merged_git_readback_pr_and_ci() -> None:
     required = _required().disposition
     assert required.public_contract_sha256 is not None
     assert required.publication_tree_sha256 is not None
-    good = dict(
-        snapshot_state_sha256=H2,
+    receipt = _verified_receipt(
         public_contract_sha256=required.public_contract_sha256,
         publication_tree_sha256=required.publication_tree_sha256,
-        git=_git_receipt(required.publication_tree_sha256),
-        ci_verified=True,
     )
+
+    completed = complete_reconciliation(required, receipt)
+    assert completed.disposition is ReconciliationDisposition.COMPLETE
+    assert completed.verified_publication == receipt
+    assert receipt.git.resulting_commit == receipt.pull_request.merged_commit_sha
+    assert receipt.git.resulting_commit == receipt.ci.commit_sha
+
+
+def test_complete_rejects_project_binding_mismatch() -> None:
+    required = _required().disposition
+    assert required.public_contract_sha256 is not None
+    assert required.publication_tree_sha256 is not None
     bad_receipts = (
-        VerifiedPublicationReceiptRecord(**(good | {"snapshot_state_sha256": H1})),
-        VerifiedPublicationReceiptRecord(**(good | {"public_contract_sha256": "3" * 64})),
-        VerifiedPublicationReceiptRecord(**(good | {"ci_verified": False})),
+        _verified_receipt(
+            snapshot_state_sha256=H1,
+            public_contract_sha256=required.public_contract_sha256,
+            publication_tree_sha256=required.publication_tree_sha256,
+        ),
+        _verified_receipt(
+            public_contract_sha256="3" * 64,
+            publication_tree_sha256=required.publication_tree_sha256,
+        ),
     )
     for receipt in bad_receipts:
         with pytest.raises(ValueError, match="complete"):
             complete_reconciliation(required, receipt)
+
+
+@pytest.mark.parametrize(
+    "git",
+    [
+        pytest.param(
+            _git_receipt("2" * 64, ref="refs/heads/arbitrary"),
+            id="wrong-ref",
+        ),
+        pytest.param(
+            _git_receipt("2" * 64, remote="https://github.com/example/wrong.git"),
+            id="wrong-repository",
+        ),
+        pytest.param(
+            _git_receipt("2" * 64, status="published"),
+            id="not-post-merge-readback",
+        ),
+    ],
+)
+def test_verified_completion_evidence_rejects_wrong_repository_ref_or_transaction(
+    git: GitPublicationReceiptRecord,
+) -> None:
+    required = _required().disposition
+    assert required.public_contract_sha256 is not None
+    assert required.publication_tree_sha256 is not None
+    with pytest.raises(ValidationError):
+        _verified_receipt(
+            public_contract_sha256=required.public_contract_sha256,
+            publication_tree_sha256=required.publication_tree_sha256,
+            git=git,
+        )
+
+
+def test_verified_completion_evidence_rejects_ci_for_different_commit() -> None:
+    required = _required().disposition
+    assert required.public_contract_sha256 is not None
+    assert required.publication_tree_sha256 is not None
+    with pytest.raises(ValidationError, match="same merged commit"):
+        _verified_receipt(
+            public_contract_sha256=required.public_contract_sha256,
+            publication_tree_sha256=required.publication_tree_sha256,
+            ci=_ci(commit_sha="d" * 40),
+        )
+
+
+def test_free_standing_ci_verified_boolean_is_not_completion_evidence() -> None:
+    required = _required().disposition
+    assert required.public_contract_sha256 is not None
+    assert required.publication_tree_sha256 is not None
+    payload = {
+        "snapshot_state_sha256": H2,
+        "public_contract_sha256": required.public_contract_sha256,
+        "publication_tree_sha256": required.publication_tree_sha256,
+        "git": _git_receipt(required.publication_tree_sha256),
+        "pull_request": _pull_request(),
+        "ci_verified": True,
+    }
+    with pytest.raises(ValidationError):
+        VerifiedPublicationReceiptRecord.model_validate(payload, strict=True)

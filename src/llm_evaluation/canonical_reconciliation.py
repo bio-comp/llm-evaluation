@@ -12,6 +12,17 @@ from canonical_sync.git_publication import PublicationFile, PublicationTree
 from canonical_sync.records import GitPublicationReceiptRecord
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_GIT_OID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+_PUBLIC_REPOSITORY = "bio-comp/llm-evaluation"
+_PUBLIC_MAIN_REF = "refs/heads/main"
+_PUBLIC_VERIFY_CHECK = "verify"
+_PUBLIC_GIT_REMOTES = frozenset(
+    {
+        "https://github.com/bio-comp/llm-evaluation.git",
+        "git@github.com:bio-comp/llm-evaluation.git",
+        "ssh://git@github.com/bio-comp/llm-evaluation.git",
+    }
+)
 
 
 class _StrictFrozenProjectRecord(BaseModel):
@@ -46,16 +57,73 @@ class LastReconciledStateRecord(_StrictFrozenProjectRecord):
         return value
 
 
+class GitHubPullRequestMergeRecord(_StrictFrozenProjectRecord):
+    record_type: Literal["llm_evaluation_github_pr_merge"] = "llm_evaluation_github_pr_merge"
+    schema_version: Literal[1] = 1
+    repository: Literal["bio-comp/llm-evaluation"] = _PUBLIC_REPOSITORY
+    pull_request_number: int
+    head_ref: str
+    head_commit_sha: str
+    base_ref: Literal["refs/heads/main"] = _PUBLIC_MAIN_REF
+    merged_commit_sha: str
+
+    @field_validator("pull_request_number")
+    @classmethod
+    def validate_pull_request_number(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("pull-request number must be positive")
+        return value
+
+    @field_validator("head_ref")
+    @classmethod
+    def validate_head_ref(cls, value: str) -> str:
+        if not value.startswith("refs/heads/") or value == _PUBLIC_MAIN_REF:
+            raise ValueError("reviewed pull request must identify a non-main branch ref")
+        return value
+
+    @field_validator("head_commit_sha", "merged_commit_sha")
+    @classmethod
+    def validate_commit_sha(cls, value: str) -> str:
+        if _GIT_OID_RE.fullmatch(value) is None:
+            raise ValueError("project Git commits must be lowercase Git object IDs")
+        return value
+
+
+class GitHubCIVerificationRecord(_StrictFrozenProjectRecord):
+    record_type: Literal["llm_evaluation_github_ci"] = "llm_evaluation_github_ci"
+    schema_version: Literal[1] = 1
+    repository: Literal["bio-comp/llm-evaluation"] = _PUBLIC_REPOSITORY
+    run_id: int
+    check_name: Literal["verify"] = _PUBLIC_VERIFY_CHECK
+    commit_sha: str
+    conclusion: Literal["success"] = "success"
+
+    @field_validator("run_id")
+    @classmethod
+    def validate_run_id(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("CI run ID must be positive")
+        return value
+
+    @field_validator("commit_sha")
+    @classmethod
+    def validate_commit_sha(cls, value: str) -> str:
+        if _GIT_OID_RE.fullmatch(value) is None:
+            raise ValueError("CI commit must be a lowercase Git object ID")
+        return value
+
+
 class VerifiedPublicationReceiptRecord(_StrictFrozenProjectRecord):
     record_type: Literal["llm_evaluation_verified_publication"] = (
         "llm_evaluation_verified_publication"
     )
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     snapshot_state_sha256: str
     public_contract_sha256: str
     publication_tree_sha256: str
     git: GitPublicationReceiptRecord
-    ci_verified: bool
+    pull_request: GitHubPullRequestMergeRecord
+    ci: GitHubCIVerificationRecord
 
     @field_validator(
         "snapshot_state_sha256",
@@ -67,6 +135,20 @@ class VerifiedPublicationReceiptRecord(_StrictFrozenProjectRecord):
         if _SHA256_RE.fullmatch(value) is None:
             raise ValueError("publication binding identities must be lowercase SHA-256")
         return value
+
+    @model_validator(mode="after")
+    def validate_project_transaction(self) -> Self:
+        if self.git.remote not in _PUBLIC_GIT_REMOTES:
+            raise ValueError("completion Git evidence must bind the public llm-evaluation repository")
+        if self.git.remote_ref != _PUBLIC_MAIN_REF or self.git.status != "unchanged":
+            raise ValueError("completion Git evidence must be post-merge main-branch readback")
+        merged_commit = self.git.resulting_commit
+        if (
+            self.pull_request.merged_commit_sha != merged_commit
+            or self.ci.commit_sha != merged_commit
+        ):
+            raise ValueError("PR merge, Git readback, and CI must bind the same merged commit")
+        return self
 
 
 class ReconciliationDispositionRecord(_StrictFrozenProjectRecord):
@@ -127,7 +209,8 @@ class ReconciliationDispositionRecord(_StrictFrozenProjectRecord):
                 or receipt.git.publication_tree_sha256 != self.publication_tree_sha256
                 or not receipt.git.readback_verified
                 or not receipt.git.fast_forward_only
-                or not receipt.ci_verified
+                or receipt.pull_request.merged_commit_sha != receipt.git.resulting_commit
+                or receipt.ci.commit_sha != receipt.git.resulting_commit
             ):
                 raise ValueError("COMPLETE requires exact verified Git/readback/CI evidence")
         return self

@@ -458,8 +458,9 @@ class GitPublicationReceiptRecord(StrictFrozenRecord):
     canonical_identity_domain: ClassVar[str] = "canonical-sync.git-publication-receipt"
     canonical_identity_version: ClassVar[int] = 1
     record_type: Literal["git_publication_receipt"] = "git_publication_receipt"
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     status: Literal["published", "unchanged"]
+    remote: str
     remote_ref: str
     expected_base_commit: str | None = None
     resulting_commit: str
@@ -468,6 +469,11 @@ class GitPublicationReceiptRecord(StrictFrozenRecord):
     verified_remote_commit: str
     readback_verified: bool
     fast_forward_only: bool
+
+    @field_validator("remote")
+    @classmethod
+    def validate_remote(cls, value: str) -> str:
+        return _nonempty_trimmed(value, label="publication remote")
 
     @field_validator("remote_ref")
     @classmethod
