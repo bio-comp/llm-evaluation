@@ -35,6 +35,12 @@ class PublicationFile:
 
 @dataclass(frozen=True, slots=True)
 class PublicationTree:
+    """Caller-approved file projection applied mechanically to the verified base tree.
+
+    Paths omitted from this projection are preserved from the expected base; omission is
+    never implicit authorization to delete an unrelated repository path.
+    """
+
     files: tuple[PublicationFile, ...]
 
     def __post_init__(self) -> None:
@@ -190,13 +196,16 @@ class GitPublisher:
             if observed != expected_base:
                 raise RemoteRaceError("remote ref moved relative to expected publication base")
 
-            approved = tree.as_dict()
+            approved_projection = tree.as_dict()
+            desired_tree = approved_projection
             if observed is not None:
                 self._git(repo, "fetch", "--no-tags", "origin", self.ref)
                 fetched = self._git(repo, "rev-parse", "FETCH_HEAD").decode().strip()
                 if fetched != observed:
                     raise RemoteRaceError("remote ref moved during publication preflight")
-                if self._read_tree(repo, observed) == approved:
+                base_tree = self._read_tree(repo, observed)
+                desired_tree = base_tree | approved_projection
+                if base_tree == desired_tree:
                     if self._tip(repo) != observed:
                         raise RemoteRaceError("remote ref moved during unchanged verification")
                     git_tree = self._git(repo, "rev-parse", observed + "^{tree}").decode().strip()
@@ -212,7 +221,7 @@ class GitPublisher:
                         fast_forward_only=True,
                     )
 
-            git_tree = self._write_tree(repo, approved)
+            git_tree = self._write_tree(repo, desired_tree)
             parents: tuple[str, ...] = () if expected_base is None else ("-p", expected_base)
             commit = self._git(
                 repo,
@@ -233,7 +242,11 @@ class GitPublisher:
                 raise RemoteVerificationError("remote ref does not contain the published commit")
             self._git(repo, "fetch", "--no-tags", "origin", self.ref)
             fetched = self._git(repo, "rev-parse", "FETCH_HEAD").decode().strip()
-            if fetched != commit or self._read_tree(repo, commit) != approved or self._tip(repo) != commit:
+            if (
+                fetched != commit
+                or self._read_tree(repo, commit) != desired_tree
+                or self._tip(repo) != commit
+            ):
                 raise RemoteVerificationError("remote publication readback does not match approved tree")
             return GitPublicationReceiptRecord(
                 status="published",

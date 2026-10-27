@@ -22,6 +22,14 @@ def git(path: Path, *args: str) -> str:
     ).stdout.strip()
 
 
+def git_bytes(path: Path, *args: str) -> bytes:
+    return subprocess.run(
+        ["git", "-C", str(path), *args],
+        check=True,
+        capture_output=True,
+    ).stdout
+
+
 def tree() -> PublicationTree:
     return PublicationTree(
         files=(
@@ -49,6 +57,68 @@ def test_git_publication_accepts_only_caller_supplied_tree_and_verifies_remote(t
     )
     assert second.status == "unchanged"
     assert second.resulting_commit == first.resulting_commit
+
+
+def test_publication_projection_preserves_unrelated_base_files(tmp_path: Path) -> None:
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    publisher = GitPublisher(str(remote), ref="refs/heads/canonical-sync-test")
+    base = publisher.publish(
+        PublicationTree(files=(PublicationFile(path="KEEP.txt", data=b"keep byte-for-byte\n"),)),
+        expected_base=None,
+        commit_message="seed unrelated base file",
+    )
+
+    approved = PublicationTree(
+        files=(
+            PublicationFile(
+                path="fixtures/reconciliation_policy_contract.json",
+                data=b'{"policy":"approved"}\n',
+            ),
+        )
+    )
+    result = publisher.publish(
+        approved,
+        expected_base=base.resulting_commit,
+        commit_message="apply narrow approved projection",
+    )
+
+    assert git_bytes(remote, "show", f"{result.resulting_commit}:KEEP.txt") == b"keep byte-for-byte\n"
+    assert (
+        git_bytes(
+            remote,
+            "show",
+            f"{result.resulting_commit}:fixtures/reconciliation_policy_contract.json",
+        )
+        == b'{"policy":"approved"}\n'
+    )
+
+
+def test_projection_noop_on_nonempty_base_preserves_commit(tmp_path: Path) -> None:
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    publisher = GitPublisher(str(remote), ref="refs/heads/canonical-sync-test")
+    approved_data = b'{"policy":"approved"}\n'
+    base = publisher.publish(
+        PublicationTree(
+            files=(
+                PublicationFile(path="KEEP.txt", data=b"unchanged\n"),
+                PublicationFile(path="contracts/policy.json", data=approved_data),
+            )
+        ),
+        expected_base=None,
+        commit_message="seed nonempty base",
+    )
+
+    result = publisher.publish(
+        PublicationTree(files=(PublicationFile(path="contracts/policy.json", data=approved_data),)),
+        expected_base=base.resulting_commit,
+        commit_message="same narrow projection",
+    )
+
+    assert result.status == "unchanged"
+    assert result.resulting_commit == base.resulting_commit
+    assert git_bytes(remote, "show", f"{result.resulting_commit}:KEEP.txt") == b"unchanged\n"
 
 
 def test_remote_movement_blocks_publication_and_never_forces(tmp_path: Path) -> None:
