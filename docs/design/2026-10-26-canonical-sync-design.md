@@ -180,7 +180,7 @@ The snapshot store is private working evidence, not a competing canonical. It li
 Safety invariants:
 
 - reject symlinked store roots, operational directories, locks, files, and ancestors where relevant;
-- reject traversal/absolute/empty/reserved logical paths and portable case-fold collisions;
+- reject traversal/absolute/empty logical paths, Windows-reserved/illegal materialization names, unsafe trailing/control characters, and portable Unicode-NFC/case-fold collisions;
 - reject non-regular unexpected filesystem entries;
 - stage inside the store only;
 - fsync staged files before publication;
@@ -193,11 +193,13 @@ Safety invariants:
 - an orphan semantic snapshot without its verified observation is not a completed acquisition;
 - interrupted staging remains incomplete and cannot be mistaken for verified state.
 
+Each acquisition run also persists a versioned `AcquisitionReceiptRecord` as auxiliary private provenance. A successful receipt binds the authority-profile identity, transaction-attempt count, exact semantic-state hash, and exact observation hash. A failed receipt records the typed error code and attempt count but never raw provider exception text or successful snapshot identities. Receipt files are hash-addressed, canonically serialized, verified on readback, and subject to the same non-symlink/exact-inventory store boundary.
+
 ## 9. Reconciliation state
 
 The generic package owns the vocabulary and mechanics, not the scientific meaning.
 
-Persisted `ReconciliationStateRecord` and `ReconciliationDispositionRecord` use schema versions and bind:
+Persisted `LastReconciledStateRecord` and `ReconciliationDispositionRecord` use schema versions and bind:
 
 - current semantic snapshot identity;
 - previous verified semantic snapshot identity when present;

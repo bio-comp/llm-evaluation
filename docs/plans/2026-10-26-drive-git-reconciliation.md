@@ -1,6 +1,8 @@
 # Task 2 — Verified Drive → Git Reconciliation Implementation Plan
 
-> **Execution:** inline on `feat/task2-drive-reconciliation`, based on public `main`. Google Drive remains the sole mutable `llm_evaluation` methodology authority. This plan contains no Drive object IDs, revisions, canonical text, credentials, or private metadata.
+> **SUPERSEDED PROTOTYPE PLAN:** retained only as implementation history. Do not use this document as current architecture or execution guidance. The active design is [`docs/design/2026-10-26-canonical-sync-design.md`](../design/2026-10-26-canonical-sync-design.md) and the active plan is [`docs/plans/2026-10-26-canonical-sync-incubation.md`](2026-10-26-canonical-sync-incubation.md). In particular, the Docs-v1 structural projector described below was abandoned after live Stage-A verification showed the local OAuth client had the Docs API disabled while Drive v3 `text/markdown` export worked under the same `drive.readonly` credential.
+>
+> **Historical execution context:** inline on `feat/task2-drive-reconciliation`, based on public `main`. Google Drive remains the sole mutable `llm_evaluation` methodology authority. This plan contains no Drive object IDs, revisions, canonical text, credentials, or private metadata.
 
 **Goal:** implement the smallest read-only Google Drive acquisition and public-reconciliation foundation authorized by D-016, proving stable native-Docs semantic acquisition and explicit `NONE` / `REQUIRED` / `BLOCKED` / `COMPLETE` state without building a bidirectional sync, canonical writer, hosted WIF workflow, or generic multi-project framework.
 

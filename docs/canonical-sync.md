@@ -43,3 +43,9 @@ Ordinary public CI is credential-free. It may install the optional Google client
 ## Public reconciliation contract
 
 `fixtures/reconciliation_policy_contract.json` is deliberately public-safe. It records only the executable four-state reconciliation contract (`NONE`, `REQUIRED`, `BLOCKED`, `COMPLETE`) and the verified-publication conditions required for `COMPLETE`. Private Drive identities and canonical narrative are excluded by design.
+
+## Related design records
+
+- [`canonical-sync` implementation design](design/2026-10-26-canonical-sync-design.md)
+- [Prompt Research/prlab second-consumer compatibility check](canonical-sync-prlab-compatibility.md)
+- [Hosted GitHub OIDC → Google WIF activation design](design/canonical-sync-oidc-wif-activation.md)

@@ -1,8 +1,8 @@
 # canonical-sync incubation implementation plan
 
-> **Spec:** `docs/superpowers/specs/2026-10-26-canonical-sync-design.md`
+> **Spec:** `docs/design/2026-10-26-canonical-sync-design.md`
 >
-> **Execution:** inline in the existing isolated worktree `/Users/mikeh/repos/.worktrees/llm-evaluation-drive-reconciliation` on `feat/task2-drive-reconciliation`. Preserve the two existing prototype commits as provenance; correct forward with small commits. No reset/clean of unrelated work, no Task-1/runtime implementation, no E-002 sampling, no Drive writes unless a final verified state change justifies one.
+> **Execution:** inline in the existing isolated `feat/task2-drive-reconciliation` worktree. Preserve the two existing prototype commits as provenance; correct forward with small commits. No reset/clean of unrelated work, no Task-1/runtime implementation, no E-002 sampling, no Drive writes unless a final verified state change justifies one.
 
 **Goal:** replace the project-specific Task-2 prototype with a reusable in-repository `canonical-sync` package, consume it through thin `llm_evaluation` adapters, prove the public/private reconciliation feedback path, and live-verify the read-only local OAuth boundary if existing credentials permit it.
 
