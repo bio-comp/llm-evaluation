@@ -19,10 +19,10 @@ The question is narrow: which prlab behaviors are genuinely reusable mechanics, 
 | Portable path safety and materialization collision checks | strict logical-path validation with Windows-reserved/illegal-name checks plus Unicode NFC/casefold collision detection | Common mechanic represented after second-consumer review. |
 | Private snapshot staging, exact inventory, symlink rejection, atomic publication, observation-last completion | `SnapshotStore` | Common mechanic represented. |
 | Structured acquisition success/failure receipt | `AcquisitionReceiptRecord`, `acquire_and_publish()`, receipt store verification | Common mechanic represented after second-consumer review. Generic receipt excludes prlab-specific version/provider fields. |
-| Durable reconciliation states that advance only after verified publication | generic reconciliation records/state machine | Common mechanic represented; project interpretation stays outside the package. |
+| Durable reconciliation states that advance only after verified publication | consumer project layer | Intentionally **not** generic. `llm_evaluation` owns its `NONE` / `REQUIRED` / `BLOCKED` / `COMPLETE` governance; prlab keeps its own mirror/reconciliation state unless a second independent consumer later proves a shared abstraction. |
 | Prompt Research authority parser, scoped instruction extraction, and `Research/` membership semantics | prlab project layer | Intentionally **not** generic. These are Prompt Research semantics. |
-| prlab Git remote/branch publication, remote-race checks, mirror-specific state, and branch workflow | prlab project layer | Intentionally **not** generic. `canonical_sync` stops at verified source/snapshot/reconciliation/publication primitives. |
-| Prompt Research public mirror shape | prlab project layer | Intentionally **not** generic and is not copied into the public `llm-evaluation` design. |
+| Exact Git tree publication, expected-base/race checks, fast-forward-only push, remote readback | `GitPublisher` | Common mechanical publication primitive represented. It consumes only caller-approved immutable bytes/tree. |
+| prlab mirror branch naming, scheduling, mirror-state lifecycle, and public mirror shape | prlab project layer | Intentionally **not** generic. These are Prompt Research publication semantics and policy, and the mirror shape is not copied into the public `llm_evaluation` design. |
 
 ## Important second-consumer gap: stored-file/raw-byte acquisition
 
@@ -53,6 +53,6 @@ Those changes improve the generic seam for both consumers and are now tested in 
 
 ## Extraction assessment
 
-The API has now survived a real `llm_evaluation` local OAuth acquisition and a prlab second-consumer behavior mapping. The original technical extraction criteria are therefore substantially exercised locally: stable acquisition, all four reconciliation dispositions, a discriminating canonical-to-executable contract test, verified private publication, and second-consumer gaps are known.
+The API has now survived a real `llm_evaluation` local OAuth acquisition and a prlab second-consumer behavior mapping. The original technical extraction criteria are therefore substantially exercised locally: stable acquisition, `llm_evaluation`'s four project-owned reconciliation dispositions, a discriminating canonical-to-executable contract test, verified private snapshot publication, and second-consumer gaps are known.
 
 **Recommended operational gate:** do not extract the package before this `llm-evaluation` branch has completed normal public Git review/CI and D-016 can be closed as `COMPLETE`. After that, propose a standalone `canonical-sync` repository/package, add the raw stored-file representation required by prlab under tests, and migrate prlab incrementally while retaining its current implementation as the behavioral comparator until parity is demonstrated.

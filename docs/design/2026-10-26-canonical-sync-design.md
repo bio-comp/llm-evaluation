@@ -10,7 +10,7 @@ Current live Drive authority establishes the following boundaries:
 
 - Drive owns mutable methodology, evidence admission, experiment definitions/status, decisions, supersession, and interpretation.
 - Git owns public executable implementation, tests, schemas, public-safe fixtures/docs, and deliberately publishable immutable artifacts.
-- D-016 authorizes read-only Drive acquisition and explicit Drive-to-Git reconciliation but does not declare the path active until local OAuth acquisition, mixed-state/hash/publication-filter checks, explicit last-reconciled state, and Git readback/CI evidence exist.
+- D-016 authorizes read-only Drive acquisition and explicit Drive-to-Git reconciliation but does not declare the path active until local OAuth acquisition, mixed-state/hash/publication-boundary checks, explicit last-reconciled state, and Git readback/CI evidence exist.
 - Canonical changes are classified for repository reconciliation as `NONE`, `REQUIRED`, `BLOCKED`, or `COMPLETE`; this is distinct from evidence-candidate statuses.
 - Ordinary PR CI remains credential-free. Hosted GitHub OIDC -> Google WIF/service identity is a later activation gate.
 - D-017's local-model/runtime/storage architecture is separate and must not enter this package.
@@ -42,8 +42,7 @@ llm-evaluation/
 │       │   ├── transport.py
 │       │   ├── acquisition.py
 │       │   ├── store.py
-│       │   ├── reconciliation.py
-│       │   ├── publication.py
+│       │   ├── git_publication.py
 │       │   └── google_drive.py
 │       └── tests/
 ├── src/llm_evaluation/
@@ -83,8 +82,8 @@ Examples:
 - normalized Google API wire responses;
 - snapshot state and observation manifests;
 - acquisition receipts;
-- last-reconciled and reconciliation-disposition records;
-- public projection/publication receipts.
+- generic Git publication receipts;
+- consumer-owned persisted reconciliation records in `llm_evaluation`.
 
 After validation, trusted domain state is carried by `@dataclass(frozen=True, slots=True)` objects. Small `Protocol` interfaces define transport and project-decision dependencies.
 
@@ -195,27 +194,27 @@ Safety invariants:
 
 Each acquisition run also persists a versioned `AcquisitionReceiptRecord` as auxiliary private provenance. A successful receipt binds the authority-profile identity, transaction-attempt count, exact semantic-state hash, and exact observation hash. A failed receipt records the typed error code and attempt count but never raw provider exception text or successful snapshot identities. Receipt files are hash-addressed, canonically serialized, verified on readback, and subject to the same non-symlink/exact-inventory store boundary.
 
-## 9. Reconciliation state
+## 9. Consumer-owned reconciliation state
 
-The generic package owns the vocabulary and mechanics, not the scientific meaning.
+`canonical_sync` does **not** own project reconciliation meaning or the `NONE` / `REQUIRED` / `BLOCKED` / `COMPLETE` vocabulary. The reusable package ends at verified acquisition evidence plus mechanical Git publication/readback receipts.
 
-Persisted `LastReconciledStateRecord` and `ReconciliationDispositionRecord` use schema versions and bind:
+`llm_evaluation.canonical_reconciliation` owns the persisted project records and rules that bind:
 
 - current semantic snapshot identity;
 - previous verified semantic snapshot identity when present;
 - project decision (`no_public_impact`, `public_change_required`, or `unknown_or_unsafe`);
 - resulting disposition `NONE`, `REQUIRED`, or `BLOCKED`;
-- verified Git publication receipt only for `COMPLETE`.
+- project-approved contract/tree identity plus a generic verified Git publication receipt and project CI evidence for `COMPLETE`.
 
-Rules:
+Project rules remain:
 
 - same semantic identity -> `NONE`;
 - changed + explicit no-public-impact -> `NONE`;
 - changed + explicit public/executable impact -> `REQUIRED`;
 - changed + unknown/unsafe impact -> `BLOCKED`;
-- only a matching verified publication receipt can transition a matching `REQUIRED` obligation to `COMPLETE`.
+- only matching project bindings around a mechanically verified Git receipt can transition a matching `REQUIRED` obligation to `COMPLETE`.
 
-A changed file is therefore not synonymous with `REQUIRED`. A branch edit is not synonymous with `COMPLETE`.
+A changed file is therefore not synonymous with `REQUIRED`. A `VerifiedSnapshot` is evidence, not authorization, and a branch edit is not synonymous with `COMPLETE`.
 
 ## 10. Project adapter boundary
 
@@ -235,16 +234,16 @@ A changed file is therefore not synonymous with `REQUIRED`. A branch edit is not
 
 The adapter never treats arbitrary changed narrative as executable instructions.
 
-## 11. Public projection boundary
+## 11. Consumer authorization and generic Git publication boundary
 
-Public publication is two-layered:
+Publication is deliberately split across the trust boundary:
 
-1. **Primary control:** project-specific strict public projection models contain only deliberately admitted public-safe fields. Generic publication code cannot accept a `VerifiedSnapshot` or raw acquired source body as the public artifact.
-2. **Defense in depth:** the generic publication guard rejects configured private identity markers, exact acquired-body reuse, known credential/token patterns, unsafe filesystem paths, and payload/hash inconsistencies before atomic write/readback.
+1. **Consumer authorization:** project-specific logic interprets verified evidence and constructs the exact immutable bytes/tree approved for Git. `canonical_sync` never transforms `VerifiedSnapshot` content into a public artifact and never decides whether material is public-safe or significant.
+2. **Generic Git mechanics:** `GitPublisher` accepts only the already-constructed `PublicationTree`; it verifies the expected remote base, exact tree identity, fast-forward-only publication, remote movement, resulting commit/tree, and exact remote readback.
 
-The filter is not represented as a magical secret detector; safety depends first on the explicit public projection schema.
+There is no generic project-policy callback and no generic secret/private-content classifier. Public-safety policy lives in the consumer's narrow projection schema and construction path. Generic path/inventory validation remains mechanical Git safety only.
 
-No Drive IDs, parent IDs, modified times, tokens, local credential paths, or private canonical narrative are required in public artifacts.
+No Drive IDs, parent IDs, modified times, tokens, local credential paths, or private canonical narrative are required in the `llm_evaluation` publication tree.
 
 ## 12. Canonical -> executable regression vertical slice
 
@@ -307,7 +306,7 @@ Only then should a standalone `canonical-sync` repository be proposed. prlab mig
 - **Native Docs do not expose durable read-only `revisionId`.** The design does not depend on it; PRE/POST Drive observations plus deterministic representation hashing are the read-only stability check.
 - **A provider version can move without visible semantic content changing.** That movement invalidates the current attempt, but after reacquisition the semantic snapshot can remain identical while observation identity changes. This preserves both safety and no-op semantics.
 - **Cross-file atomicity is unavailable.** The design never claims it; any observed movement rejects the whole candidate.
-- **A secret scanner cannot prove publication safety.** The design makes a narrow project-owned public model the primary boundary and treats filtering as defense in depth.
+- **A generic secret scanner cannot prove publication safety.** The consumer owns the narrow approved projection schema and constructs exact bytes; `canonical_sync` performs only mechanical Git/path/inventory verification and does not classify project content as public or private.
 - **A new generic package could become a framework project.** The first API is constrained to behavior required by `llm_evaluation` plus concrete prlab prior art; no experiment/model/prompt semantics enter it.
 - **A wholesale Drive mirror would simplify reconciliation.** It is rejected because this repository is public and D-016 explicitly forbids mirroring private canonical bodies/metadata merely for convenience.
 

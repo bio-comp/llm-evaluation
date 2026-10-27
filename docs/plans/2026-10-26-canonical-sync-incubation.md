@@ -6,6 +6,8 @@
 
 **Goal:** replace the project-specific Task-2 prototype with a reusable in-repository `canonical-sync` package, consume it through thin `llm_evaluation` adapters, prove the public/private reconciliation feedback path, and live-verify the read-only local OAuth boundary if existing credentials permit it.
 
+> **Focused boundary correction — 2026-10-27:** the original Task 4/Task 6 wording below is retained as execution history but is superseded where it assigns project reconciliation states or public/private policy to `canonical_sync`. The implemented boundary is: `canonical_sync` owns verified acquisition/snapshot mechanics plus mechanical `GitPublisher` publication/readback of caller-approved immutable trees; `llm_evaluation` owns `NONE` / `REQUIRED` / `BLOCKED` / `COMPLETE`, material-significance decisions, public-safe projection construction, and CI/completion binding. Authentication provisioning (interactive OAuth, GitHub OIDC, WIF/IAM) remains deployment/runbook work outside the package; both trusted auth paths converge through ADC.
+
 ## Global constraints
 
 - Drive remains sole mutable methodology authority; Git remains public executable implementation.
@@ -271,7 +273,7 @@
 - semantic `SnapshotState` vs observation manifest -> generic identities;
 - source/membership movement -> acquisition contract;
 - snapshot store integrity/publication -> generic store;
-- mirror-specific Git publication -> intentionally project-specific/non-generic;
+- prlab mirror publication -> generic exact-tree Git mechanics plus project-specific branch/state/scheduling policy;
 - list any missing generic requirement as an extraction-gate item, not an immediate abstraction unless `llm_evaluation` also needs it.
 
 **Fresh full verification:**
@@ -298,7 +300,7 @@ Report, without private Drive material:
 - exact test count/skips and live-test outcome;
 - Ruff/mypy/lock/build/install-smoke results;
 - mixed-state negative-control evidence;
-- filesystem/publication-filter negative-control evidence;
+- filesystem plus consumer-projection/publication-tree negative-control evidence;
 - all four reconciliation dispositions mechanically exercised;
 - canonical-to-executable stale-vs-reconciled counterfactual result;
 - live OAuth authority profile scope and outcome at the level safe to publish;

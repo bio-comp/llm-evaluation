@@ -2,7 +2,7 @@
 
 `llm-evaluation` treats Google Drive as the sole mutable authority for methodology and reconciliation state. The public repository contains executable code, tests, schemas, public-safe contracts, and deliberately published artifacts; it does not mirror private canonical bodies or Drive metadata.
 
-The reusable mechanics are incubated in the workspace package `packages/canonical-sync` (import namespace `canonical_sync`). The `llm_evaluation` package adds only project-specific authority-role and reconciliation-policy interpretation.
+The reusable mechanics are incubated in the workspace package `packages/canonical-sync` (import namespace `canonical_sync`). The governing boundary is: `canonical_sync` owns verified acquisition/snapshot mechanics and mechanical Git publication/readback of an already-approved immutable tree; `llm_evaluation` owns authority-role interpretation, material significance, public-safe projection construction, and the `NONE` / `REQUIRED` / `BLOCKED` / `COMPLETE` governance state machine. A `VerifiedSnapshot` is evidence, not authorization to mutate Git.
 
 ## Local read-only verification
 
