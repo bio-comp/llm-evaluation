@@ -137,11 +137,14 @@ Provider-level transient retries are bounded and distinct from whole-transaction
 Persisted identity records use one canonical codec:
 
 - UTF-8 JSON;
-- Pydantic `model_dump(mode="json")` as the typed source;
+- Pydantic validates record structure, but does not define cryptographic scalar formatting;
+- the codec walks `model_dump(mode="python")` values through an explicit allowed-scalar canonicalizer;
+- timezone-aware datetimes normalize to UTC RFC 3339 with fixed microsecond precision and `Z`;
+- floating-point identity scalars are rejected rather than inheriting runtime/Pydantic formatting;
 - lexicographically sorted object keys;
 - compact separators `,` and `:`;
 - Unicode preserved (`ensure_ascii=False`);
-- no insignificant whitespace;
+- no insignificant whitespace and no trailing newline;
 - canonical parser reserializes and rejects noncanonical input;
 - SHA-256 over exact canonical bytes.
 
@@ -149,9 +152,9 @@ Identity levels remain distinct:
 
 1. **Content identity** — SHA-256 of deterministic representation bytes for one source.
 2. **Semantic snapshot identity** — SHA-256 of a sorted `SnapshotStateRecord` containing `authority_spec_sha256` plus logical key, representation schema, and content hash for every required source. Acquisition time, provider version, retry count, and machine identity are excluded.
-3. **Observation identity** — SHA-256 of `SnapshotObservationRecord`, which binds the semantic snapshot to exact provider observations and acquisition provenance. Metadata-only churn can therefore change observation identity without changing semantic state.
+3. **Observation identity** — SHA-256 of `SnapshotObservationRecord`, which binds the semantic snapshot to exact provider observations plus acquisition time/attempt and safe runner, Python, transport-version, and authentication-mode provenance. Metadata-only churn or a materially different execution/provenance context can therefore change observation identity without changing semantic state.
 
-A one-byte representation change changes content identity and therefore semantic snapshot identity. A source-authority/profile change also changes semantic snapshot identity through `authority_spec_sha256`, even if bytes happen to match.
+A one-byte representation change changes content identity and therefore semantic snapshot identity. A registered authority object/location/logical-mapping change also changes semantic snapshot identity through `authority_spec_sha256`, even if bytes happen to match. Renaming the private operator-facing profile label alone does not change the authority specification identity.
 
 ## 7. Stable multi-object acquisition
 
