@@ -1,4 +1,4 @@
-"""Reusable verified canonical acquisition and reconciliation mechanics."""
+"""Reusable verified canonical acquisition and publication mechanics."""
 
 from .codec import canonical_record_bytes, canonical_record_hash, parse_canonical_record
 

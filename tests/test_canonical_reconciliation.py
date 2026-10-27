@@ -5,15 +5,14 @@ from pathlib import Path
 import pytest
 
 from canonical_sync.codec import canonical_record_bytes, canonical_record_hash
-from canonical_sync.records import (
+from llm_evaluation.canonical_authority import D016_REQUIRED_ROLES, load_d016_authority_profile
+from llm_evaluation.canonical_reconciliation import (
     LastReconciledStateRecord,
     ProjectImpact,
     ReconciliationDisposition,
-)
-from llm_evaluation.canonical_authority import D016_REQUIRED_ROLES, load_d016_authority_profile
-from llm_evaluation.canonical_reconciliation import (
     ReconciliationPolicyContract,
     ReviewedCanonicalImpact,
+    approved_policy_tree,
     current_executable_policy_contract,
     reconcile_reviewed_snapshot,
     verify_executable_policy_contract,
@@ -105,7 +104,9 @@ def test_public_change_yields_required_contract_and_matching_identity() -> None:
     )
     assert result.disposition.disposition is ReconciliationDisposition.REQUIRED
     assert result.public_projection == contract
+    assert result.publication_tree == approved_policy_tree(contract)
     assert result.disposition.public_contract_sha256 == canonical_record_hash(contract)
+    assert result.disposition.publication_tree_sha256 == result.publication_tree.sha256
 
 
 def test_private_only_change_produces_none_and_no_public_artifact() -> None:
@@ -116,6 +117,7 @@ def test_private_only_change_produces_none_and_no_public_artifact() -> None:
     )
     assert result.disposition.disposition is ReconciliationDisposition.NONE
     assert result.public_projection is None
+    assert result.publication_tree is None
 
 
 def test_unknown_or_unsafe_change_blocks_without_public_artifact() -> None:
@@ -126,6 +128,7 @@ def test_unknown_or_unsafe_change_blocks_without_public_artifact() -> None:
     )
     assert result.disposition.disposition is ReconciliationDisposition.BLOCKED
     assert result.public_projection is None
+    assert result.publication_tree is None
 
 
 def test_public_contract_is_exactly_the_four_authorized_reconciliation_states() -> None:

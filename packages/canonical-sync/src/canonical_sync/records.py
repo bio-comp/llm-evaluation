@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from enum import StrEnum
 from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Literal, Self
@@ -375,107 +374,50 @@ class AcquisitionReceiptRecord(StrictFrozenRecord):
         return self
 
 
-class ProjectImpact(StrEnum):
-    NO_PUBLIC_IMPACT = "no_public_impact"
-    PUBLIC_CHANGE_REQUIRED = "public_change_required"
-    UNKNOWN_OR_UNSAFE = "unknown_or_unsafe"
-
-
-class ReconciliationDisposition(StrEnum):
-    NONE = "NONE"
-    REQUIRED = "REQUIRED"
-    BLOCKED = "BLOCKED"
-    COMPLETE = "COMPLETE"
-
-
-class LastReconciledStateRecord(StrictFrozenRecord):
-    record_type: Literal["last_reconciled_state"] = "last_reconciled_state"
+class GitPublicationReceiptRecord(StrictFrozenRecord):
+    record_type: Literal["git_publication_receipt"] = "git_publication_receipt"
     schema_version: Literal[1] = 1
-    snapshot_state_sha256: str
-
-    @field_validator("snapshot_state_sha256")
-    @classmethod
-    def validate_snapshot_hash(cls, value: str) -> str:
-        return _sha256(value)
-
-
-class VerifiedPublicationReceiptRecord(StrictFrozenRecord):
-    record_type: Literal["verified_publication_receipt"] = "verified_publication_receipt"
-    schema_version: Literal[1] = 1
-    snapshot_state_sha256: str
-    public_contract_sha256: str
-    git_commit_sha: str
-    artifact_path: str
-    artifact_sha256: str
+    status: Literal["published", "unchanged"]
+    remote_ref: str
+    expected_base_commit: str | None = None
+    resulting_commit: str
+    git_tree_oid: str
+    publication_tree_sha256: str
+    verified_remote_commit: str
     readback_verified: bool
-    ci_verified: bool
+    fast_forward_only: bool
 
-    @field_validator("snapshot_state_sha256", "public_contract_sha256", "artifact_sha256")
+    @field_validator("remote_ref")
     @classmethod
-    def validate_hashes(cls, value: str) -> str:
-        return _sha256(value)
-
-    @field_validator("git_commit_sha")
-    @classmethod
-    def validate_git_commit(cls, value: str) -> str:
-        if re.fullmatch(r"[0-9a-f]{40}", value) is None:
-            raise ValueError("Git commit must be a lowercase 40-character SHA-1")
+    def validate_remote_ref(cls, value: str) -> str:
+        value = _nonempty_trimmed(value, label="remote ref")
+        if not value.startswith("refs/heads/"):
+            raise ValueError("publication remote ref must be a branch ref")
         return value
 
-    @field_validator("artifact_path")
+    @field_validator(
+        "expected_base_commit",
+        "resulting_commit",
+        "git_tree_oid",
+        "verified_remote_commit",
+    )
     @classmethod
-    def validate_artifact_path(cls, value: str) -> str:
-        return _safe_logical_path(value)
-
-
-class ReconciliationDispositionRecord(StrictFrozenRecord):
-    record_type: Literal["reconciliation_disposition"] = "reconciliation_disposition"
-    schema_version: Literal[1] = 1
-    current_snapshot_sha256: str
-    previous_snapshot_sha256: str | None = None
-    impact: ProjectImpact
-    disposition: ReconciliationDisposition
-    public_contract_sha256: str | None = None
-    verified_publication: VerifiedPublicationReceiptRecord | None = None
-
-    @field_validator("current_snapshot_sha256")
-    @classmethod
-    def validate_current_hash(cls, value: str) -> str:
-        return _sha256(value)
-
-    @field_validator("previous_snapshot_sha256", "public_contract_sha256")
-    @classmethod
-    def validate_optional_hash(cls, value: str | None) -> str | None:
-        if value is not None:
-            return _sha256(value)
+    def validate_git_oid(cls, value: str | None) -> str | None:
+        if value is not None and re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", value) is None:
+            raise ValueError("Git object IDs must be lowercase 40- or 64-character hex")
         return value
+
+    @field_validator("publication_tree_sha256")
+    @classmethod
+    def validate_tree_hash(cls, value: str) -> str:
+        return _sha256(value)
 
     @model_validator(mode="after")
-    def validate_transition(self) -> Self:
-        changed = self.previous_snapshot_sha256 != self.current_snapshot_sha256
-        if self.disposition is ReconciliationDisposition.NONE:
-            if self.verified_publication is not None:
-                raise ValueError("NONE cannot contain verified publication evidence")
-            if changed and self.impact is not ProjectImpact.NO_PUBLIC_IMPACT:
-                raise ValueError("changed state can be NONE only for explicit no-public-impact")
-        elif self.disposition is ReconciliationDisposition.REQUIRED:
-            if self.impact is not ProjectImpact.PUBLIC_CHANGE_REQUIRED:
-                raise ValueError("REQUIRED needs public-change-required impact")
-            if self.public_contract_sha256 is None or self.verified_publication is not None:
-                raise ValueError("REQUIRED needs a public contract and no completion receipt")
-        elif self.disposition is ReconciliationDisposition.BLOCKED:
-            if self.impact is not ProjectImpact.UNKNOWN_OR_UNSAFE or self.verified_publication is not None:
-                raise ValueError("BLOCKED needs unknown/unsafe impact and no completion receipt")
-        elif self.disposition is ReconciliationDisposition.COMPLETE:
-            receipt = self.verified_publication
-            if (
-                self.impact is not ProjectImpact.PUBLIC_CHANGE_REQUIRED
-                or self.public_contract_sha256 is None
-                or receipt is None
-                or receipt.snapshot_state_sha256 != self.current_snapshot_sha256
-                or receipt.public_contract_sha256 != self.public_contract_sha256
-                or not receipt.readback_verified
-                or not receipt.ci_verified
-            ):
-                raise ValueError("COMPLETE requires exact verified publication/readback/CI evidence")
+    def validate_verified_result(self) -> Self:
+        if self.resulting_commit != self.verified_remote_commit:
+            raise ValueError("publication receipt remote verification does not match result")
+        if not self.readback_verified or not self.fast_forward_only:
+            raise ValueError("publication receipt requires verified readback and fast-forward-only semantics")
+        if self.status == "unchanged" and self.expected_base_commit != self.resulting_commit:
+            raise ValueError("unchanged publication must preserve the expected remote base")
         return self

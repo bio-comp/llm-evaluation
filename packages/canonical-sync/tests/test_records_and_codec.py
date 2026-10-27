@@ -157,6 +157,22 @@ def test_semantic_state_identity_is_order_independent_but_content_and_authority_
     assert canonical_record_hash(first) != canonical_record_hash(authority_changed)
 
 
+def test_source_state_identity_binds_registered_object_identity_not_only_content() -> None:
+    original_profile = profile()
+    changed_profile = AuthorityProfileRecord(
+        profile_name=original_profile.profile_name,
+        objects=(
+            object_spec(object_id="different-authoritative-object"),
+            object_spec(path="DECISIONS.md", object_id="opaque-object-002"),
+        ),
+    )
+    original_state = state(authority_hash=canonical_record_hash(original_profile))
+    changed_state = state(authority_hash=canonical_record_hash(changed_profile))
+
+    assert original_state.entries == changed_state.entries
+    assert canonical_record_hash(original_state) != canonical_record_hash(changed_state)
+
+
 def test_observation_identity_changes_for_metadata_only_churn_without_changing_semantic_state() -> None:
     semantic = state()
     semantic_hash = canonical_record_hash(semantic)

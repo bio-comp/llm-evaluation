@@ -14,8 +14,16 @@ class SnapshotIntegrityError(CanonicalSyncError):
     """A staged or persisted snapshot failed integrity verification."""
 
 
-class PublicationBoundaryError(CanonicalSyncError):
-    """A proposed public projection violates the publication boundary."""
+class GitPublicationError(CanonicalSyncError):
+    """A mechanical Git publication operation failed safely."""
+
+
+class RemoteRaceError(GitPublicationError):
+    """The configured remote ref moved relative to the expected base."""
+
+
+class RemoteVerificationError(GitPublicationError):
+    """Published Git state could not be verified by exact remote readback."""
 
 
 class TransportError(CanonicalSyncError):
