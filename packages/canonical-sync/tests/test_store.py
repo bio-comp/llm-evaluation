@@ -150,3 +150,27 @@ def test_identical_concurrent_publishers_serialize_to_publish_and_noop(tmp_path:
     assert sum(result.published_state for result in results) == 1
     assert sum(result.published_observation for result in results) == 1
     store.verify_completed(results[0].observation_sha256)
+
+
+def test_symlinked_receipts_directory_fails_closed(tmp_path: Path) -> None:
+    root = tmp_path / "private-store"
+    store = SnapshotStore(root)
+    receipts = root / "receipts"
+    receipts.rmdir()
+    outside = tmp_path / "outside-receipts"
+    outside.mkdir()
+    receipts.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(SnapshotIntegrityError, match="symlink"):
+        store.list_receipt_hashes()
+    assert list(outside.iterdir()) == []
+
+
+def test_partial_staging_artifact_never_counts_as_completed_state(tmp_path: Path) -> None:
+    root = tmp_path / "private-store"
+    store = SnapshotStore(root)
+    partial = root / "staging" / "interrupted"
+    partial.mkdir()
+    (partial / "partial.bin").write_bytes(b"partial")
+    assert store.list_receipt_hashes() == ()
+    assert list((root / "snapshots").iterdir()) == []
+    assert list((root / "observations").iterdir()) == []

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 import time
 from collections.abc import Callable
 from datetime import datetime
@@ -25,6 +27,7 @@ GOOGLE_DOC_MARKDOWN_REPRESENTATION = "google-drive-export-markdown-v1"
 _GOOGLE_DOC_MIME = "application/vnd.google-apps.document"
 _MARKDOWN_MIME = "text/markdown"
 _TRANSIENT_STATUSES = frozenset({429, 500, 502, 503, 504})
+_GOOGLE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 class _Request(Protocol):
@@ -97,6 +100,12 @@ def _metadata_to_observation(raw: object) -> SourceObservation:
     )
 
 
+def _google_id(value: str, *, label: str) -> str:
+    if _GOOGLE_ID_RE.fullmatch(value) is None:
+        raise TransportPermanentError(f"{label} is not a supported Google Drive identifier")
+    return value
+
+
 def _http_status(exc: BaseException) -> int | None:
     response = getattr(exc, "resp", None)
     value = getattr(response, "status", None)
@@ -111,8 +120,24 @@ def _http_content(exc: BaseException) -> bytes:
 def _rate_limited_403(exc: BaseException) -> bool:
     if _http_status(exc) != 403:
         return False
-    body = _http_content(exc)
-    return b'"reason":"rateLimitExceeded"' in body or b'"reason":"userRateLimitExceeded"' in body
+    try:
+        payload = json.loads(_http_content(exc).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return False
+    reasons: set[str] = set()
+    for key in ("errors", "details"):
+        values = error.get(key, [])
+        if not isinstance(values, list):
+            continue
+        for item in values:
+            if isinstance(item, dict) and isinstance(item.get("reason"), str):
+                reasons.add(item["reason"])
+    return bool(reasons & {"rateLimitExceeded", "userRateLimitExceeded"})
 
 
 class GoogleDriveTransport:
@@ -176,9 +201,12 @@ class GoogleDriveTransport:
         raise TransportTransientError("Google source request exhausted transient retries") from None
 
     def observe(self, spec: AuthorityObjectSpec) -> SourceObservation:
+        if spec.provider != "google_drive":
+            raise TransportPermanentError("Google Drive transport received a different provider")
+        object_id = _google_id(spec.object_id, label="object ID")
         raw = self._execute(
             lambda: self._drive.files().get(
-                fileId=spec.object_id,
+                fileId=object_id,
                 fields=DRIVE_METADATA_FIELDS,
                 supportsAllDrives=True,
             )
@@ -186,23 +214,27 @@ class GoogleDriveTransport:
         return _metadata_to_observation(raw)
 
     def read(self, spec: AuthorityObjectSpec) -> SourceContent:
+        if spec.provider != "google_drive":
+            raise TransportPermanentError("Google Drive transport received a different provider")
+        object_id = _google_id(spec.object_id, label="object ID")
         if spec.representation_schema != GOOGLE_DOC_MARKDOWN_REPRESENTATION:
             raise UnsupportedRepresentationError("Google source representation schema is unsupported")
         if spec.expected_mime_type != _GOOGLE_DOC_MIME:
             raise UnsupportedRepresentationError("Markdown export requires a native Google Doc")
         raw = self._execute(
-            lambda: self._drive.files().export(fileId=spec.object_id, mimeType=_MARKDOWN_MIME)
+            lambda: self._drive.files().export(fileId=object_id, mimeType=_MARKDOWN_MIME)
         )
         if type(raw) is not bytes:
             raise TransportPermanentError("Drive Markdown export did not return bytes")
         return SourceContent(representation_schema=GOOGLE_DOC_MARKDOWN_REPRESENTATION, data=raw)
 
     def list_members(self, parent_id: str) -> tuple[SourceObservation, ...]:
+        parent = _google_id(parent_id, label="parent ID")
         observations: list[SourceObservation] = []
         page_token: str | None = None
         while True:
             kwargs: dict[str, object] = {
-                "q": f"'{parent_id}' in parents and trashed = false",
+                "q": f"'{parent}' in parents and trashed = false",
                 "fields": f"nextPageToken,files({DRIVE_METADATA_FIELDS})",
                 "supportsAllDrives": True,
                 "includeItemsFromAllDrives": True,

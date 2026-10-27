@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from enum import StrEnum
 from datetime import datetime
 from pathlib import PurePosixPath
@@ -9,6 +10,10 @@ from typing import Literal, Self
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_WINDOWS_ILLEGAL_CHARS = frozenset('<>:"|?*')
+_WINDOWS_RESERVED_STEM_RE = re.compile(
+    r"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$", re.IGNORECASE
+)
 
 
 class StrictFrozenRecord(BaseModel):
@@ -21,15 +26,32 @@ def _nonempty_trimmed(value: str, *, label: str) -> str:
     return value
 
 
-def _safe_logical_path(value: str) -> str:
+def _portable_path_key(value: str) -> str:
     _nonempty_trimmed(value, label="logical path")
     if "\\" in value:
         raise ValueError("logical path must use POSIX separators")
     path = PurePosixPath(value)
     if path.is_absolute() or path.as_posix() != value:
         raise ValueError("logical path must be a canonical relative POSIX path")
-    if any(part in {"", ".", ".."} or part.casefold() == ".git" for part in path.parts):
-        raise ValueError("logical path contains an unsafe component")
+    normalized: list[str] = []
+    for part in path.parts:
+        if part in {"", ".", ".."} or part.casefold() == ".git":
+            raise ValueError("logical path contains an unsafe component")
+        if any(character in _WINDOWS_ILLEGAL_CHARS for character in part):
+            raise ValueError("logical path contains a portable-illegal character")
+        stem = part.split(".", 1)[0]
+        if _WINDOWS_RESERVED_STEM_RE.fullmatch(stem):
+            raise ValueError("logical path uses a reserved portable filename")
+        if part.endswith((" ", ".")):
+            raise ValueError("logical path component has an unsafe trailing character")
+        if any(ord(character) <= 0x1F or ord(character) == 0x7F for character in part):
+            raise ValueError("logical path contains an ASCII control character")
+        normalized.append(unicodedata.normalize("NFC", part).casefold())
+    return "/".join(normalized)
+
+
+def _safe_logical_path(value: str) -> str:
+    _portable_path_key(value)
     return value
 
 
@@ -118,7 +140,7 @@ class AuthorityProfileRecord(StrictFrozenRecord):
         if not value:
             raise ValueError("authority profile requires at least one object")
         ordered = tuple(sorted(value, key=lambda item: item.logical_path))
-        folded_paths = tuple(item.logical_path.casefold() for item in ordered)
+        folded_paths = tuple(_portable_path_key(item.logical_path) for item in ordered)
         if len(folded_paths) != len(set(folded_paths)):
             raise ValueError("authority logical paths collide portably")
         object_ids = tuple(item.object_id for item in ordered)
@@ -136,6 +158,18 @@ class AuthorityProfileRecord(StrictFrozenRecord):
         if len(parents) != len(set(parents)):
             raise ValueError("membership parents must be unique")
         return ordered
+
+    @model_validator(mode="after")
+    def validate_membership_coherence(self) -> Self:
+        by_id = {item.object_id: item for item in self.objects}
+        for membership in self.memberships:
+            for child_id in membership.expected_child_ids:
+                child = by_id.get(child_id)
+                if child is None:
+                    raise ValueError("exact membership references an undeclared authority object")
+                if child.expected_parent_id != membership.parent_id:
+                    raise ValueError("exact membership parent conflicts with object authority")
+        return self
 
 
 class SemanticEntryRecord(StrictFrozenRecord):
@@ -178,7 +212,7 @@ class SnapshotStateRecord(StrictFrozenRecord):
         if not value:
             raise ValueError("snapshot state requires at least one semantic entry")
         ordered = tuple(sorted(value, key=lambda item: item.logical_path))
-        folded = tuple(item.logical_path.casefold() for item in ordered)
+        folded = tuple(_portable_path_key(item.logical_path) for item in ordered)
         if len(folded) != len(set(folded)):
             raise ValueError("snapshot logical paths collide portably")
         return ordered
@@ -267,7 +301,7 @@ class SnapshotObservationRecord(StrictFrozenRecord):
         if not value:
             raise ValueError("snapshot observation requires at least one source")
         ordered = tuple(sorted(value, key=lambda item: item.logical_path))
-        paths = tuple(item.logical_path.casefold() for item in ordered)
+        paths = tuple(_portable_path_key(item.logical_path) for item in ordered)
         if len(paths) != len(set(paths)):
             raise ValueError("source observations must have unique logical paths")
         return ordered
@@ -276,6 +310,68 @@ class SnapshotObservationRecord(StrictFrozenRecord):
     def validate_source_hashes(self) -> Self:
         for source in self.sources:
             _sha256(source.content_sha256)
+        return self
+
+
+class AcquisitionReceiptRecord(StrictFrozenRecord):
+    record_type: Literal["acquisition_receipt"] = "acquisition_receipt"
+    schema_version: Literal[1] = 1
+    started_at: datetime
+    ended_at: datetime
+    authority_profile_sha256: str
+    transaction_attempt_count: int
+    status: Literal["success", "failed"]
+    error_code: str | None = None
+    snapshot_state_sha256: str | None = None
+    snapshot_observation_sha256: str | None = None
+
+    @field_validator("started_at", "ended_at")
+    @classmethod
+    def validate_times(cls, value: datetime) -> datetime:
+        return _aware(value)
+
+    @field_validator("authority_profile_sha256")
+    @classmethod
+    def validate_authority_hash(cls, value: str) -> str:
+        return _sha256(value)
+
+    @field_validator("snapshot_state_sha256", "snapshot_observation_sha256")
+    @classmethod
+    def validate_optional_hash(cls, value: str | None) -> str | None:
+        if value is not None:
+            return _sha256(value)
+        return value
+
+    @field_validator("transaction_attempt_count")
+    @classmethod
+    def validate_attempt_count(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("transaction attempt count must be nonnegative")
+        return value
+
+    @field_validator("error_code")
+    @classmethod
+    def validate_error_code(cls, value: str | None) -> str | None:
+        if value is not None:
+            return _nonempty_trimmed(value, label="error code")
+        return value
+
+    @model_validator(mode="after")
+    def validate_status(self) -> Self:
+        if self.ended_at < self.started_at:
+            raise ValueError("acquisition receipt ended_at precedes started_at")
+        if self.status == "success":
+            if self.transaction_attempt_count < 1:
+                raise ValueError("successful acquisition requires at least one transaction attempt")
+            if self.error_code is not None:
+                raise ValueError("successful acquisition cannot contain an error code")
+            if self.snapshot_state_sha256 is None or self.snapshot_observation_sha256 is None:
+                raise ValueError("successful acquisition requires state and observation identities")
+        else:
+            if self.error_code is None:
+                raise ValueError("failed acquisition requires a structured error code")
+            if self.snapshot_state_sha256 is not None or self.snapshot_observation_sha256 is not None:
+                raise ValueError("failed acquisition cannot claim successful snapshot identities")
         return self
 
 

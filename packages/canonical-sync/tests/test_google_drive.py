@@ -211,3 +211,29 @@ def test_package_google_clients_are_optional() -> None:
         "google-api-python-client==2.201.0",
         "google-auth==2.62.0",
     ]
+
+
+def test_google_ids_reject_query_unsafe_values_before_network() -> None:
+    value, resource = transport(gets=[], exports=[], lists=[])
+    bad_spec = spec().__class__(
+        logical_path="README.md",
+        provider="google_drive",
+        object_id="bad\' or trashed = false",
+        expected_name="README.md",
+        expected_mime_type="application/vnd.google-apps.document",
+        expected_parent_id="parent-001",
+        representation_schema=GOOGLE_DOC_MARKDOWN_REPRESENTATION,
+    )
+    with pytest.raises(TransportPermanentError, match="identifier"):
+        value.observe(bad_spec)
+    with pytest.raises(TransportPermanentError, match="identifier"):
+        value.list_members("bad\' or trashed = false")
+    assert resource.get_calls == []
+    assert resource.list_calls == []
+
+
+def test_rate_limit_403_parsing_is_not_whitespace_sensitive() -> None:
+    rate = b'{"error": {"errors": [{"reason": "rateLimitExceeded"}]}}'
+    value, resource = transport(gets=[FakeHttpError(403, rate), metadata()])
+    assert value.observe(spec()).version == 7
+    assert len(resource.get_calls) == 2

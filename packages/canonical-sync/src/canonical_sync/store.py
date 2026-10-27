@@ -14,7 +14,7 @@ from typing import Iterator
 from .acquisition import AcquiredRepresentation, AcquisitionCandidate
 from .codec import canonical_record_bytes, canonical_record_hash, parse_canonical_record
 from .errors import SnapshotIntegrityError
-from .records import SnapshotObservationRecord, SnapshotStateRecord
+from .records import AcquisitionReceiptRecord, SnapshotObservationRecord, SnapshotStateRecord
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,7 +99,8 @@ class SnapshotStore:
         self._staging = root / "staging"
         self._snapshots = root / "snapshots"
         self._observations = root / "observations"
-        for directory in (self._staging, self._snapshots, self._observations):
+        self._receipts = root / "receipts"
+        for directory in (self._staging, self._snapshots, self._observations, self._receipts):
             directory.mkdir(exist_ok=True)
             _require_directory(directory)
         _fsync_dir(root)
@@ -107,7 +108,7 @@ class SnapshotStore:
     def _validate_operational_dirs(self) -> None:
         _reject_symlink_chain(self.root)
         _require_directory(self.root)
-        for directory in (self._staging, self._snapshots, self._observations):
+        for directory in (self._staging, self._snapshots, self._observations, self._receipts):
             _require_directory(directory)
 
     @contextmanager
@@ -197,7 +198,7 @@ class SnapshotStore:
         _require_regular(state_path)
         try:
             state = parse_canonical_record(state_path.read_bytes(), SnapshotStateRecord)
-        except Exception as exc:
+        except (OSError, ValueError) as exc:
             raise SnapshotIntegrityError("snapshot state record failed canonical validation") from exc
         if canonical_record_hash(state) != expected_hash:
             raise SnapshotIntegrityError("snapshot state hash mismatch")
@@ -255,7 +256,7 @@ class SnapshotStore:
             observation = parse_canonical_record(
                 observation_path.read_bytes(), SnapshotObservationRecord
             )
-        except Exception as exc:
+        except (OSError, ValueError) as exc:
             raise SnapshotIntegrityError("observation record failed canonical validation") from exc
         if canonical_record_hash(observation) != expected_hash:
             raise SnapshotIntegrityError("observation hash mismatch")
@@ -305,6 +306,69 @@ class SnapshotStore:
             published_state=published_state,
             published_observation=published_observation,
         )
+
+    def _verify_receipt_file(
+        self, path: Path, expected_hash: str
+    ) -> AcquisitionReceiptRecord:
+        _require_regular(path)
+        try:
+            receipt = parse_canonical_record(path.read_bytes(), AcquisitionReceiptRecord)
+        except (OSError, ValueError) as exc:
+            raise SnapshotIntegrityError("acquisition receipt failed canonical validation") from exc
+        if canonical_record_hash(receipt) != expected_hash:
+            raise SnapshotIntegrityError("acquisition receipt hash mismatch")
+        return receipt
+
+    def persist_receipt(self, receipt: AcquisitionReceiptRecord) -> str:
+        self._validate_operational_dirs()
+        receipt_hash = canonical_record_hash(receipt)
+        target = self._receipts / f"{receipt_hash}.json"
+        payload = canonical_record_bytes(receipt)
+        with self._locked():
+            try:
+                os.lstat(target)
+            except FileNotFoundError:
+                pass
+            else:
+                self._verify_receipt_file(target, receipt_hash)
+                return receipt_hash
+            fd, temp_name = tempfile.mkstemp(prefix=".receipt-", suffix=".tmp", dir=self._receipts)
+            try:
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(payload)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.rename(temp_name, target)
+                _fsync_dir(self._receipts)
+            finally:
+                try:
+                    os.unlink(temp_name)
+                except FileNotFoundError:
+                    pass
+        self._verify_receipt_file(target, receipt_hash)
+        return receipt_hash
+
+    def verify_receipt(self, receipt_sha256: str) -> AcquisitionReceiptRecord:
+        self._validate_operational_dirs()
+        if len(receipt_sha256) != 64 or any(
+            character not in "0123456789abcdef" for character in receipt_sha256
+        ):
+            raise SnapshotIntegrityError("acquisition receipt identity is malformed")
+        return self._verify_receipt_file(
+            self._receipts / f"{receipt_sha256}.json", receipt_sha256
+        )
+
+    def list_receipt_hashes(self) -> tuple[str, ...]:
+        self._validate_operational_dirs()
+        hashes: list[str] = []
+        for item in self._receipts.iterdir():
+            _require_regular(item)
+            if not item.name.endswith(".json"):
+                raise SnapshotIntegrityError("receipt inventory contains an unexpected file")
+            receipt_hash = item.name[:-5]
+            self.verify_receipt(receipt_hash)
+            hashes.append(receipt_hash)
+        return tuple(sorted(hashes))
 
     def verify_completed(self, observation_sha256: str) -> VerifiedSnapshot:
         self._validate_operational_dirs()

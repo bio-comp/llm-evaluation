@@ -11,6 +11,7 @@ from canonical_sync.domain import profile_from_record
 from canonical_sync.records import (
     AuthorityObjectSpecRecord,
     AuthorityProfileRecord,
+    ExactMembershipSpecRecord,
     SemanticEntryRecord,
     SnapshotObservationRecord,
     SnapshotStateRecord,
@@ -179,3 +180,54 @@ def test_hash_fields_are_lowercase_sha256_only() -> None:
         )
     with pytest.raises(ValidationError):
         state(authority_hash="A" * 64)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "CON",
+        "aux.txt",
+        "Research/bad:name.md",
+        "Research/trailing.",
+        "Research/trailing ",
+        "Research/control\x7f.md",
+    ],
+)
+def test_profile_rejects_portably_unsafe_path_components(bad: str) -> None:
+    with pytest.raises(ValidationError):
+        object_spec(path=bad)
+
+
+def test_profile_rejects_unicode_normalization_collisions() -> None:
+    with pytest.raises(ValidationError):
+        AuthorityProfileRecord(
+            profile_name="unicode-collision",
+            objects=(
+                object_spec(path="Research/Café.md", object_id="opaque-object-001"),
+                object_spec(path="Research/Cafe\u0301.md", object_id="opaque-object-002"),
+            ),
+        )
+
+
+def test_exact_membership_must_reference_declared_objects_at_declared_parent() -> None:
+    with pytest.raises(ValidationError):
+        AuthorityProfileRecord(
+            profile_name="unknown-child",
+            objects=(object_spec(),),
+            memberships=(
+                ExactMembershipSpecRecord(
+                    parent_id="opaque-parent-001", expected_child_ids=("unknown-object",)
+                ),
+            ),
+        )
+
+    with pytest.raises(ValidationError):
+        AuthorityProfileRecord(
+            profile_name="wrong-parent",
+            objects=(object_spec(),),
+            memberships=(
+                ExactMembershipSpecRecord(
+                    parent_id="other-parent", expected_child_ids=("opaque-object-001",)
+                ),
+            ),
+        )

@@ -9,6 +9,7 @@ from canonical_sync.acquisition import acquire_stable_candidate
 from canonical_sync.errors import AuthorityMismatchError, CanonicalSyncError
 from canonical_sync.google_drive import GoogleDriveTransport
 from canonical_sync.store import SnapshotStore
+from canonical_sync.workflow import acquire_and_publish
 from llm_evaluation.canonical_authority import load_d016_authority_profile
 from llm_evaluation.canonical_live import live_drive_config_from_environment
 
@@ -37,12 +38,13 @@ def test_registered_d016_authority_live(tmp_path: Path) -> None:
     try:
         profile = load_d016_authority_profile(config.profile_path)
         transport = GoogleDriveTransport.from_application_default()
-        candidate = acquire_stable_candidate(transport, profile, max_movement_attempts=3)
         store = SnapshotStore(tmp_path / "private-snapshot-store")
-        publication = store.publish(store.stage(candidate))
-        verified = store.verify_completed(publication.observation_sha256)
-        assert verified.state == candidate.state
-        assert verified.observation == candidate.observation
+        run = acquire_and_publish(transport, profile, store, max_movement_attempts=3)
+        verified = store.verify_completed(run.publication.observation_sha256)
+        assert verified.state == run.candidate.state
+        assert verified.observation == run.candidate.observation
+        assert store.verify_receipt(run.receipt_sha256) == run.receipt
+        assert run.receipt.status == "success"
 
         first = profile.objects[0]
         mismatched = replace(first, expected_name=f"{first.expected_name}.mismatch")
