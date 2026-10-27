@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 import pytest
 from pydantic import ValidationError
 
@@ -29,7 +31,7 @@ def _git_receipt(
     *,
     remote: str = PUBLIC_REMOTE,
     ref: str = "refs/heads/main",
-    status: str = "unchanged",
+    status: Literal["published", "unchanged"] = "unchanged",
 ) -> GitPublicationReceiptRecord:
     expected_base = MERGED if status == "unchanged" else None
     return GitPublicationReceiptRecord(

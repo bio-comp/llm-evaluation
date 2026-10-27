@@ -2,7 +2,7 @@
 
 `llm-evaluation` treats Google Drive as the sole mutable authority for methodology and reconciliation state. The public repository contains executable code, tests, schemas, public-safe contracts, and deliberately published artifacts; it does not mirror private canonical bodies or Drive metadata.
 
-The reusable mechanics are incubated in the workspace package `packages/canonical-sync` (import namespace `canonical_sync`). The governing boundary is: `canonical_sync` owns verified acquisition/snapshot mechanics and mechanical Git publication/readback of an already-approved immutable tree; `llm_evaluation` owns authority-role interpretation, material significance, public-safe projection construction, and the `NONE` / `REQUIRED` / `BLOCKED` / `COMPLETE` governance state machine. A `VerifiedSnapshot` is evidence, not authorization to mutate Git.
+The reusable mechanics are incubated in the workspace package `packages/canonical-sync` (import namespace `canonical_sync`). The governing boundary is: `canonical_sync` owns verified acquisition/snapshot mechanics and mechanical Git application/readback of an already-approved path/byte projection over an exact verified base; omitted base paths are preserved and are not implicit deletion authorization. `llm_evaluation` owns authority-role interpretation, material significance, public-safe projection construction, repository/ref/review/CI completion semantics, and the `NONE` / `REQUIRED` / `BLOCKED` / `COMPLETE` governance state machine. A `VerifiedSnapshot` is evidence, not authorization to mutate Git.
 
 ## Identity and canonical serialization
 
@@ -10,7 +10,7 @@ The package keeps three authority/acquisition identities separate:
 
 - `content_sha256`: exact bytes for one acquired source representation;
 - `source_state_id`: `canonical_record_hash(SnapshotStateRecord)`, binding registered source identity + meaning-bearing logical mapping + exact content identities. Existing persisted names such as `snapshot_state_sha256` refer to this same identity;
-- `observation_id` / `receipt_id`: hashes of the observation and acquisition-receipt records, including provider revision/version observations, acquisition timing/attempts, and safe runner/transport/authentication provenance.
+- `observation_id` / `receipt_id`: hashes of the observation and acquisition-receipt records. Observations bind provider revision/version plus timing/attempt and safe runner/transport/auth provenance; both successful and failed acquisition receipts retain safe runner/transport/auth provenance, while failures retain only sanitized error codes rather than raw provider bodies or credentials.
 
 Changing Drive object identity or logical mapping changes `source_state_id` even if bytes are identical. Reacquiring unchanged registered objects/mapping/bytes preserves `source_state_id` while new provider/runtime/auth observations can produce new observation/receipt identities.
 
@@ -55,6 +55,8 @@ Ordinary public CI is credential-free. It may install the optional Google client
 ## Public reconciliation contract
 
 `fixtures/reconciliation_policy_contract.json` is deliberately public-safe. It records only the executable four-state reconciliation contract (`NONE`, `REQUIRED`, `BLOCKED`, `COMPLETE`) and the verified-publication conditions required for `COMPLETE`. Private Drive identities and canonical narrative are excluded by design.
+
+For this project, `COMPLETE` is stronger than a generic Git receipt or a Boolean CI assertion. Project-owned evidence must bind the public `bio-comp/llm-evaluation` repository, the reviewed pull request, the merged `main` commit, post-merge Git readback of that exact commit, and the required `verify` CI run on the same commit. A synthetic record can exercise those invariants in tests; it does not prove that the real D-016 closure transaction occurred.
 
 ## Related design records
 

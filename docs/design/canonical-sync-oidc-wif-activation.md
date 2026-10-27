@@ -142,7 +142,7 @@ When the workflow is implemented:
 
 Do not add `schedule:` during initial activation. After multiple successful manual trusted runs, decide separately whether scheduled acquisition is useful. A scheduled read may detect authority movement, but it must not automatically turn Drive narrative into Git changes or mark reconciliation `COMPLETE`.
 
-A future scheduled flow can create a durable **reconciliation observation/obligation**, but public code changes still require the explicit project adapter, branch/PR review, credential-free CI, and verified Git publication before Drive reconciliation closure.
+A future scheduled flow can create a durable **reconciliation observation/obligation**, but public code changes still require the explicit project adapter, branch/PR review, credential-free CI, and project-owned evidence binding the merged commit to post-merge Git readback and that same commit's CI before Drive reconciliation closure.
 
 ## Revocation and incident response
 

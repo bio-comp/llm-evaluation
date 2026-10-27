@@ -398,3 +398,43 @@ def test_canonical_identity_protocol_version_is_bound_into_hash(monkeypatch: pyt
 
     assert original != changed
     assert not codec.canonical_record_bytes(value).endswith(b"\n")
+
+
+
+def test_snapshot_state_canonical_identity_golden_vector() -> None:
+    from canonical_sync.codec import canonical_identity_bytes
+
+    value = SnapshotStateRecord(
+        authority_spec_sha256="0" * 64,
+        entries=(
+            SemanticEntryRecord(
+                logical_path="README.md",
+                representation_schema="google-drive-export-markdown-v1",
+                content_sha256="1" * 64,
+            ),
+        ),
+    )
+    expected_payload = (
+        b'{"authority_spec_sha256":'
+        b'"0000000000000000000000000000000000000000000000000000000000000000",'
+        b'"entries":[{"content_sha256":'
+        b'"1111111111111111111111111111111111111111111111111111111111111111",'
+        b'"logical_path":"README.md",'
+        b'"representation_schema":"google-drive-export-markdown-v1"}],'
+        b'"record_type":"snapshot_state","schema_version":2}'
+    )
+    expected_identity = (
+        b"canonical-sync-record-identity\x00"
+        b"\x00\x00\x00\x01"
+        b"\x00\x00\x00\x00\x00\x00\x00\x1b"
+        b"canonical-sync.source-state"
+        b"\x00\x00\x00\x01"
+        b"\x00\x00\x00\x02"
+        b"\x00\x00\x00\x00\x00\x00\x01\x45"
+        + expected_payload
+    )
+    expected_hash = "9e056e7675cfee4a1881ce33e4485522dee57bdf3ef8bba72f1299c7048b6552"
+
+    assert canonical_record_bytes(value) == expected_payload
+    assert canonical_identity_bytes(value) == expected_identity
+    assert canonical_record_hash(value) == expected_hash

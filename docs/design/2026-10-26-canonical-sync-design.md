@@ -194,7 +194,7 @@ Safety invariants:
 - an orphan semantic snapshot without its verified observation is not a completed acquisition;
 - interrupted staging remains incomplete and cannot be mistaken for verified state.
 
-Each acquisition run also persists a versioned `AcquisitionReceiptRecord` as auxiliary private provenance. A successful receipt binds the authority-profile identity, transaction-attempt count, exact `source_state_id`, and exact `observation_id`. A failed receipt records the typed error code and attempt count but never raw provider exception text or successful snapshot identities. Receipt files are hash-addressed, canonically serialized, verified on readback, and subject to the same non-symlink/exact-inventory store boundary.
+Each acquisition run also persists a versioned `AcquisitionReceiptRecord` as auxiliary private provenance. Success and failure receipts share the same safe runner/Python/transport/authentication provenance contract. A successful receipt additionally binds the authority-profile identity, transaction-attempt count, exact `source_state_id`, and exact `observation_id`. A failed receipt records that safe provenance, the typed sanitized error code, and attempt count, but never raw provider exception text, credential bodies/paths, or successful snapshot identities. Receipt files are hash-addressed, canonically serialized, verified on readback, and subject to the same non-symlink/exact-inventory store boundary.
 
 ## 9. Consumer-owned reconciliation state
 
@@ -206,7 +206,7 @@ Each acquisition run also persists a versioned `AcquisitionReceiptRecord` as aux
 - previous verified `source_state_id` when present;
 - project decision (`no_public_impact`, `public_change_required`, or `unknown_or_unsafe`);
 - resulting disposition `NONE`, `REQUIRED`, or `BLOCKED`;
-- project-approved contract/tree identity plus a generic verified Git publication receipt and project CI evidence for `COMPLETE`.
+- project-approved contract/projection identity plus project-owned PR-merge evidence, post-merge `main` Git readback for `bio-comp/llm-evaluation`, and the required CI check bound to that same merged commit for `COMPLETE`.
 
 Project rules remain:
 
@@ -240,8 +240,8 @@ The adapter never treats arbitrary changed narrative as executable instructions.
 
 Publication is deliberately split across the trust boundary:
 
-1. **Consumer authorization:** project-specific logic interprets verified evidence and constructs the exact immutable bytes/tree approved for Git. `canonical_sync` never transforms `VerifiedSnapshot` content into a public artifact and never decides whether material is public-safe or significant.
-2. **Generic Git mechanics:** `GitPublisher` accepts only the already-constructed `PublicationTree`; it verifies the expected remote base, exact tree identity, fast-forward-only publication, remote movement, resulting commit/tree, and exact remote readback.
+1. **Consumer authorization:** project-specific logic interprets verified evidence and constructs the exact immutable path/byte projection approved for Git. `canonical_sync` never transforms `VerifiedSnapshot` content into a public artifact and never decides whether material is public-safe or significant.
+2. **Generic Git mechanics:** `GitPublisher` accepts only the already-constructed `PublicationTree`, whose current contract is a caller-approved projection over the exact verified expected base. Omitted base paths are preserved and are never implicit deletion authorization. The publisher verifies the expected remote base, mechanically overlays only approved paths, enforces fast-forward-only publication, detects remote movement, and verifies the resulting commit/tree by remote readback. Explicit deletion is not part of the current projection API.
 
 There is no generic project-policy callback and no generic secret/private-content classifier. Public-safety policy lives in the consumer's narrow projection schema and construction path. Generic path/inventory validation remains mechanical Git safety only.
 
