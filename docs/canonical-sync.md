@@ -4,6 +4,18 @@
 
 The reusable mechanics are incubated in the workspace package `packages/canonical-sync` (import namespace `canonical_sync`). The governing boundary is: `canonical_sync` owns verified acquisition/snapshot mechanics and mechanical Git publication/readback of an already-approved immutable tree; `llm_evaluation` owns authority-role interpretation, material significance, public-safe projection construction, and the `NONE` / `REQUIRED` / `BLOCKED` / `COMPLETE` governance state machine. A `VerifiedSnapshot` is evidence, not authorization to mutate Git.
 
+## Identity and canonical serialization
+
+The package keeps three authority/acquisition identities separate:
+
+- `content_sha256`: exact bytes for one acquired source representation;
+- `source_state_id`: `canonical_record_hash(SnapshotStateRecord)`, binding registered source identity + meaning-bearing logical mapping + exact content identities. Existing persisted names such as `snapshot_state_sha256` refer to this same identity;
+- `observation_id` / `receipt_id`: hashes of the observation and acquisition-receipt records, including provider revision/version observations, acquisition timing/attempts, and safe runner/transport/authentication provenance.
+
+Changing Drive object identity or logical mapping changes `source_state_id` even if bytes are identical. Reacquiring unchanged registered objects/mapping/bytes preserves `source_state_id` while new provider/runtime/auth observations can produce new observation/receipt identities.
+
+Pydantic validates durable record structure, but hash identity is not `sha256(model_dump(...))`. Canonical persisted payloads use deterministic UTF-8 JSON with explicit scalar normalization and no trailing newline. Cryptographic identity wraps those bytes in `canonical-sync` identity protocol v1 with a declared record domain, domain version, record schema version, and length framing before SHA-256. Runtime-only frozen dataclasses such as verified/staged handles and approved `PublicationTree` values are not persistence formats.
+
 ## Local read-only verification
 
 Live Drive acquisition is opt-in and is never part of ordinary PR CI. It uses Google Application Default Credentials with the single scope `https://www.googleapis.com/auth/drive.readonly`.

@@ -134,27 +134,26 @@ Provider-level transient retries are bounded and distinct from whole-transaction
 
 ## 6. Deterministic serialization and identity
 
-Persisted identity records use one canonical codec:
+Persisted records use canonical UTF-8 JSON for storage/readback, while cryptographic identity uses a separate explicit framing protocol:
 
-- UTF-8 JSON;
-- Pydantic validates record structure, but does not define cryptographic scalar formatting;
-- the codec walks `model_dump(mode="python")` values through an explicit allowed-scalar canonicalizer;
+- Pydantic validates record structure; it does **not** define cryptographic provenance bytes;
+- canonical payload JSON walks `model_dump(mode="python")` through an explicit allowed-scalar canonicalizer;
 - timezone-aware datetimes normalize to UTC RFC 3339 with fixed microsecond precision and `Z`;
 - floating-point identity scalars are rejected rather than inheriting runtime/Pydantic formatting;
-- lexicographically sorted object keys;
-- compact separators `,` and `:`;
-- Unicode preserved (`ensure_ascii=False`);
-- no insignificant whitespace and no trailing newline;
-- canonical parser reserializes and rejects noncanonical input;
-- SHA-256 over exact canonical bytes.
+- mapping keys are lexicographically sorted; set-like collections are normalized by record validators before serialization;
+- compact separators `,` and `:` are used, Unicode is preserved, encoding is UTF-8, and canonical payloads have **no trailing newline**;
+- canonical parser reserializes and rejects equivalent-but-noncanonical JSON;
+- each identity-bearing durable record type declares a non-serialized `canonical_identity_domain` and positive `canonical_identity_version`;
+- `canonical_record_hash()` hashes an unambiguous identity frame: fixed `canonical-sync` identity magic + identity-protocol version + length-framed domain + domain version + record schema version + length-framed canonical payload bytes. This prevents accidental cross-record collisions even when two Pydantic payload shapes serialize identically.
 
-Identity levels remain distinct:
+The normative identities are:
 
-1. **Content identity** — SHA-256 of deterministic representation bytes for one source.
-2. **Semantic snapshot identity** — SHA-256 of a sorted `SnapshotStateRecord` containing `authority_spec_sha256` plus logical key, representation schema, and content hash for every required source. Acquisition time, provider version, retry count, and machine identity are excluded.
-3. **Observation identity** — SHA-256 of `SnapshotObservationRecord`, which binds the semantic snapshot to exact provider observations plus acquisition time/attempt and safe runner, Python, transport-version, and authentication-mode provenance. Metadata-only churn or a materially different execution/provenance context can therefore change observation identity without changing semantic state.
+1. **`content_sha256`** — SHA-256 of the exact acquired representation bytes for one source.
+2. **`source_state_id`** — `canonical_record_hash(SnapshotStateRecord)`. It binds `authority_spec_sha256` (registered source identities, locations/membership constraints, and meaning-bearing logical mapping) plus each logical representation schema and `content_sha256`, in deterministic order. Acquisition time, provider version, retries, runner, transport, and authentication provenance are excluded. The current persisted field/path spelling `snapshot_state_sha256` is the storage name for this same `source_state_id`; it is not a second identity.
+3. **`observation_id`** — `canonical_record_hash(SnapshotObservationRecord)`. It binds the `source_state_id` to provider revision/version observations, acquisition time/attempt, and safe runner/Python/transport/authentication provenance. The current store/API spelling `observation_sha256` is this `observation_id`.
+4. **`receipt_id`** — `canonical_record_hash(AcquisitionReceiptRecord)`, identifying one persisted acquisition receipt.
 
-A one-byte representation change changes content identity and therefore semantic snapshot identity. A registered authority object/location/logical-mapping change also changes semantic snapshot identity through `authority_spec_sha256`, even if bytes happen to match. Renaming the private operator-facing profile label alone does not change the authority specification identity.
+A one-byte representation change changes `content_sha256` and therefore `source_state_id`. A different registered Drive object with identical bytes, or a changed meaning-bearing logical mapping with the same object/bytes, also changes `source_state_id` through `authority_spec_sha256`. Reacquiring the same registered objects/mapping/bytes preserves `source_state_id` even when provider versions, time, runner, transport, or ADC credential category change; those changes instead affect `observation_id` and/or `receipt_id`. Renaming the private operator-facing profile label alone does not change the authority specification identity.
 
 ## 7. Stable multi-object acquisition
 
@@ -195,7 +194,7 @@ Safety invariants:
 - an orphan semantic snapshot without its verified observation is not a completed acquisition;
 - interrupted staging remains incomplete and cannot be mistaken for verified state.
 
-Each acquisition run also persists a versioned `AcquisitionReceiptRecord` as auxiliary private provenance. A successful receipt binds the authority-profile identity, transaction-attempt count, exact semantic-state hash, and exact observation hash. A failed receipt records the typed error code and attempt count but never raw provider exception text or successful snapshot identities. Receipt files are hash-addressed, canonically serialized, verified on readback, and subject to the same non-symlink/exact-inventory store boundary.
+Each acquisition run also persists a versioned `AcquisitionReceiptRecord` as auxiliary private provenance. A successful receipt binds the authority-profile identity, transaction-attempt count, exact `source_state_id`, and exact `observation_id`. A failed receipt records the typed error code and attempt count but never raw provider exception text or successful snapshot identities. Receipt files are hash-addressed, canonically serialized, verified on readback, and subject to the same non-symlink/exact-inventory store boundary.
 
 ## 9. Consumer-owned reconciliation state
 
@@ -203,15 +202,15 @@ Each acquisition run also persists a versioned `AcquisitionReceiptRecord` as aux
 
 `llm_evaluation.canonical_reconciliation` owns the persisted project records and rules that bind:
 
-- current semantic snapshot identity;
-- previous verified semantic snapshot identity when present;
+- current `source_state_id`;
+- previous verified `source_state_id` when present;
 - project decision (`no_public_impact`, `public_change_required`, or `unknown_or_unsafe`);
 - resulting disposition `NONE`, `REQUIRED`, or `BLOCKED`;
 - project-approved contract/tree identity plus a generic verified Git publication receipt and project CI evidence for `COMPLETE`.
 
 Project rules remain:
 
-- same semantic identity -> `NONE`;
+- same `source_state_id` -> `NONE`;
 - changed + explicit no-public-impact -> `NONE`;
 - changed + explicit public/executable impact -> `REQUIRED`;
 - changed + unknown/unsafe impact -> `BLOCKED`;

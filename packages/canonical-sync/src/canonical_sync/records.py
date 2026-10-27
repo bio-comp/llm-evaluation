@@ -4,7 +4,7 @@ import re
 import unicodedata
 from datetime import datetime
 from pathlib import PurePosixPath
-from typing import Literal, Self
+from typing import ClassVar, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
@@ -120,6 +120,8 @@ class ExactMembershipSpecRecord(StrictFrozenRecord):
 
 
 class AuthorityProfileRecord(StrictFrozenRecord):
+    canonical_identity_domain: ClassVar[str] = "canonical-sync.authority-profile"
+    canonical_identity_version: ClassVar[int] = 1
     record_type: Literal["authority_profile"] = "authority_profile"
     schema_version: Literal[1] = 1
     profile_name: str
@@ -172,6 +174,8 @@ class AuthorityProfileRecord(StrictFrozenRecord):
 
 
 class AuthoritySpecificationRecord(StrictFrozenRecord):
+    canonical_identity_domain: ClassVar[str] = "canonical-sync.authority-specification"
+    canonical_identity_version: ClassVar[int] = 1
     record_type: Literal["authority_specification"] = "authority_specification"
     schema_version: Literal[1] = 1
     objects: tuple[AuthorityObjectSpecRecord, ...]
@@ -239,6 +243,8 @@ class SemanticEntryRecord(StrictFrozenRecord):
 
 
 class SnapshotStateRecord(StrictFrozenRecord):
+    canonical_identity_domain: ClassVar[str] = "canonical-sync.source-state"
+    canonical_identity_version: ClassVar[int] = 1
     record_type: Literal["snapshot_state"] = "snapshot_state"
     schema_version: Literal[2] = 2
     authority_spec_sha256: str
@@ -336,6 +342,8 @@ class AcquisitionProvenanceRecord(StrictFrozenRecord):
 
 
 class SnapshotObservationRecord(StrictFrozenRecord):
+    canonical_identity_domain: ClassVar[str] = "canonical-sync.observation"
+    canonical_identity_version: ClassVar[int] = 1
     record_type: Literal["snapshot_observation"] = "snapshot_observation"
     schema_version: Literal[2] = 2
     snapshot_state_sha256: str
@@ -383,6 +391,8 @@ class SnapshotObservationRecord(StrictFrozenRecord):
 
 
 class AcquisitionReceiptRecord(StrictFrozenRecord):
+    canonical_identity_domain: ClassVar[str] = "canonical-sync.acquisition-receipt"
+    canonical_identity_version: ClassVar[int] = 1
     record_type: Literal["acquisition_receipt"] = "acquisition_receipt"
     schema_version: Literal[2] = 2
     started_at: datetime
@@ -445,6 +455,8 @@ class AcquisitionReceiptRecord(StrictFrozenRecord):
 
 
 class GitPublicationReceiptRecord(StrictFrozenRecord):
+    canonical_identity_domain: ClassVar[str] = "canonical-sync.git-publication-receipt"
+    canonical_identity_version: ClassVar[int] = 1
     record_type: Literal["git_publication_receipt"] = "git_publication_receipt"
     schema_version: Literal[1] = 1
     status: Literal["published", "unchanged"]

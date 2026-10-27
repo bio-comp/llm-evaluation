@@ -196,8 +196,8 @@ def test_source_state_identity_binds_registered_object_identity_not_only_content
             object_spec(path="DECISIONS.md", object_id="opaque-object-002"),
         ),
     )
-    original_state = state(authority_hash=canonical_record_hash(original_profile))
-    changed_state = state(authority_hash=canonical_record_hash(changed_profile))
+    original_state = state(authority_hash=profile_from_record(original_profile).spec_sha256)
+    changed_state = state(authority_hash=profile_from_record(changed_profile).spec_sha256)
 
     assert original_state.entries == changed_state.entries
     assert canonical_record_hash(original_state) != canonical_record_hash(changed_state)
@@ -277,3 +277,124 @@ def test_exact_membership_must_reference_declared_objects_at_declared_parent() -
                 ),
             ),
         )
+
+
+def test_hash_identity_is_separated_by_explicit_record_domain_and_domain_version() -> None:
+    from typing import ClassVar, Literal
+
+    from pydantic import BaseModel, ConfigDict
+
+    class DomainA(BaseModel):
+        model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+        canonical_identity_domain: ClassVar[str] = "test.domain.a"
+        canonical_identity_version: ClassVar[int] = 1
+        schema_version: Literal[1] = 1
+        value: str
+
+    class DomainB(BaseModel):
+        model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+        canonical_identity_domain: ClassVar[str] = "test.domain.b"
+        canonical_identity_version: ClassVar[int] = 1
+        schema_version: Literal[1] = 1
+        value: str
+
+    class DomainA2(BaseModel):
+        model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+        canonical_identity_domain: ClassVar[str] = "test.domain.a"
+        canonical_identity_version: ClassVar[int] = 2
+        schema_version: Literal[1] = 1
+        value: str
+
+    first = DomainA(value="same-payload")
+    other_domain = DomainB(value="same-payload")
+    other_domain_version = DomainA2(value="same-payload")
+
+    assert canonical_record_bytes(first) == canonical_record_bytes(other_domain)
+    assert canonical_record_bytes(first) == canonical_record_bytes(other_domain_version)
+    assert canonical_record_hash(first) != canonical_record_hash(other_domain)
+    assert canonical_record_hash(first) != canonical_record_hash(other_domain_version)
+
+
+def test_runtime_dataclass_is_not_silently_treated_as_durable_canonical_record() -> None:
+    runtime_profile = profile_from_record(profile())
+    with pytest.raises(TypeError, match="Pydantic"):
+        canonical_record_bytes(runtime_profile)  # type: ignore[arg-type]
+
+
+def test_source_state_identity_changes_when_logical_mapping_changes_with_same_source_and_content() -> None:
+    original = profile()
+    original_readme = original.objects[1]
+    remapped_readme = AuthorityObjectSpecRecord(
+        logical_path="METHOD_AUTHORITY.md",
+        provider=original_readme.provider,
+        object_id=original_readme.object_id,
+        expected_name=original_readme.expected_name,
+        expected_mime_type=original_readme.expected_mime_type,
+        expected_parent_id=original_readme.expected_parent_id,
+        representation_schema=original_readme.representation_schema,
+    )
+    remapped = AuthorityProfileRecord(
+        profile_name=original.profile_name,
+        objects=(original.objects[0], remapped_readme),
+    )
+
+    original_state = SnapshotStateRecord(
+        authority_spec_sha256=profile_from_record(original).spec_sha256,
+        entries=(
+            SemanticEntryRecord(
+                logical_path="DECISIONS.md",
+                representation_schema="test-representation-v1",
+                content_sha256=H3,
+            ),
+            SemanticEntryRecord(
+                logical_path="README.md",
+                representation_schema="test-representation-v1",
+                content_sha256=H2,
+            ),
+        ),
+    )
+    remapped_state = SnapshotStateRecord(
+        authority_spec_sha256=profile_from_record(remapped).spec_sha256,
+        entries=(
+            SemanticEntryRecord(
+                logical_path="DECISIONS.md",
+                representation_schema="test-representation-v1",
+                content_sha256=H3,
+            ),
+            SemanticEntryRecord(
+                logical_path="METHOD_AUTHORITY.md",
+                representation_schema="test-representation-v1",
+                content_sha256=H2,
+            ),
+        ),
+    )
+
+    assert original_readme.object_id == remapped_readme.object_id
+    assert {entry.content_sha256 for entry in original_state.entries} == {
+        entry.content_sha256 for entry in remapped_state.entries
+    }
+    assert canonical_record_hash(original_state) != canonical_record_hash(remapped_state)
+
+
+def test_safe_provenance_changes_observation_identity_not_source_state_identity() -> None:
+    source_state_id = canonical_record_hash(state())
+    first = observation(snapshot_hash=source_state_id)
+    changed_provenance = first.provenance.model_copy(
+        update={"auth_provenance": "adc:wif-service-account"}
+    )
+    second = first.model_copy(update={"provenance": changed_provenance})
+
+    assert first.snapshot_state_sha256 == second.snapshot_state_sha256 == source_state_id
+    assert canonical_record_hash(first) != canonical_record_hash(second)
+
+
+def test_canonical_identity_protocol_version_is_bound_into_hash(monkeypatch: pytest.MonkeyPatch) -> None:
+    import canonical_sync.codec as codec
+
+    value = state()
+    original = codec.canonical_record_hash(value)
+    monkeypatch.setattr(codec, "CANONICAL_IDENTITY_PROTOCOL_VERSION", 2)
+    changed = codec.canonical_record_hash(value)
+
+    assert original != changed
+    assert not codec.canonical_record_bytes(value).endswith(b"\n")

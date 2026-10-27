@@ -2,6 +2,8 @@
 
 **Status:** design only. Local/manual Stage A is verified. This document does not create Google Cloud resources, alter Drive sharing, add credentials, or activate an unattended workflow.
 
+**Package boundary:** everything in this document that provisions GitHub OIDC, WIF/IAM, a service account, or Drive sharing is deployment/runbook work outside `canonical_sync`. The package sees only standard `google-auth`/ADC credentials with `drive.readonly`; local authorized-user ADC and hosted WIF/service-account ADC converge on that same package-side credential interface.
+
 ## Decision
 
 For the `llm_evaluation` Google Drive authority, use:
@@ -105,7 +107,7 @@ The first trusted hosted workflow should:
 2. authenticate through GitHub OIDC and WIF/service-account impersonation using a SHA-pinned authentication action;
 3. materialize the private authority profile from protected configuration without printing it;
 4. run the opt-in live acquisition against a private ephemeral snapshot store;
-5. verify stable PRE/read/POST acquisition, snapshot/observation identities, store readback, acquisition receipt, and controlled negative failure behavior;
+5. verify stable PRE/read/POST acquisition, `source_state_id` / `observation_id`, store readback, `receipt_id`, and controlled negative failure behavior;
 6. emit only a deliberately sanitized summary/artifact containing no Drive IDs, parent IDs, canonical bodies, OAuth material, credential-file contents, or user-specific paths;
 7. destroy ephemeral credential files/private snapshot state at job completion.
 
@@ -121,7 +123,7 @@ Before considering hosted acquisition active, prove all of the following:
 - service-account Drive visibility is no broader than the documented sharing grant;
 - `drive.readonly` is the only requested Drive scope;
 - private profile, IDs, canonical bodies, credentials, and snapshots do not appear in logs or uploaded public artifacts;
-- hosted acquisition produces the same semantic snapshot identity as a temporally matched local acquisition when the authority has not changed;
+- hosted acquisition produces the same `source_state_id` as a temporally matched local acquisition when the authority has not changed;
 - source movement and authority mismatch still fail closed;
 - revoking the WIF/service-account binding or Drive sharing reliably removes access.
 

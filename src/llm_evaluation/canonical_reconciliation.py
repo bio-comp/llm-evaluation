@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Literal, Self
+from typing import ClassVar, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
@@ -134,6 +134,8 @@ class ReconciliationDispositionRecord(_StrictFrozenProjectRecord):
 
 
 class ReconciliationPolicyContract(_StrictFrozenProjectRecord):
+    canonical_identity_domain: ClassVar[str] = "llm-evaluation.reconciliation-policy"
+    canonical_identity_version: ClassVar[int] = 1
     projection_type: Literal["llm_evaluation_reconciliation_policy"] = (
         "llm_evaluation_reconciliation_policy"
     )

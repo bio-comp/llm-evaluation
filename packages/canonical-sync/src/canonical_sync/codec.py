@@ -10,6 +10,15 @@ from pydantic import BaseModel
 
 _RecordT = TypeVar("_RecordT", bound=BaseModel)
 
+CANONICAL_IDENTITY_PROTOCOL_VERSION = 1
+_IDENTITY_MAGIC = b"canonical-sync-record-identity\x00"
+
+
+def _require_pydantic_record(record: object) -> BaseModel:
+    if not isinstance(record, BaseModel):
+        raise TypeError("canonical durable records must be Pydantic BaseModel instances")
+    return record
+
 
 def _canonical_scalar(value: object) -> object:
     if value is None or type(value) in {bool, int, str}:
@@ -33,9 +42,10 @@ def _canonical_scalar(value: object) -> object:
 
 
 def canonical_record_bytes(record: BaseModel) -> bytes:
-    """Return the versioned record's canonical UTF-8 JSON bytes with no trailing newline."""
+    """Return canonical UTF-8 JSON payload bytes with no trailing newline."""
 
-    normalized = _canonical_scalar(record.model_dump(mode="python"))
+    validated = _require_pydantic_record(record)
+    normalized = _canonical_scalar(validated.model_dump(mode="python"))
     return json.dumps(
         normalized,
         ensure_ascii=False,
@@ -44,8 +54,44 @@ def canonical_record_bytes(record: BaseModel) -> bytes:
     ).encode("utf-8")
 
 
+def _identity_descriptor(record: BaseModel) -> tuple[str, int, int]:
+    record_type = type(record)
+    domain = getattr(record_type, "canonical_identity_domain", None)
+    domain_version = getattr(record_type, "canonical_identity_version", None)
+    schema_version = getattr(record, "schema_version", None)
+    if type(domain) is not str or not domain or domain != domain.strip() or "\x00" in domain:
+        raise TypeError("canonical record type must declare a valid canonical_identity_domain")
+    if type(domain_version) is not int or domain_version < 1:
+        raise TypeError("canonical record type must declare a positive canonical_identity_version")
+    if type(schema_version) is not int or schema_version < 1:
+        raise TypeError("canonical record must expose a positive integer schema_version")
+    return domain, domain_version, schema_version
+
+
+def _frame(value: bytes) -> bytes:
+    return len(value).to_bytes(8, "big") + value
+
+
+def canonical_identity_bytes(record: BaseModel) -> bytes:
+    """Return the versioned, domain-separated bytes used for cryptographic identity."""
+
+    validated = _require_pydantic_record(record)
+    domain, domain_version, schema_version = _identity_descriptor(validated)
+    payload = canonical_record_bytes(validated)
+    return b"".join(
+        (
+            _IDENTITY_MAGIC,
+            CANONICAL_IDENTITY_PROTOCOL_VERSION.to_bytes(4, "big"),
+            _frame(domain.encode("utf-8")),
+            domain_version.to_bytes(4, "big"),
+            schema_version.to_bytes(4, "big"),
+            _frame(payload),
+        )
+    )
+
+
 def canonical_record_hash(record: BaseModel) -> str:
-    return hashlib.sha256(canonical_record_bytes(record)).hexdigest()
+    return hashlib.sha256(canonical_identity_bytes(record)).hexdigest()
 
 
 def parse_canonical_record(data: bytes, record_type: type[_RecordT]) -> _RecordT:
