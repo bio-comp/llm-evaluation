@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from enum import StrEnum
 from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Literal, Self
@@ -275,4 +276,110 @@ class SnapshotObservationRecord(StrictFrozenRecord):
     def validate_source_hashes(self) -> Self:
         for source in self.sources:
             _sha256(source.content_sha256)
+        return self
+
+
+class ProjectImpact(StrEnum):
+    NO_PUBLIC_IMPACT = "no_public_impact"
+    PUBLIC_CHANGE_REQUIRED = "public_change_required"
+    UNKNOWN_OR_UNSAFE = "unknown_or_unsafe"
+
+
+class ReconciliationDisposition(StrEnum):
+    NONE = "NONE"
+    REQUIRED = "REQUIRED"
+    BLOCKED = "BLOCKED"
+    COMPLETE = "COMPLETE"
+
+
+class LastReconciledStateRecord(StrictFrozenRecord):
+    record_type: Literal["last_reconciled_state"] = "last_reconciled_state"
+    schema_version: Literal[1] = 1
+    snapshot_state_sha256: str
+
+    @field_validator("snapshot_state_sha256")
+    @classmethod
+    def validate_snapshot_hash(cls, value: str) -> str:
+        return _sha256(value)
+
+
+class VerifiedPublicationReceiptRecord(StrictFrozenRecord):
+    record_type: Literal["verified_publication_receipt"] = "verified_publication_receipt"
+    schema_version: Literal[1] = 1
+    snapshot_state_sha256: str
+    public_contract_sha256: str
+    git_commit_sha: str
+    artifact_path: str
+    artifact_sha256: str
+    readback_verified: bool
+    ci_verified: bool
+
+    @field_validator("snapshot_state_sha256", "public_contract_sha256", "artifact_sha256")
+    @classmethod
+    def validate_hashes(cls, value: str) -> str:
+        return _sha256(value)
+
+    @field_validator("git_commit_sha")
+    @classmethod
+    def validate_git_commit(cls, value: str) -> str:
+        if re.fullmatch(r"[0-9a-f]{40}", value) is None:
+            raise ValueError("Git commit must be a lowercase 40-character SHA-1")
+        return value
+
+    @field_validator("artifact_path")
+    @classmethod
+    def validate_artifact_path(cls, value: str) -> str:
+        return _safe_logical_path(value)
+
+
+class ReconciliationDispositionRecord(StrictFrozenRecord):
+    record_type: Literal["reconciliation_disposition"] = "reconciliation_disposition"
+    schema_version: Literal[1] = 1
+    current_snapshot_sha256: str
+    previous_snapshot_sha256: str | None = None
+    impact: ProjectImpact
+    disposition: ReconciliationDisposition
+    public_contract_sha256: str | None = None
+    verified_publication: VerifiedPublicationReceiptRecord | None = None
+
+    @field_validator("current_snapshot_sha256")
+    @classmethod
+    def validate_current_hash(cls, value: str) -> str:
+        return _sha256(value)
+
+    @field_validator("previous_snapshot_sha256", "public_contract_sha256")
+    @classmethod
+    def validate_optional_hash(cls, value: str | None) -> str | None:
+        if value is not None:
+            return _sha256(value)
+        return value
+
+    @model_validator(mode="after")
+    def validate_transition(self) -> Self:
+        changed = self.previous_snapshot_sha256 != self.current_snapshot_sha256
+        if self.disposition is ReconciliationDisposition.NONE:
+            if self.verified_publication is not None:
+                raise ValueError("NONE cannot contain verified publication evidence")
+            if changed and self.impact is not ProjectImpact.NO_PUBLIC_IMPACT:
+                raise ValueError("changed state can be NONE only for explicit no-public-impact")
+        elif self.disposition is ReconciliationDisposition.REQUIRED:
+            if self.impact is not ProjectImpact.PUBLIC_CHANGE_REQUIRED:
+                raise ValueError("REQUIRED needs public-change-required impact")
+            if self.public_contract_sha256 is None or self.verified_publication is not None:
+                raise ValueError("REQUIRED needs a public contract and no completion receipt")
+        elif self.disposition is ReconciliationDisposition.BLOCKED:
+            if self.impact is not ProjectImpact.UNKNOWN_OR_UNSAFE or self.verified_publication is not None:
+                raise ValueError("BLOCKED needs unknown/unsafe impact and no completion receipt")
+        elif self.disposition is ReconciliationDisposition.COMPLETE:
+            receipt = self.verified_publication
+            if (
+                self.impact is not ProjectImpact.PUBLIC_CHANGE_REQUIRED
+                or self.public_contract_sha256 is None
+                or receipt is None
+                or receipt.snapshot_state_sha256 != self.current_snapshot_sha256
+                or receipt.public_contract_sha256 != self.public_contract_sha256
+                or not receipt.readback_verified
+                or not receipt.ci_verified
+            ):
+                raise ValueError("COMPLETE requires exact verified publication/readback/CI evidence")
         return self
