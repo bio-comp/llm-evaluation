@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -126,6 +127,43 @@ def test_failed_workflow_persists_sanitized_failure_receipt_then_reraises(tmp_pa
     assert receipt.provenance.auth_provenance == "test-injected"
     assert receipt.snapshot_state_sha256 is None
     assert receipt.snapshot_observation_sha256 is None
+
+
+def test_failed_workflow_records_accurate_attempt_count_when_failure_follows_movement(
+    tmp_path: Path,
+) -> None:
+    store = SnapshotStore(tmp_path / "private-store")
+    # Attempt 1: pre has version 1, post has version 2 (movement)
+    first_pre = _observation()
+    first_post = replace(first_pre, version=2, modified_time=T0 + timedelta(seconds=1))
+    # Attempt 2: pre has mismatched name (authority failure)
+    second_pre = replace(first_pre, name="MISMATCH.md")
+
+    transport = FakeTransport(
+        observations={"object-001": [first_pre, first_post, second_pre]},
+        contents={
+            "object-001": SourceContent(
+                representation_schema="test-representation-v1",
+                data=b"README\n",
+            )
+        },
+    )
+
+    with pytest.raises(AuthorityMismatchError):
+        acquire_and_publish(
+            transport,
+            _profile(),
+            store,
+            max_movement_attempts=3,
+            clock=_clock(T0, T0 + timedelta(seconds=1)),
+        )
+
+    hashes = store.list_receipt_hashes()
+    assert len(hashes) == 1
+    receipt = store.verify_receipt(hashes[0])
+    assert receipt.status == "failed"
+    assert receipt.transaction_attempt_count == 2
+    assert receipt.error_code == "AuthorityMismatchError"
 
 
 def test_acquisition_receipt_status_invariants_are_strict() -> None:

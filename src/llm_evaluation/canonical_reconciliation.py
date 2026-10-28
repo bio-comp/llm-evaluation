@@ -181,23 +181,45 @@ class ReconciliationDispositionRecord(_StrictFrozenProjectRecord):
     def validate_transition(self) -> Self:
         changed = self.previous_snapshot_sha256 != self.current_snapshot_sha256
         if self.disposition is ReconciliationDisposition.NONE:
+            if self.impact is not ProjectImpact.NO_PUBLIC_IMPACT:
+                raise ValueError("NONE disposition requires NO_PUBLIC_IMPACT")
+            if (
+                self.public_contract_sha256 is not None
+                or self.publication_tree_sha256 is not None
+            ):
+                raise ValueError("NONE disposition must not declare publication hashes")
             if self.verified_publication is not None:
                 raise ValueError("NONE cannot contain verified publication evidence")
-            if changed and self.impact is not ProjectImpact.NO_PUBLIC_IMPACT:
-                raise ValueError("changed state can be NONE only for explicit no-public-impact")
-        elif self.disposition is ReconciliationDisposition.REQUIRED:
+            return self
+
+        if not changed:
+            raise ValueError(f"{self.disposition.value} disposition requires a changed snapshot")
+
+        if self.disposition is ReconciliationDisposition.BLOCKED:
+            if self.impact is not ProjectImpact.UNKNOWN_OR_UNSAFE:
+                raise ValueError("BLOCKED disposition requires UNKNOWN_OR_UNSAFE")
+            if (
+                self.public_contract_sha256 is not None
+                or self.publication_tree_sha256 is not None
+            ):
+                raise ValueError("BLOCKED disposition must not declare publication hashes")
+            if self.verified_publication is not None:
+                raise ValueError("BLOCKED needs unknown/unsafe impact and no completion receipt")
+            return self
+
+        if self.disposition is ReconciliationDisposition.REQUIRED:
             if self.impact is not ProjectImpact.PUBLIC_CHANGE_REQUIRED:
                 raise ValueError("REQUIRED needs public-change-required impact")
             if (
                 self.public_contract_sha256 is None
                 or self.publication_tree_sha256 is None
-                or self.verified_publication is not None
             ):
                 raise ValueError("REQUIRED needs an approved contract/tree and no completion receipt")
-        elif self.disposition is ReconciliationDisposition.BLOCKED:
-            if self.impact is not ProjectImpact.UNKNOWN_OR_UNSAFE or self.verified_publication is not None:
-                raise ValueError("BLOCKED needs unknown/unsafe impact and no completion receipt")
-        elif self.disposition is ReconciliationDisposition.COMPLETE:
+            if self.verified_publication is not None:
+                raise ValueError("REQUIRED needs an approved contract/tree and no completion receipt")
+            return self
+
+        if self.disposition is ReconciliationDisposition.COMPLETE:
             receipt = self.verified_publication
             if (
                 self.impact is not ProjectImpact.PUBLIC_CHANGE_REQUIRED
@@ -214,7 +236,9 @@ class ReconciliationDispositionRecord(_StrictFrozenProjectRecord):
                 or receipt.ci.commit_sha != receipt.git.resulting_commit
             ):
                 raise ValueError("COMPLETE requires exact verified Git/readback/CI evidence")
-        return self
+            return self
+
+        raise ValueError(f"unsupported disposition: {self.disposition}")
 
 
 class ReconciliationPolicyContract(_StrictFrozenProjectRecord):

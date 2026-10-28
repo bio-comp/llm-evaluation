@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from canonical_sync.codec import canonical_record_bytes, canonical_record_hash
 from llm_evaluation.canonical_authority import D016_REQUIRED_ROLES, load_d016_authority_profile
@@ -10,6 +11,7 @@ from llm_evaluation.canonical_reconciliation import (
     LastReconciledStateRecord,
     ProjectImpact,
     ReconciliationDisposition,
+    ReconciliationDispositionRecord,
     ReconciliationPolicyContract,
     ReviewedCanonicalImpact,
     approved_policy_tree,
@@ -75,6 +77,15 @@ def test_private_profile_rejects_missing_extra_and_unknown_top_level_state(tmp_p
     unknown.write_text(unknown.read_text() + '\nunexpected = "value"\n')
     with pytest.raises(ValueError):
         load_d016_authority_profile(unknown)
+
+
+def test_private_profile_requires_expected_parent_id(tmp_path: Path) -> None:
+    no_parent = tmp_path / "no_parent.toml"
+    _write_profile(no_parent)
+    content = no_parent.read_text().replace('expected_parent_id = "private-parent"\n', "", 1)
+    no_parent.write_text(content)
+    with pytest.raises(ValueError, match="unsupported source declaration"):
+        load_d016_authority_profile(no_parent)
 
 
 def test_counterfactual_authoritative_contract_fails_stale_executable_until_reconciled() -> None:
@@ -145,3 +156,47 @@ def test_public_policy_fixture_is_canonical_and_matches_executable_contract() ->
     contract = ReconciliationPolicyContract.model_validate_json(payload, strict=True)
     assert canonical_record_bytes(contract) == payload
     verify_executable_policy_contract(contract)
+
+
+@pytest.mark.parametrize(
+    "disposition,impact",
+    [
+        (ReconciliationDisposition.REQUIRED, ProjectImpact.PUBLIC_CHANGE_REQUIRED),
+        (ReconciliationDisposition.BLOCKED, ProjectImpact.UNKNOWN_OR_UNSAFE),
+    ],
+)
+def test_disposition_rejects_unchanged_snapshots(
+    disposition: ReconciliationDisposition, impact: ProjectImpact
+) -> None:
+    extra = {}
+    if disposition is ReconciliationDisposition.REQUIRED:
+        extra = {"public_contract_sha256": H1, "publication_tree_sha256": H2}
+    with pytest.raises(ValidationError, match="requires a changed snapshot"):
+        ReconciliationDispositionRecord(
+            current_snapshot_sha256=H1,
+            previous_snapshot_sha256=H1,
+            impact=impact,
+            disposition=disposition,
+            **extra,
+        )
+
+
+@pytest.mark.parametrize(
+    "disposition,impact",
+    [
+        (ReconciliationDisposition.NONE, ProjectImpact.NO_PUBLIC_IMPACT),
+        (ReconciliationDisposition.BLOCKED, ProjectImpact.UNKNOWN_OR_UNSAFE),
+    ],
+)
+def test_disposition_rejects_stray_publication_hashes(
+    disposition: ReconciliationDisposition, impact: ProjectImpact
+) -> None:
+    with pytest.raises(ValidationError, match="must not declare publication hashes"):
+        ReconciliationDispositionRecord(
+            current_snapshot_sha256=H2,
+            previous_snapshot_sha256=H1,
+            impact=impact,
+            disposition=disposition,
+            public_contract_sha256=H1,
+            publication_tree_sha256=H2,
+        )

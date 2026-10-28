@@ -1,6 +1,8 @@
 class CanonicalSyncError(RuntimeError):
     """Base exception for fail-closed canonical synchronization mechanics."""
 
+    attempt_count: int | None = None
+
 
 class AuthorityMismatchError(CanonicalSyncError):
     """An observed source does not match the declared authority profile."""

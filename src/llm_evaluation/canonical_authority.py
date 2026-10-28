@@ -45,6 +45,7 @@ def load_d016_authority_profile(path: Path) -> AuthorityProfile:
             or item.expected_name != item.logical_path
             or item.expected_mime_type != _GOOGLE_DOC_MIME
             or item.representation_schema != _REPRESENTATION
+            or item.expected_parent_id is None
         ):
             raise ValueError("D-016 authority profile contains an unsupported source declaration")
     return profile_from_record(record)

@@ -31,21 +31,39 @@ jobs:
           uv run --frozen --all-packages --extra drive coverage erase
           uv run --frozen --all-packages --extra drive coverage run --branch -m pytest -m 'not live_drive' -q
           uv run --frozen --all-packages --extra drive coverage report --include='src/*,packages/canonical-sync/src/*' --fail-under=80
-      - name: Build and exercise installed entrypoint
+      - name: Build and exercise installed entrypoints in isolated venvs
         shell: bash
         run: |
           set -euo pipefail
           build_dir="$(mktemp -d)"
           trap 'rm -rf "$build_dir"' EXIT
           python -m pip install build==1.3.0
-          mkdir -p "$build_dir/dist/canonical" "$build_dir/dist/root"
+          mkdir -p "$build_dir/dist/canonical" "$build_dir/dist/root" "$build_dir/wheelhouse"
           python -m build packages/canonical-sync --sdist --wheel --outdir "$build_dir/dist/canonical"
           python -m build --sdist --wheel --outdir "$build_dir/dist/root"
-          python -m venv "$build_dir/venv"
-          "$build_dir/venv/bin/pip" install "$build_dir"/dist/canonical/*.whl "$build_dir"/dist/root/*.whl
-          "$build_dir/venv/bin/python" - <<'PY_BASE'
+
+          # 1. Isolated fresh venv for canonical-sync
+          python -m venv "$build_dir/venv-canonical"
+          "$build_dir/venv-canonical/bin/pip" wheel --wheel-dir="$build_dir/wheelhouse" "$build_dir"/dist/canonical/*.whl
+          "$build_dir/venv-canonical/bin/pip" install --no-index --find-links="$build_dir/wheelhouse" canonical-sync
+          "$build_dir/venv-canonical/bin/python" - <<'PY_CANONICAL'
           from importlib.metadata import PackageNotFoundError, version
           import canonical_sync.records
+          for distribution in ("google-api-python-client", "google-auth", "llm-evaluation"):
+              try:
+                  version(distribution)
+              except PackageNotFoundError:
+                  continue
+              raise AssertionError(f"canonical-sync unexpectedly installed {distribution}")
+          PY_CANONICAL
+
+          # 2. Isolated fresh venv for llm-evaluation (resolving canonical-sync from built wheel)
+          python -m venv "$build_dir/venv-root"
+          "$build_dir/venv-root/bin/pip" install --no-index --find-links="$build_dir/wheelhouse" "$build_dir"/dist/root/*.whl
+          "$build_dir/venv-root/bin/python" - <<'PY_BASE'
+          from importlib.metadata import PackageNotFoundError, version
+          import canonical_sync.records
+          import llm_evaluation.canonical_authority
           import llm_evaluation.canonical_reconciliation
           for distribution in ("google-api-python-client", "google-auth"):
               try:
@@ -54,11 +72,11 @@ jobs:
                   continue
               raise AssertionError(f"base wheel unexpectedly installed {distribution}")
           PY_BASE
-          (unset PYTHONPATH; "$build_dir/venv/bin/llm-evaluation" fixtures/e002_synthetic.json --k 2 > "$build_dir/preview.json")
+          (unset PYTHONPATH; "$build_dir/venv-root/bin/llm-evaluation" fixtures/e002_synthetic.json --k 2 > "$build_dir/preview.json")
           python -c 'import json,sys; assert json.load(open(sys.argv[1]))["macro"]["marginal"] == 0.5' "$build_dir/preview.json"
-          (unset PYTHONPATH; "$build_dir/venv/bin/llm-evaluation-stopping" > "$build_dir/stopping-preview.json")
+          (unset PYTHONPATH; "$build_dir/venv-root/bin/llm-evaluation-stopping" > "$build_dir/stopping-preview.json")
           python -c 'import json,sys; assert json.load(open(sys.argv[1]))["record_type"] == "e002_stopping_simulation"' "$build_dir/stopping-preview.json"
-          if (unset PYTHONPATH; "$build_dir/venv/bin/llm-evaluation" fixtures/e002_synthetic.json --k 2 --output "$build_dir/wheel-output.json") >"$build_dir/wheel-error.log" 2>&1; then
+          if (unset PYTHONPATH; "$build_dir/venv-root/bin/llm-evaluation" fixtures/e002_synthetic.json --k 2 --output "$build_dir/wheel-output.json") >"$build_dir/wheel-error.log" 2>&1; then
             echo "installed wheel unexpectedly finalized" >&2
             exit 1
           fi

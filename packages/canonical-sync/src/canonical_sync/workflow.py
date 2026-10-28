@@ -48,6 +48,8 @@ def acquire_and_publish(
         ended_at = actual_clock()
         if candidate is not None:
             attempts = candidate.attempt_count
+        elif exc.attempt_count is not None:
+            attempts = exc.attempt_count
         elif isinstance(exc, SourceMovementError):
             attempts = max_movement_attempts
         else:

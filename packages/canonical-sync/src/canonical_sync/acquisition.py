@@ -10,7 +10,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 from .codec import canonical_record_hash
 from .domain import AuthorityObjectSpec, AuthorityProfile, SourceContent, SourceObservation
-from .errors import AuthorityMismatchError, SourceMovementError
+from .errors import AuthorityMismatchError, CanonicalSyncError, SourceMovementError
 from .records import (
     AcquisitionProvenanceRecord,
     SemanticEntryRecord,
@@ -226,9 +226,15 @@ def acquire_stable_candidate(
                 clock=actual_clock,
                 provenance=actual_provenance,
             )
-        except SourceMovementError as exc:
-            last_movement = exc
-            if attempt == max_movement_attempts:
-                break
+        except CanonicalSyncError as exc:
+            exc.attempt_count = attempt
+            if isinstance(exc, SourceMovementError):
+                last_movement = exc
+                if attempt == max_movement_attempts:
+                    break
+                continue
+            raise
     assert last_movement is not None
-    raise SourceMovementError("source moved during every bounded acquisition attempt") from last_movement
+    terminal_error = SourceMovementError("source moved during every bounded acquisition attempt")
+    terminal_error.attempt_count = max_movement_attempts
+    raise terminal_error from last_movement

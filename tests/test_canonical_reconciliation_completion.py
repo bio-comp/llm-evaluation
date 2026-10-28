@@ -238,3 +238,23 @@ def test_durable_parent_versions_reject_historical_nested_contracts():
             with pytest.raises(ValidationError):
                 parse_canonical_record(raw, type(record))
     assert ReconciliationDispositionRecord.model_fields['schema_version'].default == 2
+
+
+def test_complete_disposition_rejects_unchanged_snapshot() -> None:
+    from llm_evaluation.canonical_reconciliation import ReconciliationDispositionRecord
+    required = _required().disposition
+    receipt = _verified_receipt(
+        public_contract_sha256=required.public_contract_sha256,
+        publication_tree_sha256=required.publication_tree_sha256,
+    )
+    with pytest.raises(ValidationError, match="requires a changed snapshot"):
+        ReconciliationDispositionRecord(
+            current_snapshot_sha256=required.current_snapshot_sha256,
+            previous_snapshot_sha256=required.current_snapshot_sha256,
+            impact=required.impact,
+            disposition=ReconciliationDisposition.COMPLETE,
+            public_contract_sha256=required.public_contract_sha256,
+            publication_tree_sha256=required.publication_tree_sha256,
+            verified_publication=receipt,
+        )
+
