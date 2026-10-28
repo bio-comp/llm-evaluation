@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 import time
 from collections.abc import Callable
@@ -8,7 +9,7 @@ from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
 from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .domain import AuthorityObjectSpec, SourceContent, SourceObservation, TransportProvenance
 from .errors import (
@@ -59,7 +60,7 @@ class _DriveMetadataWire(_WireModel):
     mimeType: str
     version: str
     modifiedTime: str
-    parents: list[str]
+    parents: list[str] = Field(default_factory=list)
     trashed: bool
     capabilities: _CapabilitiesWire
 
@@ -148,6 +149,7 @@ class GoogleDriveTransport:
         drive_service: _DriveService,
         http_error_types: tuple[type[BaseException], ...],
         request_attempts: int = 3,
+        request_timeout: float = 30.0,
         sleeper: Callable[[float], None] = time.sleep,
         network_error_types: tuple[type[BaseException], ...] = (OSError,),
         auth_error_types: tuple[type[BaseException], ...] = (),
@@ -156,11 +158,14 @@ class GoogleDriveTransport:
     ) -> None:
         if type(request_attempts) is not int or request_attempts < 1:
             raise ValueError("request_attempts must be a positive integer")
+        if request_timeout <= 0:
+            raise ValueError("request_timeout must be positive")
         self._drive = drive_service
         self._http_error_types = http_error_types
         self._network_error_types = network_error_types
         self._auth_error_types = auth_error_types
         self._request_attempts = request_attempts
+        self.request_timeout = request_timeout
         self._sleeper = sleeper
         self._provenance = TransportProvenance(
             transport_name="google-drive-v3",
@@ -173,34 +178,48 @@ class GoogleDriveTransport:
         return self._provenance
 
     @classmethod
-    def from_application_default(cls, *, request_attempts: int = 3) -> GoogleDriveTransport:
+    def from_application_default(
+        cls,
+        *,
+        request_attempts: int = 3,
+        request_timeout: float = 30.0,
+    ) -> GoogleDriveTransport:
         try:
             import google.auth
             from google.auth.exceptions import DefaultCredentialsError, GoogleAuthError
             from google.auth.exceptions import TransportError as GoogleTransportError
+            import httplib2  # type: ignore[import-untyped]
             from httplib2 import HttpLib2Error  # type: ignore[import-untyped]
+            from google_auth_httplib2 import AuthorizedHttp  # type: ignore[import-untyped]
             from googleapiclient.discovery import build  # type: ignore[import-untyped]
             from googleapiclient.errors import HttpError  # type: ignore[import-untyped]
         except ImportError as exc:
             raise TransportAuthError("Google Drive support is not installed") from exc
         try:
             credentials, _ = google.auth.default(scopes=[DRIVE_READONLY_SCOPE])
-            drive_service = build("drive", "v3", credentials=credentials, cache_discovery=False)
+            http = AuthorizedHttp(credentials, http=httplib2.Http(timeout=request_timeout))
+            drive_service = build("drive", "v3", http=http, cache_discovery=False)
         except (DefaultCredentialsError, GoogleAuthError, OSError) as exc:
             raise TransportAuthError("Google application-default read credentials are unavailable") from exc
         try:
             client_version = version("google-api-python-client")
         except PackageNotFoundError:
             client_version = "unknown"
-        credential_type = f"{type(credentials).__module__}.{type(credentials).__qualname__}"
+        if "service_account" in type(credentials).__module__:
+            auth_provenance = "adc:service-account"
+        elif "identity_pool" in type(credentials).__module__:
+            auth_provenance = "adc:workload-identity"
+        else:
+            auth_provenance = "adc:authorized-user"
         return cls(
             drive_service=drive_service,
             http_error_types=(HttpError,),
             network_error_types=(OSError, HttpLib2Error, GoogleTransportError),
             auth_error_types=(GoogleAuthError,),
             request_attempts=request_attempts,
+            request_timeout=request_timeout,
             transport_version=client_version,
-            auth_provenance=f"adc:{credential_type}",
+            auth_provenance=auth_provenance,
         )
 
     def _execute(self, factory: Callable[[], _Request]) -> object:
@@ -211,7 +230,7 @@ class GoogleDriveTransport:
             except self._network_error_types as exc:
                 last_transient = exc
                 if attempt + 1 < self._request_attempts:
-                    self._sleeper(float(2**attempt))
+                    self._sleeper(random.uniform(0.0, float(2**attempt)))
                     continue
                 break
             except self._auth_error_types:
@@ -222,7 +241,7 @@ class GoogleDriveTransport:
                 if transient:
                     last_transient = exc
                     if attempt + 1 < self._request_attempts:
-                        self._sleeper(float(2**attempt))
+                        self._sleeper(random.uniform(0.0, float(2**attempt)))
                         continue
                     break
                 if status == 401:

@@ -6,7 +6,11 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from canonical_sync.domain import AuthorityProfile, profile_from_record
-from canonical_sync.records import AuthorityObjectSpecRecord, AuthorityProfileRecord
+from canonical_sync.records import (
+    AuthorityObjectSpecRecord,
+    AuthorityProfileRecord,
+    ExactMembershipSpecRecord,
+)
 
 D016_REQUIRED_ROLES = frozenset(
     {"README.md", "DECISIONS.md", "EXPERIMENTS.md", "REVIEW_LEDGER.md"}
@@ -23,17 +27,33 @@ def load_d016_authority_profile(path: Path) -> AuthorityProfile:
     if set(raw) != {"profile"} or not isinstance(raw["profile"], dict):
         raise ValueError("D-016 authority profile must contain only a [profile] table")
     profile_raw = raw["profile"]
-    if set(profile_raw) != {"profile_name", "objects"}:
+    if not (
+        {"profile_name", "objects"}.issubset(set(profile_raw))
+        and set(profile_raw).issubset({"profile_name", "objects", "memberships"})
+    ):
         raise ValueError("D-016 authority profile contains unexpected fields")
     profile_name = profile_raw.get("profile_name")
     objects_raw = profile_raw.get("objects")
-    if not isinstance(profile_name, str) or not isinstance(objects_raw, list):
+    memberships_raw = profile_raw.get("memberships", [])
+    if (
+        not isinstance(profile_name, str)
+        or not isinstance(objects_raw, list)
+        or not isinstance(memberships_raw, list)
+    ):
         raise ValueError("D-016 authority profile has invalid field types")
     try:
         objects = tuple(
             AuthorityObjectSpecRecord.model_validate(item, strict=True) for item in objects_raw
         )
-        record = AuthorityProfileRecord(profile_name=profile_name, objects=objects)
+        memberships = tuple(
+            ExactMembershipSpecRecord.model_validate(item, strict=True)
+            for item in memberships_raw
+        )
+        record = AuthorityProfileRecord(
+            profile_name=profile_name,
+            objects=objects,
+            memberships=memberships,
+        )
     except ValidationError as exc:
         raise ValueError("D-016 authority profile failed strict validation") from exc
     roles = {item.logical_path for item in record.objects}

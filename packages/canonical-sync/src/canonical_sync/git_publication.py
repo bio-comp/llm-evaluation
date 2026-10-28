@@ -8,17 +8,20 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath, Path
 
 from .errors import GitPublicationError, RemoteRaceError, RemoteVerificationError
-from .records import GitPublicationReceiptRecord
+from .records import (
+    GitPublicationReceiptRecord,
+    _portable_path_key,
+    _validate_no_path_hierarchy_collisions,
+)
+
+GIT_MODE_BLOB = b"100644"
+GIT_MODE_TREE = b"040000"
+VALID_GIT_OID_LENGTHS = frozenset({40, 64})
+DEFAULT_GIT_COMMAND_TIMEOUT: int = 60
 
 
 def _safe_git_path(value: str) -> str:
-    if not value or "\\" in value:
-        raise ValueError("publication path must be a non-empty POSIX path")
-    pure = PurePosixPath(value)
-    if pure.is_absolute() or pure.as_posix() != value:
-        raise ValueError("publication path must be canonical and relative")
-    if any(part in {"", ".", ".."} or part.casefold() == ".git" for part in pure.parts):
-        raise ValueError("publication path contains traversal or reserved components")
+    _portable_path_key(value)
     return value
 
 
@@ -47,8 +50,10 @@ class PublicationTree:
         if not self.files:
             raise ValueError("publication tree requires at least one file")
         ordered = tuple(sorted(self.files, key=lambda item: item.path))
-        if len({item.path for item in ordered}) != len(ordered):
+        folded = tuple(_portable_path_key(item.path) for item in ordered)
+        if len(folded) != len(set(folded)):
             raise ValueError("publication tree paths must be unique")
+        _validate_no_path_hierarchy_collisions(folded)
         object.__setattr__(self, "files", ordered)
 
     @property
@@ -67,13 +72,22 @@ class PublicationTree:
 
 
 class GitPublisher:
-    def __init__(self, remote: str, *, ref: str) -> None:
+    def __init__(
+        self,
+        remote: str,
+        *,
+        ref: str,
+        command_timeout: int = DEFAULT_GIT_COMMAND_TIMEOUT,
+    ) -> None:
         if not remote or remote != remote.strip():
             raise ValueError("Git remote must be non-empty and trimmed")
         if not ref.startswith("refs/heads/"):
             raise ValueError("Git publication ref must be a branch ref")
+        if type(command_timeout) is not int or command_timeout < 1:
+            raise ValueError("command_timeout must be a positive integer")
         self.remote = remote
         self.ref = ref
+        self.command_timeout = command_timeout
 
     @staticmethod
     def _env() -> dict[str, str]:
@@ -115,7 +129,7 @@ class GitPublisher:
                 input=data,
                 check=True,
                 capture_output=True,
-                timeout=60,
+                timeout=self.command_timeout,
                 env=self._env(),
             ).stdout
         except (OSError, subprocess.SubprocessError) as exc:
@@ -144,12 +158,13 @@ class GitPublisher:
             else:
                 blob_oid = self._git(repo, "hash-object", "-w", "--stdin", data=files[path]).strip()
                 entries.append(
-                    b"100644 blob " + blob_oid + b"\t" + tail.encode("utf-8") + b"\0"
+                    GIT_MODE_BLOB + b" blob " + blob_oid + b"\t" + tail.encode("utf-8") + b"\0"
                 )
         for name in sorted(directories):
             tree_oid = self._write_tree(repo, files, prefix + name + "/")
             entries.append(
-                b"040000 tree "
+                GIT_MODE_TREE
+                + b" tree "
                 + tree_oid.encode("ascii")
                 + b"\t"
                 + name.encode("utf-8")
@@ -166,7 +181,7 @@ class GitPublisher:
             mode, kind, oid = metadata.split(b" ")
             path = name.decode("utf-8")
             _safe_git_path(path)
-            if mode != b"100644" or kind != b"blob" or path in files:
+            if mode != GIT_MODE_BLOB or kind != b"blob" or path in files:
                 raise RemoteVerificationError("remote tree contains an unsupported Git entry")
             files[path] = self._git(repo, "cat-file", "blob", oid.decode("ascii"))
         return files
@@ -177,8 +192,10 @@ class GitPublisher:
         """Read back a fixed remote commit; never create a commit or push."""
         if not isinstance(tree, PublicationTree):
             raise TypeError("Git verification requires a PublicationTree")
-        if (len(expected_commit) not in {40, 64}
-                or any(c not in "0123456789abcdef" for c in expected_commit)):
+        if (
+            len(expected_commit) not in VALID_GIT_OID_LENGTHS
+            or any(c not in "0123456789abcdef" for c in expected_commit)
+        ):
             raise ValueError("expected commit must be a lowercase Git object ID")
         with tempfile.TemporaryDirectory(prefix="canonical-sync-readback-") as temporary:
             repo = Path(temporary)
@@ -215,7 +232,7 @@ class GitPublisher:
         if not commit_message or commit_message != commit_message.strip() or "\x00" in commit_message:
             raise ValueError("commit message must be non-empty, trimmed, and contain no NUL")
         if expected_base is not None and (
-            len(expected_base) not in {40, 64}
+            len(expected_base) not in VALID_GIT_OID_LENGTHS
             or any(character not in "0123456789abcdef" for character in expected_base)
         ):
             raise ValueError("expected base must be a lowercase Git object ID")

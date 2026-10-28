@@ -4,6 +4,7 @@ import re
 import hashlib
 from urllib.parse import urlsplit
 import unicodedata
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import PurePosixPath
 from typing import ClassVar, Literal, Self
@@ -121,106 +122,80 @@ class ExactMembershipSpecRecord(StrictFrozenRecord):
         return normalized
 
 
-class AuthorityProfileRecord(StrictFrozenRecord):
+def _validate_no_path_hierarchy_collisions(paths: Iterable[str]) -> None:
+    sorted_paths = sorted(paths)
+    for index in range(len(sorted_paths) - 1):
+        prefix = sorted_paths[index] + "/"
+        if sorted_paths[index + 1].startswith(prefix):
+            raise ValueError(
+                f"path hierarchy collision between '{sorted_paths[index]}' and '{sorted_paths[index + 1]}'"
+            )
+
+
+class _BaseAuthoritySpecRecord(StrictFrozenRecord):
+    objects: tuple[AuthorityObjectSpecRecord, ...]
+    memberships: tuple[ExactMembershipSpecRecord, ...] = ()
+
+    @field_validator("objects")
+    @classmethod
+    def normalize_objects(
+        cls, value: tuple[AuthorityObjectSpecRecord, ...]
+    ) -> tuple[AuthorityObjectSpecRecord, ...]:
+        if not value:
+            label = "authority profile" if "Profile" in cls.__name__ else "authority specification"
+            raise ValueError(f"{label} requires at least one object")
+        ordered = tuple(sorted(value, key=lambda item: item.logical_path))
+        folded_paths = tuple(_portable_path_key(item.logical_path) for item in ordered)
+        if len(folded_paths) != len(set(folded_paths)):
+            raise ValueError("authority logical paths collide portably")
+        _validate_no_path_hierarchy_collisions(folded_paths)
+        object_ids = tuple(item.object_id for item in ordered)
+        if len(object_ids) != len(set(object_ids)):
+            raise ValueError("authority object IDs must be unique")
+        return ordered
+
+    @field_validator("memberships")
+    @classmethod
+    def normalize_memberships(
+        cls, value: tuple[ExactMembershipSpecRecord, ...]
+    ) -> tuple[ExactMembershipSpecRecord, ...]:
+        ordered = tuple(sorted(value, key=lambda item: item.parent_id))
+        parents = tuple(item.parent_id for item in ordered)
+        if len(parents) != len(set(parents)):
+            raise ValueError("membership parents must be unique")
+        return ordered
+
+    @model_validator(mode="after")
+    def validate_membership_coherence(self) -> Self:
+        by_id = {item.object_id: item for item in self.objects}
+        for membership in self.memberships:
+            for child_id in membership.expected_child_ids:
+                child = by_id.get(child_id)
+                if child is None:
+                    raise ValueError("exact membership references an undeclared authority object")
+                if child.expected_parent_id != membership.parent_id:
+                    raise ValueError("exact membership parent conflicts with object authority")
+        return self
+
+
+class AuthorityProfileRecord(_BaseAuthoritySpecRecord):
     canonical_identity_domain: ClassVar[str] = "canonical-sync.authority-profile"
     canonical_identity_version: ClassVar[int] = 1
     record_type: Literal["authority_profile"] = "authority_profile"
     schema_version: Literal[1] = 1
     profile_name: str
-    objects: tuple[AuthorityObjectSpecRecord, ...]
-    memberships: tuple[ExactMembershipSpecRecord, ...] = ()
 
     @field_validator("profile_name")
     @classmethod
     def validate_profile_name(cls, value: str) -> str:
         return _nonempty_trimmed(value, label="profile name")
 
-    @field_validator("objects")
-    @classmethod
-    def normalize_objects(
-        cls, value: tuple[AuthorityObjectSpecRecord, ...]
-    ) -> tuple[AuthorityObjectSpecRecord, ...]:
-        if not value:
-            raise ValueError("authority profile requires at least one object")
-        ordered = tuple(sorted(value, key=lambda item: item.logical_path))
-        folded_paths = tuple(_portable_path_key(item.logical_path) for item in ordered)
-        if len(folded_paths) != len(set(folded_paths)):
-            raise ValueError("authority logical paths collide portably")
-        object_ids = tuple(item.object_id for item in ordered)
-        if len(object_ids) != len(set(object_ids)):
-            raise ValueError("authority object IDs must be unique")
-        return ordered
 
-    @field_validator("memberships")
-    @classmethod
-    def normalize_memberships(
-        cls, value: tuple[ExactMembershipSpecRecord, ...]
-    ) -> tuple[ExactMembershipSpecRecord, ...]:
-        ordered = tuple(sorted(value, key=lambda item: item.parent_id))
-        parents = tuple(item.parent_id for item in ordered)
-        if len(parents) != len(set(parents)):
-            raise ValueError("membership parents must be unique")
-        return ordered
-
-    @model_validator(mode="after")
-    def validate_membership_coherence(self) -> Self:
-        by_id = {item.object_id: item for item in self.objects}
-        for membership in self.memberships:
-            for child_id in membership.expected_child_ids:
-                child = by_id.get(child_id)
-                if child is None:
-                    raise ValueError("exact membership references an undeclared authority object")
-                if child.expected_parent_id != membership.parent_id:
-                    raise ValueError("exact membership parent conflicts with object authority")
-        return self
-
-
-class AuthoritySpecificationRecord(StrictFrozenRecord):
+class AuthoritySpecificationRecord(_BaseAuthoritySpecRecord):
     canonical_identity_domain: ClassVar[str] = "canonical-sync.authority-specification"
     canonical_identity_version: ClassVar[int] = 1
     record_type: Literal["authority_specification"] = "authority_specification"
     schema_version: Literal[1] = 1
-    objects: tuple[AuthorityObjectSpecRecord, ...]
-    memberships: tuple[ExactMembershipSpecRecord, ...] = ()
-
-    @field_validator("objects")
-    @classmethod
-    def normalize_objects(
-        cls, value: tuple[AuthorityObjectSpecRecord, ...]
-    ) -> tuple[AuthorityObjectSpecRecord, ...]:
-        if not value:
-            raise ValueError("authority specification requires at least one object")
-        ordered = tuple(sorted(value, key=lambda item: item.logical_path))
-        folded_paths = tuple(_portable_path_key(item.logical_path) for item in ordered)
-        if len(folded_paths) != len(set(folded_paths)):
-            raise ValueError("authority logical paths collide portably")
-        object_ids = tuple(item.object_id for item in ordered)
-        if len(object_ids) != len(set(object_ids)):
-            raise ValueError("authority object IDs must be unique")
-        return ordered
-
-    @field_validator("memberships")
-    @classmethod
-    def normalize_memberships(
-        cls, value: tuple[ExactMembershipSpecRecord, ...]
-    ) -> tuple[ExactMembershipSpecRecord, ...]:
-        ordered = tuple(sorted(value, key=lambda item: item.parent_id))
-        parents = tuple(item.parent_id for item in ordered)
-        if len(parents) != len(set(parents)):
-            raise ValueError("membership parents must be unique")
-        return ordered
-
-    @model_validator(mode="after")
-    def validate_membership_coherence(self) -> Self:
-        by_id = {item.object_id: item for item in self.objects}
-        for membership in self.memberships:
-            for child_id in membership.expected_child_ids:
-                child = by_id.get(child_id)
-                if child is None:
-                    raise ValueError("exact membership references an undeclared authority object")
-                if child.expected_parent_id != membership.parent_id:
-                    raise ValueError("exact membership parent conflicts with object authority")
-        return self
 
 
 class SemanticEntryRecord(StrictFrozenRecord):
@@ -268,6 +243,7 @@ class SnapshotStateRecord(StrictFrozenRecord):
         folded = tuple(_portable_path_key(item.logical_path) for item in ordered)
         if len(folded) != len(set(folded)):
             raise ValueError("snapshot logical paths collide portably")
+        _validate_no_path_hierarchy_collisions(folded)
         return ordered
 
 

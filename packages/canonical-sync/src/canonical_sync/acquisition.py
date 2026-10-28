@@ -85,6 +85,20 @@ def _observe_memberships(
     return result
 
 
+KNOWN_TRANSPORTS = frozenset({"google-drive-v3"})
+KNOWN_TRANSPORT_VERSIONS = frozenset({"unknown", "injected-client"})
+SAFE_AUTH_CATEGORIES = frozenset(
+    {
+        "injected-client",
+        "test-injected",
+        "adc:authorized-user",
+        "adc:service-account",
+        "adc:workload-identity",
+        "adc:workload-identity-service-account",
+    }
+)
+
+
 def _safe_transport_metadata(
     value: str, *, known: frozenset[str], numeric_version: bool = False
 ) -> str:
@@ -104,14 +118,17 @@ def acquisition_provenance(transport: SourceTransport) -> AcquisitionProvenanceR
         runner_version=runner_version,
         python_implementation=platform.python_implementation(),
         python_version=platform.python_version(),
-        transport_name=_safe_transport_metadata(transport_provenance.transport_name,
-            known=frozenset({"google-drive-v3"})),
-        transport_version=_safe_transport_metadata(transport_provenance.transport_version,
-            known=frozenset({"unknown", "injected-client"}), numeric_version=True),
-        auth_provenance=_safe_transport_metadata(transport_provenance.auth_provenance,
-            known=frozenset({"injected-client", "test-injected", "adc:authorized-user",
-                "adc:workload-identity-service-account", "adc:google.oauth2.credentials.Credentials",
-                "adc:google.oauth2.service_account.Credentials", "adc:google.auth.identity_pool.Credentials"})),
+        transport_name=_safe_transport_metadata(
+            transport_provenance.transport_name, known=KNOWN_TRANSPORTS
+        ),
+        transport_version=_safe_transport_metadata(
+            transport_provenance.transport_version,
+            known=KNOWN_TRANSPORT_VERSIONS,
+            numeric_version=True,
+        ),
+        auth_provenance=_safe_transport_metadata(
+            transport_provenance.auth_provenance, known=SAFE_AUTH_CATEGORIES
+        ),
     )
 
 

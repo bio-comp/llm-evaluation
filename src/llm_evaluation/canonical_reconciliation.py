@@ -18,6 +18,7 @@ _PUBLIC_MAIN_REF: Literal["refs/heads/main"] = "refs/heads/main"
 _PUBLIC_VERIFY_CHECK: Literal["verify"] = "verify"
 _PUBLIC_GIT_REMOTES = frozenset(
     {
+        "https://github.com/bio-comp/llm-evaluation",
         "https://github.com/bio-comp/llm-evaluation.git",
         "git@github.com:bio-comp/llm-evaluation.git",
         "ssh://git@github.com/bio-comp/llm-evaluation.git",
@@ -43,6 +44,8 @@ class ReconciliationDisposition(StrEnum):
 
 
 class LastReconciledStateRecord(_StrictFrozenProjectRecord):
+    canonical_identity_domain: ClassVar[str] = "llm-evaluation.last-reconciled-state"
+    canonical_identity_version: ClassVar[int] = 1
     record_type: Literal["llm_evaluation_last_reconciled_state"] = (
         "llm_evaluation_last_reconciled_state"
     )
@@ -58,6 +61,8 @@ class LastReconciledStateRecord(_StrictFrozenProjectRecord):
 
 
 class GitHubPullRequestMergeRecord(_StrictFrozenProjectRecord):
+    canonical_identity_domain: ClassVar[str] = "llm-evaluation.github-pr-merge"
+    canonical_identity_version: ClassVar[int] = 1
     record_type: Literal["llm_evaluation_github_pr_merge"] = "llm_evaluation_github_pr_merge"
     schema_version: Literal[1] = 1
     repository: Literal["bio-comp/llm-evaluation"] = _PUBLIC_REPOSITORY
@@ -66,6 +71,20 @@ class GitHubPullRequestMergeRecord(_StrictFrozenProjectRecord):
     head_commit_sha: str
     base_ref: Literal["refs/heads/main"] = _PUBLIC_MAIN_REF
     merged_commit_sha: str
+
+    @field_validator("head_ref", mode="before")
+    @classmethod
+    def _normalize_head_ref(cls, value: object) -> object:
+        if isinstance(value, str) and not value.startswith("refs/"):
+            return f"refs/heads/{value}"
+        return value
+
+    @field_validator("base_ref", mode="before")
+    @classmethod
+    def _normalize_base_ref(cls, value: object) -> object:
+        if isinstance(value, str) and not value.startswith("refs/"):
+            return f"refs/heads/{value}"
+        return value
 
     @field_validator("pull_request_number")
     @classmethod
@@ -90,6 +109,8 @@ class GitHubPullRequestMergeRecord(_StrictFrozenProjectRecord):
 
 
 class GitHubCIVerificationRecord(_StrictFrozenProjectRecord):
+    canonical_identity_domain: ClassVar[str] = "llm-evaluation.github-ci-verification"
+    canonical_identity_version: ClassVar[int] = 1
     record_type: Literal["llm_evaluation_github_ci"] = "llm_evaluation_github_ci"
     schema_version: Literal[2] = 2
     repository: Literal["bio-comp/llm-evaluation"] = _PUBLIC_REPOSITORY
@@ -115,6 +136,8 @@ class GitHubCIVerificationRecord(_StrictFrozenProjectRecord):
 
 
 class VerifiedPublicationReceiptRecord(_StrictFrozenProjectRecord):
+    canonical_identity_domain: ClassVar[str] = "llm-evaluation.verified-publication-receipt"
+    canonical_identity_version: ClassVar[int] = 1
     record_type: Literal["llm_evaluation_verified_publication"] = (
         "llm_evaluation_verified_publication"
     )
@@ -153,6 +176,8 @@ class VerifiedPublicationReceiptRecord(_StrictFrozenProjectRecord):
 
 
 class ReconciliationDispositionRecord(_StrictFrozenProjectRecord):
+    canonical_identity_domain: ClassVar[str] = "llm-evaluation.reconciliation-disposition"
+    canonical_identity_version: ClassVar[int] = 1
     record_type: Literal["llm_evaluation_reconciliation_disposition"] = (
         "llm_evaluation_reconciliation_disposition"
     )

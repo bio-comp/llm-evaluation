@@ -63,7 +63,10 @@ def acquire_and_publish(
             status="failed",
             error_code=type(exc).__name__,
         )
-        store.persist_receipt(receipt)
+        try:
+            store.persist_receipt(receipt)
+        except OSError:
+            raise SnapshotIntegrityError("snapshot receipt persistence I/O failed") from None
         raise
 
     receipt = AcquisitionReceiptRecord(
@@ -76,7 +79,10 @@ def acquire_and_publish(
         snapshot_state_sha256=publication.state_sha256,
         snapshot_observation_sha256=publication.observation_sha256,
     )
-    receipt_hash = store.persist_receipt(receipt)
+    try:
+        receipt_hash = store.persist_receipt(receipt)
+    except OSError:
+        raise SnapshotIntegrityError("snapshot receipt persistence I/O failed") from None
     return AcquisitionRunResult(
         candidate=candidate,
         publication=publication,

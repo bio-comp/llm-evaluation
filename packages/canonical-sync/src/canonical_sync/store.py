@@ -17,11 +17,28 @@ from .errors import SnapshotIntegrityError
 from .records import AcquisitionReceiptRecord, SnapshotObservationRecord, SnapshotStateRecord
 
 
+DIR_STAGING = "staging"
+DIR_SNAPSHOTS = "snapshots"
+DIR_OBSERVATIONS = "observations"
+DIR_RECEIPTS = "receipts"
+FILE_STATE = "state.json"
+FILE_MANIFEST = "manifest.json"
+FILE_LOCK = ".lock"
+
+
 @dataclass(frozen=True, slots=True)
 class StagedAcquisition:
     path: Path
     state_sha256: str
     observation_sha256: str
+
+    def __post_init__(self) -> None:
+        for val, label in (
+            (self.state_sha256, "state hash"),
+            (self.observation_sha256, "observation hash"),
+        ):
+            if len(val) != 64 or any(c not in "0123456789abcdef" for c in val):
+                raise SnapshotIntegrityError(f"staged {label} is malformed")
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,7 +57,7 @@ class VerifiedSnapshot:
 
 
 def _reject_symlink_chain(path: Path) -> None:
-    current = path
+    current = path.absolute()
     while True:
         try:
             mode = os.lstat(current).st_mode
@@ -96,10 +113,10 @@ class SnapshotStore:
         _reject_symlink_chain(root)
         root.mkdir(parents=True, exist_ok=True)
         _require_directory(root)
-        self._staging = root / "staging"
-        self._snapshots = root / "snapshots"
-        self._observations = root / "observations"
-        self._receipts = root / "receipts"
+        self._staging = root / DIR_STAGING
+        self._snapshots = root / DIR_SNAPSHOTS
+        self._observations = root / DIR_OBSERVATIONS
+        self._receipts = root / DIR_RECEIPTS
         for directory in (self._staging, self._snapshots, self._observations, self._receipts):
             directory.mkdir(exist_ok=True)
             _require_directory(directory)
@@ -118,7 +135,7 @@ class SnapshotStore:
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
         try:
-            fd = os.open(self.root / ".lock", flags, 0o600)
+            fd = os.open(self.root / FILE_LOCK, flags, 0o600)
         except OSError as exc:
             raise SnapshotIntegrityError("snapshot lock could not be opened safely") from exc
         try:
@@ -163,38 +180,42 @@ class SnapshotStore:
         self._validate_operational_dirs()
         self._validate_candidate(candidate)
         stage_root = Path(tempfile.mkdtemp(prefix="acquisition-", dir=self._staging))
-        snapshot_root = stage_root / "snapshot"
-        observation_root = stage_root / "observation"
-        (snapshot_root / "files").mkdir(parents=True)
-        observation_root.mkdir()
-        _write_fsync(snapshot_root / "state.json", canonical_record_bytes(candidate.state))
-        for representation in candidate.representations:
-            _write_fsync(snapshot_root / "files" / representation.logical_path, representation.data)
-        _write_fsync(
-            observation_root / "observation.json",
-            canonical_record_bytes(candidate.observation),
-        )
-        for directory in sorted(
-            {path.parent for path in snapshot_root.rglob("*") if path.is_file()},
-            key=lambda item: len(item.parts),
-            reverse=True,
-        ):
-            _fsync_dir(directory)
-        _fsync_dir(snapshot_root)
-        _fsync_dir(observation_root)
-        _fsync_dir(stage_root)
-        _fsync_dir(self._staging)
-        return StagedAcquisition(
-            path=stage_root,
-            state_sha256=canonical_record_hash(candidate.state),
-            observation_sha256=canonical_record_hash(candidate.observation),
-        )
+        try:
+            snapshot_root = stage_root / "snapshot"
+            observation_root = stage_root / "observation"
+            (snapshot_root / "files").mkdir(parents=True)
+            observation_root.mkdir()
+            _write_fsync(snapshot_root / FILE_STATE, canonical_record_bytes(candidate.state))
+            for representation in candidate.representations:
+                _write_fsync(snapshot_root / "files" / representation.logical_path, representation.data)
+            _write_fsync(
+                observation_root / "observation.json",
+                canonical_record_bytes(candidate.observation),
+            )
+            for directory in sorted(
+                {path.parent for path in snapshot_root.rglob("*") if path.is_file()},
+                key=lambda item: len(item.parts),
+                reverse=True,
+            ):
+                _fsync_dir(directory)
+            _fsync_dir(snapshot_root)
+            _fsync_dir(observation_root)
+            _fsync_dir(stage_root)
+            _fsync_dir(self._staging)
+            return StagedAcquisition(
+                path=stage_root,
+                state_sha256=canonical_record_hash(candidate.state),
+                observation_sha256=canonical_record_hash(candidate.observation),
+            )
+        except BaseException:
+            shutil.rmtree(stage_root, ignore_errors=True)
+            raise
 
     def _verify_snapshot_dir(
         self, path: Path, expected_hash: str
     ) -> tuple[SnapshotStateRecord, tuple[AcquiredRepresentation, ...]]:
         _require_directory(path)
-        state_path = path / "state.json"
+        state_path = path / FILE_STATE
         _require_regular(state_path)
         try:
             state = parse_canonical_record(state_path.read_bytes(), SnapshotStateRecord)
@@ -202,7 +223,7 @@ class SnapshotStore:
             raise SnapshotIntegrityError("snapshot state record failed canonical validation") from exc
         if canonical_record_hash(state) != expected_hash:
             raise SnapshotIntegrityError("snapshot state hash mismatch")
-        expected_files = {Path("state.json")}
+        expected_files = {Path(FILE_STATE)}
         expected_dirs = {Path("files")}
         representations: list[AcquiredRepresentation] = []
         for entry in state.entries:
@@ -332,19 +353,22 @@ class SnapshotStore:
             else:
                 self._verify_receipt_file(target, receipt_hash)
                 return receipt_hash
-            fd, temp_name = tempfile.mkstemp(prefix=".receipt-", suffix=".tmp", dir=self._receipts)
             try:
-                with os.fdopen(fd, "wb") as handle:
-                    handle.write(payload)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                os.rename(temp_name, target)
-                _fsync_dir(self._receipts)
-            finally:
+                fd, temp_name = tempfile.mkstemp(prefix=".receipt-", suffix=".tmp", dir=self._staging)
                 try:
-                    os.unlink(temp_name)
-                except FileNotFoundError:
-                    pass
+                    with os.fdopen(fd, "wb") as handle:
+                        handle.write(payload)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    os.rename(temp_name, target)
+                    _fsync_dir(self._receipts)
+                finally:
+                    try:
+                        os.unlink(temp_name)
+                    except FileNotFoundError:
+                        pass
+            except OSError:
+                raise SnapshotIntegrityError("snapshot receipt persistence I/O failed") from None
         self._verify_receipt_file(target, receipt_hash)
         return receipt_hash
 
@@ -360,18 +384,23 @@ class SnapshotStore:
 
     def list_receipt_hashes(self) -> tuple[str, ...]:
         self._validate_operational_dirs()
-        hashes: list[str] = []
-        for item in self._receipts.iterdir():
-            _require_regular(item)
-            if not item.name.endswith(".json"):
-                raise SnapshotIntegrityError("receipt inventory contains an unexpected file")
-            receipt_hash = item.name[:-5]
-            self.verify_receipt(receipt_hash)
-            hashes.append(receipt_hash)
-        return tuple(sorted(hashes))
+        with self._locked():
+            hashes: list[str] = []
+            for item in self._receipts.iterdir():
+                _require_regular(item)
+                if not item.name.endswith(".json"):
+                    raise SnapshotIntegrityError("receipt inventory contains an unexpected file")
+                receipt_hash = item.name[:-5]
+                self.verify_receipt(receipt_hash)
+                hashes.append(receipt_hash)
+            return tuple(sorted(hashes))
 
     def verify_completed(self, observation_sha256: str) -> VerifiedSnapshot:
         self._validate_operational_dirs()
+        if len(observation_sha256) != 64 or any(
+            character not in "0123456789abcdef" for character in observation_sha256
+        ):
+            raise SnapshotIntegrityError("completed observation identity is malformed")
         observation_path = self._observations / observation_sha256
         if not observation_path.exists():
             raise SnapshotIntegrityError("completed observation is missing")

@@ -438,3 +438,42 @@ def test_snapshot_state_canonical_identity_golden_vector() -> None:
     assert canonical_record_bytes(value) == expected_payload
     assert canonical_identity_bytes(value) == expected_identity
     assert canonical_record_hash(value) == expected_hash
+
+
+def test_authority_profile_spec_sha256_updates_on_replace() -> None:
+    from dataclasses import replace
+    base_profile = profile_from_record(profile())
+    initial_hash = base_profile.spec_sha256
+    assert isinstance(initial_hash, str) and len(initial_hash) == 64
+
+    first = base_profile.objects[0]
+    modified_first = replace(first, expected_name=f"{first.expected_name}.modified")
+    updated_profile = replace(base_profile, objects=(modified_first, *base_profile.objects[1:]))
+
+    assert updated_profile.spec_sha256 != initial_hash
+    assert len(updated_profile.spec_sha256) == 64
+    restored_profile = replace(updated_profile, objects=base_profile.objects)
+    assert restored_profile.spec_sha256 == initial_hash
+
+
+def test_authority_profile_rejects_path_hierarchy_collisions() -> None:
+    mime = "application/vnd.google-apps.document"
+    spec1 = AuthorityObjectSpecRecord(
+        logical_path="folder",
+        provider="google_drive",
+        object_id="obj-001",
+        expected_name="folder",
+        expected_mime_type=mime,
+        representation_schema="schema-v1",
+    )
+    spec2 = AuthorityObjectSpecRecord(
+        logical_path="folder/file.md",
+        provider="google_drive",
+        object_id="obj-002",
+        expected_name="file.md",
+        expected_mime_type=mime,
+        representation_schema="schema-v1",
+    )
+    with pytest.raises(ValidationError, match="path hierarchy collision"):
+        AuthorityProfileRecord(profile_name="collision", objects=(spec1, spec2))
+
