@@ -476,7 +476,6 @@ def test_default_github_transport(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_default_github_transport_rejects_non_dict(monkeypatch: pytest.MonkeyPatch) -> None:
-    from io import BytesIO
     from llm_evaluation.canonical_github import DefaultGitHubTransport
     import urllib.request
 
