@@ -76,8 +76,9 @@ class GitHubClosureProvider(Protocol):
 
 
 class DefaultGitHubTransport:
-    def __init__(self, token: str | None = None) -> None:
+    def __init__(self, token: str | None = None, timeout: float = 30.0) -> None:
         self.token = token
+        self.timeout = timeout
 
     def _get(self, path: str) -> dict[str, Any]:
         url = f"https://api.github.com/{path.lstrip('/')}"
@@ -89,7 +90,7 @@ class DefaultGitHubTransport:
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
             data = resp.read().decode("utf-8")
             result = json.loads(data)
             if not isinstance(result, dict):
@@ -138,7 +139,7 @@ def acquire_and_verify_github_closure(
             f"GitHub PR number {wire_pr.number} differs from expected PR #{expected_pr_number}"
         )
 
-    pr_repo_name = wire_pr.base.repo.get("full_name") or wire_pr.head.repo.get("full_name")
+    pr_repo_name = wire_pr.base.repo.get("full_name")
     if pr_repo_name != expected_repo:
         raise ValueError(
             f"GitHub PR repository '{pr_repo_name}' differs from expected repository '{expected_repo}'"
@@ -229,16 +230,16 @@ def acquire_and_verify_github_closure(
     except Exception as exc:
         raise ValueError(f"GitHub workflow jobs response failed wire validation: {exc}") from exc
 
-    verify_job: _WireWorkflowJob | None = None
-    for job in wire_jobs.jobs:
-        if job.name == _EXPECTED_JOB_NAME:
-            verify_job = job
-            break
-
-    if verify_job is None:
+    matching_jobs = [job for job in wire_jobs.jobs if job.name == _EXPECTED_JOB_NAME]
+    if not matching_jobs:
         raise ValueError(
             f"GitHub CI run {wire_run.id} does not contain the required '{_EXPECTED_JOB_NAME}' job"
         )
+    if len(matching_jobs) > 1:
+        raise ValueError(
+            f"GitHub CI run {wire_run.id} contains multiple jobs with required name '{_EXPECTED_JOB_NAME}'"
+        )
+    verify_job = matching_jobs[0]
 
     if verify_job.head_sha != expected_merged_commit:
         raise ValueError(

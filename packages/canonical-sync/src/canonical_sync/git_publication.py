@@ -303,7 +303,17 @@ class GitPublisher:
             try:
                 self._git(repo, "push", lease_arg, "origin", f"{commit}:{self.ref}")
             except GitPublicationError as exc:
-                if self._tip(repo) != expected_base or "stale info" in str(exc) or "lease" in str(exc):
+                cause = exc.__cause__
+                stderr = getattr(cause, "stderr", b"")
+                stderr_text = stderr.decode("utf-8", "replace") if isinstance(stderr, bytes) else str(stderr)
+                stdout = getattr(cause, "stdout", b"")
+                stdout_text = stdout.decode("utf-8", "replace") if isinstance(stdout, bytes) else str(stdout)
+                output_text = f"{stderr_text}\n{stdout_text}"
+                if (
+                    self._tip(repo) != expected_base
+                    or "stale info" in output_text
+                    or "lease" in output_text
+                ):
                     raise RemoteRaceError("remote ref lease rejected publication push") from exc
                 raise
             if self._tip(repo) != commit:

@@ -454,7 +454,7 @@ def test_default_github_transport(monkeypatch: pytest.MonkeyPatch) -> None:
         def __exit__(self, *args: Any) -> None:
             pass
 
-    def fake_urlopen(req: urllib.request.Request) -> FakeResponse:
+    def fake_urlopen(req: urllib.request.Request, *args: Any, **kwargs: Any) -> FakeResponse:
         calls.append(req.full_url)
         assert req.get_header("Authorization") == "Bearer test-token"
         assert req.get_header("Accept") == "application/vnd.github+json"
@@ -489,9 +489,104 @@ def test_default_github_transport_rejects_non_dict(monkeypatch: pytest.MonkeyPat
         def __exit__(self, *args: Any) -> None:
             pass
 
-    monkeypatch.setattr(urllib.request, "urlopen", lambda req: FakeResponse())
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, *a, **kw: FakeResponse())
 
     transport = DefaultGitHubTransport()
     with pytest.raises(ValueError, match="non-dictionary"):
         transport.get_pull_request(REPO, 9)
 
+
+def test_default_github_transport_passes_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    from llm_evaluation.canonical_github import DefaultGitHubTransport
+    import urllib.request
+
+    observed_timeouts: list[float] = []
+
+    class FakeResponse:
+        def read(self) -> bytes:
+            return b'{"number": 9}'
+
+        def __enter__(self) -> FakeResponse:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            pass
+
+    def fake_urlopen(req: urllib.request.Request, timeout: float = 30.0) -> FakeResponse:
+        observed_timeouts.append(timeout)
+        return FakeResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    transport = DefaultGitHubTransport(timeout=15.0)
+    transport.get_pull_request(REPO, 9)
+    assert observed_timeouts == [15.0]
+
+
+def test_closure_rejects_multiple_verify_jobs() -> None:
+    jobs = [
+        {
+            "id": 88881,
+            "run_id": 99999,
+            "name": "verify",
+            "head_sha": MERGED_SHA,
+            "status": "completed",
+            "conclusion": "success",
+        },
+        {
+            "id": 88882,
+            "run_id": 99999,
+            "name": "verify",
+            "head_sha": MERGED_SHA,
+            "status": "completed",
+            "conclusion": "success",
+        },
+    ]
+    with pytest.raises(ValueError, match="multiple jobs with required name 'verify'"):
+        acquire_and_verify_github_closure(
+            pr_payload=valid_pr_payload(),
+            run_payload=valid_run_payload(),
+            jobs_payload={"jobs": jobs},
+            expected_repo=REPO,
+            expected_pr_number=9,
+            expected_reviewed_head_sha=REVIEWED_HEAD_SHA,
+            expected_merged_commit=MERGED_SHA,
+        )
+
+
+def test_closure_accepts_pr_from_contributor_fork() -> None:
+    facts = acquire_and_verify_github_closure(
+        pr_payload=valid_pr_payload(
+            head={
+                "ref": "feat/my-feature",
+                "sha": REVIEWED_HEAD_SHA,
+                "repo": {"full_name": "contributor/llm-evaluation"},
+            },
+            base={
+                "ref": "refs/heads/main",
+                "sha": "0" * 40,
+                "repo": {"full_name": REPO},
+            },
+        ),
+        run_payload=valid_run_payload(),
+        jobs_payload=valid_jobs_payload(),
+        expected_repo=REPO,
+        expected_pr_number=9,
+        expected_reviewed_head_sha=REVIEWED_HEAD_SHA,
+        expected_merged_commit=MERGED_SHA,
+    )
+    assert facts.pull_request.head_ref == "refs/heads/feat/my-feature"
+    assert facts.pull_request.repository == REPO
+
+
+def test_pull_request_record_rejects_invalid_iso_timestamp() -> None:
+    with pytest.raises(ValidationError, match="merged_at must be a valid ISO 8601 UTC timestamp"):
+        GitHubPullRequestMergeRecord(
+            repository=REPO,
+            pull_request_number=9,
+            head_ref="refs/heads/feat/task2",
+            head_commit_sha=REVIEWED_HEAD_SHA,
+            base_ref="refs/heads/main",
+            merged_commit_sha=MERGED_SHA,
+            merged_at="not-a-timestamp",
+        )

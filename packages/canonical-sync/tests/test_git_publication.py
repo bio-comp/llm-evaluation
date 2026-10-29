@@ -5,6 +5,10 @@ from pathlib import Path
 
 import pytest
 
+from canonical_sync.errors import (
+    GitPublicationError,
+    RemoteRaceError,
+)
 from canonical_sync.git_publication import (
     GitPublisher,
     PublicationFile,
@@ -444,6 +448,36 @@ def test_publish_race_remote_advanced_immediately_before_push_fails(
 
     assert push_intercepted is True
     assert git(remote, "rev-parse", "refs/heads/main") == commit_competitor
+
+
+def test_publish_race_lease_stale_info_in_stderr_raises_remote_race_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    publisher = GitPublisher(remote=str(remote), ref="refs/heads/main")
+    base = publisher.publish(
+        PublicationTree((PublicationFile("A.txt", b"a\n"),)),
+        expected_base=None,
+        commit_message="base",
+    )
+    original_git = publisher._git
+
+    def hook_git(repo: Path, *args: str, **kwargs: object) -> bytes:
+        if args and args[0] == "push":
+            err = subprocess.CalledProcessError(
+                1, ["git", "push"], stderr=b" ! [rejected] refs/heads/main -> refs/heads/main (stale info)\n"
+            )
+            raise GitPublicationError("Git publication command failed") from err
+        return original_git(repo, *args, **kwargs)
+
+    monkeypatch.setattr(publisher, "_git", hook_git)
+    with pytest.raises(RemoteRaceError, match="remote ref lease rejected publication push"):
+        publisher.publish(
+            PublicationTree((PublicationFile("A.txt", b"a\n"), PublicationFile("B.txt", b"b\n"))),
+            expected_base=base.resulting_commit,
+            commit_message="candidate",
+        )
 
 
 def test_base_tree_case_fold_collision_rejected_before_remote_mutation(tmp_path: Path) -> None:
