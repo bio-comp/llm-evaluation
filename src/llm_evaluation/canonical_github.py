@@ -25,7 +25,7 @@ _EXPECTED_EVENT: Final = "push"
 
 
 class _UntrustedWireModel(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", strict=True)
 
 
 class _WireRepoRef(_UntrustedWireModel):
@@ -104,7 +104,21 @@ class DefaultGitHubTransport:
         return self._get(f"repos/{repo}/actions/runs/{run_id}")
 
     def get_workflow_run_jobs(self, repo: str, run_id: int) -> dict[str, Any]:
-        return self._get(f"repos/{repo}/actions/runs/{run_id}/jobs")
+        all_jobs: list[dict[str, Any]] = []
+        page = 1
+        total_count = 0
+        while True:
+            resp = self._get(f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100&page={page}")
+            jobs = resp.get("jobs", [])
+            if not isinstance(jobs, list):
+                raise ValueError("unexpected non-list 'jobs' field in GitHub workflow jobs response")
+            raw_total = resp.get("total_count")
+            total_count = raw_total if isinstance(raw_total, int) else len(jobs)
+            all_jobs.extend(jobs)
+            if not jobs or len(all_jobs) >= total_count or page >= 100:
+                break
+            page += 1
+        return {"total_count": max(total_count, len(all_jobs)), "jobs": all_jobs}
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +143,11 @@ def acquire_and_verify_github_closure(
     expected_reviewed_head_sha: str,
     expected_merged_commit: str,
 ) -> VerifiedGitHubClosureFacts:
+    if expected_repo != _EXPECTED_REPO:
+        raise ValueError(
+            f"expected_repo '{expected_repo}' must match authorized project repository '{_EXPECTED_REPO}'"
+        )
+
     try:
         wire_pr = _WirePullRequest.model_validate(pr_payload)
     except Exception as exc:
@@ -240,6 +259,11 @@ def acquire_and_verify_github_closure(
             f"GitHub CI run {wire_run.id} contains multiple jobs with required name '{_EXPECTED_JOB_NAME}'"
         )
     verify_job = matching_jobs[0]
+
+    if verify_job.run_id != wire_run.id:
+        raise ValueError(
+            f"GitHub CI '{_EXPECTED_JOB_NAME}' job run ID {verify_job.run_id} does not match expected run ID {wire_run.id}"
+        )
 
     if verify_job.head_sha != expected_merged_commit:
         raise ValueError(

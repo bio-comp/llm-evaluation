@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Final
 import pytest
 from pydantic import ValidationError
 
@@ -26,7 +26,7 @@ REVIEWED_HEAD_SHA = "c" * 40
 TREE_SHA = "2" * 64
 H1 = "1" * 64
 H2 = "2" * 64
-REPO = "bio-comp/llm-evaluation"
+REPO: Final = "bio-comp/llm-evaluation"
 
 
 def valid_pr_payload(**overrides: Any) -> dict[str, Any]:
@@ -579,8 +579,18 @@ def test_closure_accepts_pr_from_contributor_fork() -> None:
     assert facts.pull_request.repository == REPO
 
 
-def test_pull_request_record_rejects_invalid_iso_timestamp() -> None:
-    with pytest.raises(ValidationError, match="merged_at must be a valid ISO 8601 UTC timestamp"):
+@pytest.mark.parametrize(
+    "bad_ts",
+    [
+        "not-a-timestamp",
+        "2026-10-28T21:00:00",
+        "2026-10-28T21:00:00+00:00",
+        "2026-10-28T21:00:00+05:00",
+        "2026-10-28T21:00:00-08:00",
+    ],
+)
+def test_pull_request_record_rejects_non_canonical_utc_timestamp(bad_ts: str) -> None:
+    with pytest.raises(ValidationError):
         GitHubPullRequestMergeRecord(
             repository=REPO,
             pull_request_number=9,
@@ -588,5 +598,156 @@ def test_pull_request_record_rejects_invalid_iso_timestamp() -> None:
             head_commit_sha=REVIEWED_HEAD_SHA,
             base_ref="refs/heads/main",
             merged_commit_sha=MERGED_SHA,
-            merged_at="not-a-timestamp",
+            merged_at=bad_ts,
         )
+
+
+def test_wire_model_rejects_lax_type_coercion() -> None:
+    # Stringified number should fail
+    with pytest.raises(ValueError, match="failed wire validation"):
+        acquire_and_verify_github_closure(
+            pr_payload=valid_pr_payload(number="9"),
+            run_payload=valid_run_payload(),
+            jobs_payload=valid_jobs_payload(),
+            expected_repo=REPO,
+            expected_pr_number=9,
+            expected_reviewed_head_sha=REVIEWED_HEAD_SHA,
+            expected_merged_commit=MERGED_SHA,
+        )
+
+    # Stringified boolean merged should fail
+    with pytest.raises(ValueError, match="failed wire validation"):
+        acquire_and_verify_github_closure(
+            pr_payload=valid_pr_payload(merged="true"),
+            run_payload=valid_run_payload(),
+            jobs_payload=valid_jobs_payload(),
+            expected_repo=REPO,
+            expected_pr_number=9,
+            expected_reviewed_head_sha=REVIEWED_HEAD_SHA,
+            expected_merged_commit=MERGED_SHA,
+        )
+
+    # Stringified run id should fail
+    with pytest.raises(ValueError, match="failed wire validation"):
+        acquire_and_verify_github_closure(
+            pr_payload=valid_pr_payload(),
+            run_payload=valid_run_payload(id="99999"),
+            jobs_payload=valid_jobs_payload(),
+            expected_repo=REPO,
+            expected_pr_number=9,
+            expected_reviewed_head_sha=REVIEWED_HEAD_SHA,
+            expected_merged_commit=MERGED_SHA,
+        )
+
+    # Stringified job id should fail
+    with pytest.raises(ValueError, match="failed wire validation"):
+        acquire_and_verify_github_closure(
+            pr_payload=valid_pr_payload(),
+            run_payload=valid_run_payload(),
+            jobs_payload={"jobs": [dict(valid_jobs_payload()["jobs"][0], id="88888")]},
+            expected_repo=REPO,
+            expected_pr_number=9,
+            expected_reviewed_head_sha=REVIEWED_HEAD_SHA,
+            expected_merged_commit=MERGED_SHA,
+        )
+
+
+def test_closure_rejects_unauthorized_expected_repo() -> None:
+    with pytest.raises(ValueError, match="must match authorized project repository"):
+        acquire_and_verify_github_closure(
+            pr_payload=valid_pr_payload(),
+            run_payload=valid_run_payload(),
+            jobs_payload=valid_jobs_payload(),
+            expected_repo="other/repo",
+            expected_pr_number=9,
+            expected_reviewed_head_sha=REVIEWED_HEAD_SHA,
+            expected_merged_commit=MERGED_SHA,
+        )
+
+
+def test_closure_rejects_verify_job_with_mismatched_run_id() -> None:
+    job = dict(valid_jobs_payload()["jobs"][0], run_id=77777)
+    with pytest.raises(ValueError, match="does not match expected run ID"):
+        acquire_and_verify_github_closure(
+            pr_payload=valid_pr_payload(),
+            run_payload=valid_run_payload(id=99999),
+            jobs_payload={"jobs": [job]},
+            expected_repo=REPO,
+            expected_pr_number=9,
+            expected_reviewed_head_sha=REVIEWED_HEAD_SHA,
+            expected_merged_commit=MERGED_SHA,
+        )
+
+
+def test_default_github_transport_paginates_workflow_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
+    from llm_evaluation.canonical_github import DefaultGitHubTransport
+    import json
+    import urllib.request
+
+    requested_urls: list[str] = []
+
+    class FakeResponse:
+        def __init__(self, data: bytes) -> None:
+            self._data = data
+
+        def read(self) -> bytes:
+            return self._data
+
+        def __enter__(self) -> FakeResponse:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            pass
+
+    def fake_urlopen(req: urllib.request.Request, *args: Any, **kwargs: Any) -> FakeResponse:
+        requested_urls.append(req.full_url)
+        if "&page=1" in req.full_url:
+            payload = {"total_count": 2, "jobs": [{"id": 1, "name": "setup"}]}
+        elif "&page=2" in req.full_url:
+            payload = {"total_count": 2, "jobs": [{"id": 2, "name": "verify"}]}
+        else:
+            payload = {"total_count": 2, "jobs": []}
+        return FakeResponse(json.dumps(payload).encode("utf-8"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    transport = DefaultGitHubTransport()
+    resp = transport.get_workflow_run_jobs(REPO, 12345)
+    assert resp["total_count"] == 2
+    assert len(resp["jobs"]) == 2
+    assert [j["id"] for j in resp["jobs"]] == [1, 2]
+    assert len(requested_urls) == 2
+    assert "per_page=100&page=1" in requested_urls[0]
+    assert "per_page=100&page=2" in requested_urls[1]
+
+
+def test_default_github_transport_workflow_jobs_edge_cases(monkeypatch: pytest.MonkeyPatch) -> None:
+    from llm_evaluation.canonical_github import DefaultGitHubTransport
+    import urllib.request
+
+    class FakeResponse:
+        def __init__(self, data: bytes) -> None:
+            self._data = data
+
+        def read(self) -> bytes:
+            return self._data
+
+        def __enter__(self) -> FakeResponse:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            pass
+
+    # 1. Empty response
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda req, *a, **kw: FakeResponse(b'{"total_count": 0, "jobs": []}')
+    )
+    transport = DefaultGitHubTransport()
+    assert transport.get_workflow_run_jobs(REPO, 12345) == {"total_count": 0, "jobs": []}
+
+    # 2. Non-list jobs field raises ValueError
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda req, *a, **kw: FakeResponse(b'{"total_count": 1, "jobs": "invalid"}')
+    )
+    with pytest.raises(ValueError, match="unexpected non-list 'jobs' field"):
+        transport.get_workflow_run_jobs(REPO, 12345)

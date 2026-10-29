@@ -233,3 +233,28 @@ def test_disposition_rejects_stray_publication_hashes(
             public_contract_sha256=H1,
             publication_tree_sha256=H2,
         )
+
+
+def test_repository_git_tree_contains_only_supported_blob_modes() -> None:
+    import subprocess
+    from pathlib import Path
+
+    if not Path(".git").exists():
+        pytest.skip("Not inside a git repository")
+
+    proc = subprocess.run(
+        ["git", "ls-files", "-s"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    unsupported_entries: list[str] = []
+    for line in proc.stdout.splitlines():
+        if not line.strip():
+            continue
+        mode = line.split(" ", 1)[0]
+        if mode != "100644":
+            unsupported_entries.append(line)
+    assert not unsupported_entries, (
+        f"Git index contains unsupported entry modes for GitPublisher (must be 100644): {unsupported_entries}"
+    )

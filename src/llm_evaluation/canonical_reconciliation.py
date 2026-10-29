@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import ClassVar, Literal, Self
 
@@ -100,10 +100,12 @@ class GitHubPullRequestMergeRecord(_StrictFrozenProjectRecord):
     def validate_merged_at(cls, value: str) -> str:
         if not value or value != value.strip():
             raise ValueError("merged_at must be non-empty and trimmed")
+        if not value.endswith("Z"):
+            raise ValueError("merged_at must be an ISO 8601 UTC timestamp ending in 'Z'")
         try:
-            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                raise ValueError("merged_at timestamp must specify a timezone")
+            dt = datetime.fromisoformat(value[:-1] + "+00:00")
+            if dt.tzinfo is None or dt.utcoffset() != timedelta(0):
+                raise ValueError("merged_at timestamp must have zero UTC offset")
         except Exception as exc:
             raise ValueError(f"merged_at must be a valid ISO 8601 UTC timestamp: {exc}") from exc
         return value
