@@ -1,0 +1,5 @@
+#!/bin/sh
+set -e
+
+echo "Running pre-commit ruff lint check..."
+uv run --frozen --all-packages --extra drive ruff check src tests packages/canonical-sync/src packages/canonical-sync/tests
