@@ -76,9 +76,18 @@ class GitHubClosureProvider(Protocol):
 
 
 class DefaultGitHubTransport:
-    def __init__(self, token: str | None = None, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        token: str | None = None,
+        timeout: float = 30.0,
+        *,
+        max_pages: int = 100,
+    ) -> None:
+        if type(max_pages) is not int or max_pages < 1:
+            raise ValueError("max_pages must be a positive integer")
         self.token = token
         self.timeout = timeout
+        self.max_pages = max_pages
 
     def _get(self, path: str) -> dict[str, Any]:
         url = f"https://api.github.com/{path.lstrip('/')}"
@@ -106,19 +115,39 @@ class DefaultGitHubTransport:
     def get_workflow_run_jobs(self, repo: str, run_id: int) -> dict[str, Any]:
         all_jobs: list[dict[str, Any]] = []
         page = 1
-        total_count = 0
+        total_count: int | None = None
         while True:
             resp = self._get(f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100&page={page}")
-            jobs = resp.get("jobs", [])
+            jobs = resp.get("jobs")
             if not isinstance(jobs, list):
                 raise ValueError("unexpected non-list 'jobs' field in GitHub workflow jobs response")
             raw_total = resp.get("total_count")
-            total_count = raw_total if isinstance(raw_total, int) else len(jobs)
+            if type(raw_total) is not int or raw_total < 0:
+                raise ValueError("GitHub workflow jobs response missing valid integer 'total_count'")
+            if total_count is None:
+                total_count = raw_total
+            elif raw_total != total_count:
+                raise ValueError(
+                    f"GitHub workflow jobs total_count changed during pagination (was {total_count}, now {raw_total})"
+                )
             all_jobs.extend(jobs)
-            if not jobs or len(all_jobs) >= total_count or page >= 100:
+            if len(all_jobs) >= total_count:
                 break
+            if not jobs:
+                raise ValueError(
+                    f"GitHub workflow jobs response truncated prematurely: "
+                    f"received {len(all_jobs)} of {total_count} jobs"
+                )
+            if page >= self.max_pages:
+                raise ValueError(
+                    "workflow job pagination exceeded safety bound before complete inventory"
+                )
             page += 1
-        return {"total_count": max(total_count, len(all_jobs)), "jobs": all_jobs}
+        if len(all_jobs) != total_count:
+            raise ValueError(
+                f"GitHub workflow jobs response size mismatch: received {len(all_jobs)} jobs for total_count {total_count}"
+            )
+        return {"total_count": total_count, "jobs": all_jobs}
 
 
 @dataclass(frozen=True, slots=True)

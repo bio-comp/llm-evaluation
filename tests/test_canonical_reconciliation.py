@@ -258,3 +258,20 @@ def test_repository_git_tree_contains_only_supported_blob_modes() -> None:
     assert not unsupported_entries, (
         f"Git index contains unsupported entry modes for GitPublisher (must be 100644): {unsupported_entries}"
     )
+
+    tree_proc = subprocess.run(
+        ["git", "ls-tree", "-r", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    unsupported_tree_entries: list[str] = []
+    for line in tree_proc.stdout.splitlines():
+        if not line.strip():
+            continue
+        mode = line.split(" ", 1)[0]
+        if mode != "100644":
+            unsupported_tree_entries.append(line)
+    assert not unsupported_tree_entries, (
+        f"Git tree at HEAD contains unsupported entry modes for GitPublisher (must be 100644): {unsupported_tree_entries}"
+    )

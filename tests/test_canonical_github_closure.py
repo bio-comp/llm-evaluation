@@ -461,7 +461,7 @@ def test_default_github_transport(monkeypatch: pytest.MonkeyPatch) -> None:
         if "pulls" in req.full_url:
             return FakeResponse(b'{"number": 9, "state": "closed"}')
         if "jobs" in req.full_url:
-            return FakeResponse(b'{"jobs": []}')
+            return FakeResponse(b'{"total_count": 0, "jobs": []}')
         return FakeResponse(b'{"id": 12345}')
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
@@ -582,11 +582,23 @@ def test_closure_accepts_pr_from_contributor_fork() -> None:
 @pytest.mark.parametrize(
     "bad_ts",
     [
+        "",
+        "   ",
+        " 2026-10-28T21:00:00Z",
+        "2026-10-28T21:00:00Z ",
         "not-a-timestamp",
         "2026-10-28T21:00:00",
         "2026-10-28T21:00:00+00:00",
         "2026-10-28T21:00:00+05:00",
         "2026-10-28T21:00:00-08:00",
+        "2026-10-28T21:00:00.000000Z",
+        "2026-10-28T21:00:00.000Z",
+        "2026-10-28t21:00:00z",
+        "2026-10-28 21:00:00Z",
+        "2026-10-28T21:00Z",
+        "2026-02-30T21:00:00Z",
+        "2026-13-01T21:00:00Z",
+        "2026-10-28T25:00:00Z",
     ],
 )
 def test_pull_request_record_rejects_non_canonical_utc_timestamp(bad_ts: str) -> None:
@@ -751,3 +763,76 @@ def test_default_github_transport_workflow_jobs_edge_cases(monkeypatch: pytest.M
     )
     with pytest.raises(ValueError, match="unexpected non-list 'jobs' field"):
         transport.get_workflow_run_jobs(REPO, 12345)
+
+    # 3. Missing or non-integer total_count raises ValueError
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda req, *a, **kw: FakeResponse(b'{"jobs": []}')
+    )
+    with pytest.raises(ValueError, match="missing valid integer 'total_count'"):
+        transport.get_workflow_run_jobs(REPO, 12345)
+
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda req, *a, **kw: FakeResponse(b'{"total_count": "1", "jobs": []}')
+    )
+    with pytest.raises(ValueError, match="missing valid integer 'total_count'"):
+        transport.get_workflow_run_jobs(REPO, 12345)
+
+    # Boolean total_count (subclass of int in Python) must also be rejected
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda req, *a, **kw: FakeResponse(b'{"total_count": true, "jobs": []}')
+    )
+    with pytest.raises(ValueError, match="missing valid integer 'total_count'"):
+        transport.get_workflow_run_jobs(REPO, 12345)
+
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda req, *a, **kw: FakeResponse(b'{"total_count": false, "jobs": []}')
+    )
+    with pytest.raises(ValueError, match="missing valid integer 'total_count'"):
+        transport.get_workflow_run_jobs(REPO, 12345)
+
+    # 4. Premature truncation (fewer jobs returned than total_count before empty page)
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda req, *a, **kw: FakeResponse(b'{"total_count": 5, "jobs": []}')
+    )
+    with pytest.raises(ValueError, match="truncated prematurely"):
+        transport.get_workflow_run_jobs(REPO, 12345)
+
+    # 5. Safety cap exceeded before complete inventory fails closed
+    def fake_capped_urlopen(req: urllib.request.Request, *args: Any, **kwargs: Any) -> FakeResponse:
+        import json
+        payload = {"total_count": 5, "jobs": [{"id": 1, "name": "job"}]}
+        return FakeResponse(json.dumps(payload).encode("utf-8"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_capped_urlopen)
+    capped_transport = DefaultGitHubTransport(max_pages=2)
+    with pytest.raises(ValueError, match="pagination exceeded safety bound"):
+        capped_transport.get_workflow_run_jobs(REPO, 12345)
+
+    # 6. total_count drift during pagination fails closed
+    drift_responses = [
+        FakeResponse(b'{"total_count": 2, "jobs": [{"id": 1, "name": "verify"}]}'),
+        FakeResponse(b'{"total_count": 3, "jobs": [{"id": 2, "name": "other"}]}'),
+    ]
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, *a, **kw: drift_responses.pop(0))
+    drift_transport = DefaultGitHubTransport()
+    with pytest.raises(ValueError, match="total_count changed during pagination"):
+        drift_transport.get_workflow_run_jobs(REPO, 12345)
+
+    # 7. Total count mismatch (received more jobs than declared total_count)
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda req, *a, **kw: FakeResponse(
+            b'{"total_count": 1, "jobs": [{"id": 1, "name": "job1"}, {"id": 2, "name": "job2"}]}'
+        ),
+    )
+    with pytest.raises(ValueError, match="response size mismatch"):
+        transport.get_workflow_run_jobs(REPO, 12345)
+
+    # 8. max_pages parameter validation
+    with pytest.raises(ValueError, match="max_pages must be a positive integer"):
+        DefaultGitHubTransport(max_pages=0)
+    with pytest.raises(ValueError, match="max_pages must be a positive integer"):
+        DefaultGitHubTransport(max_pages=-1)
+    with pytest.raises(ValueError, match="max_pages must be a positive integer"):
+        DefaultGitHubTransport(max_pages="10")  # type: ignore[arg-type]

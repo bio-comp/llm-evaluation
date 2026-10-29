@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from enum import StrEnum
 from typing import ClassVar, Literal, Self
 
@@ -14,6 +14,7 @@ from canonical_sync.records import GitPublicationReceiptRecord
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _GIT_OID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+_ISO8601_UTC_SECOND_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 _PUBLIC_REPOSITORY: Literal["bio-comp/llm-evaluation"] = "bio-comp/llm-evaluation"
 _PUBLIC_MAIN_REF: Literal["refs/heads/main"] = "refs/heads/main"
 _PUBLIC_VERIFY_CHECK: Literal["verify"] = "verify"
@@ -100,14 +101,14 @@ class GitHubPullRequestMergeRecord(_StrictFrozenProjectRecord):
     def validate_merged_at(cls, value: str) -> str:
         if not value or value != value.strip():
             raise ValueError("merged_at must be non-empty and trimmed")
-        if not value.endswith("Z"):
-            raise ValueError("merged_at must be an ISO 8601 UTC timestamp ending in 'Z'")
+        if not _ISO8601_UTC_SECOND_RE.fullmatch(value):
+            raise ValueError(
+                "merged_at must be an exact ISO 8601 UTC timestamp in format 'YYYY-MM-DDTHH:MM:SSZ'"
+            )
         try:
-            dt = datetime.fromisoformat(value[:-1] + "+00:00")
-            if dt.tzinfo is None or dt.utcoffset() != timedelta(0):
-                raise ValueError("merged_at timestamp must have zero UTC offset")
+            datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
         except Exception as exc:
-            raise ValueError(f"merged_at must be a valid ISO 8601 UTC timestamp: {exc}") from exc
+            raise ValueError(f"merged_at must be a valid calendar date and time: {exc}") from exc
         return value
 
 
