@@ -46,7 +46,12 @@ def load_d016_authority_profile(path: Path) -> AuthorityProfile:
             AuthorityObjectSpecRecord.model_validate(item, strict=True) for item in objects_raw
         )
         memberships = tuple(
-            ExactMembershipSpecRecord.model_validate(item, strict=True)
+            ExactMembershipSpecRecord.model_validate(
+                dict(item, expected_child_ids=tuple(item["expected_child_ids"]))
+                if isinstance(item, dict) and isinstance(item.get("expected_child_ids"), list)
+                else item,
+                strict=True,
+            )
             for item in memberships_raw
         )
         record = AuthorityProfileRecord(
@@ -59,6 +64,9 @@ def load_d016_authority_profile(path: Path) -> AuthorityProfile:
     roles = {item.logical_path for item in record.objects}
     if roles != D016_REQUIRED_ROLES:
         raise ValueError("D-016 authority profile must contain the exact D-016 roles")
+    parents = {item.expected_parent_id for item in record.objects}
+    if len(parents) != 1 or None in parents:
+        raise ValueError("D-016 authority profile root roles must share one non-null parent identity")
     for item in record.objects:
         if (
             item.provider != "google_drive"

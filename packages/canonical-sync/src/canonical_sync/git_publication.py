@@ -174,6 +174,7 @@ class GitPublisher:
 
     def _read_tree(self, repo: Path, commit: str) -> dict[str, bytes]:
         files: dict[str, bytes] = {}
+        portable_keys: set[str] = set()
         for raw in self._git(repo, "ls-tree", "-r", "-z", commit).split(b"\0"):
             if not raw:
                 continue
@@ -181,9 +182,15 @@ class GitPublisher:
             mode, kind, oid = metadata.split(b" ")
             path = name.decode("utf-8")
             _safe_git_path(path)
-            if mode != GIT_MODE_BLOB or kind != b"blob" or path in files:
-                raise RemoteVerificationError("remote tree contains an unsupported Git entry")
+            key = _portable_path_key(path)
+            if mode != GIT_MODE_BLOB or kind != b"blob" or path in files or key in portable_keys:
+                raise RemoteVerificationError("remote tree contains an unsupported Git entry or colliding path")
             files[path] = self._git(repo, "cat-file", "blob", oid.decode("ascii"))
+            portable_keys.add(key)
+        try:
+            _validate_no_path_hierarchy_collisions(tuple(portable_keys))
+        except ValueError as exc:
+            raise RemoteVerificationError("remote tree contains path hierarchy collisions") from exc
         return files
 
     def verify(
@@ -285,13 +292,19 @@ class GitPublisher:
                 *parents,
                 data=(commit_message + "\n").encode("utf-8"),
             ).decode().strip()
+            commit_parents = self._git(repo, "rev-parse", f"{commit}^@").decode().splitlines()
+            expected_parents = [] if expected_base is None else [expected_base]
+            if commit_parents != expected_parents:
+                raise GitPublicationError("candidate publication commit does not satisfy expected parent invariant")
+
             if self._tip(repo) != expected_base:
                 raise RemoteRaceError("remote ref moved before publication push")
+            lease_arg = f"--force-with-lease={self.ref}:{expected_base if expected_base is not None else ''}"
             try:
-                self._git(repo, "push", "origin", f"{commit}:{self.ref}")
+                self._git(repo, "push", lease_arg, "origin", f"{commit}:{self.ref}")
             except GitPublicationError as exc:
-                if self._tip(repo) != expected_base:
-                    raise RemoteRaceError("remote ref moved during publication push") from exc
+                if self._tip(repo) != expected_base or "stale info" in str(exc) or "lease" in str(exc):
+                    raise RemoteRaceError("remote ref lease rejected publication push") from exc
                 raise
             if self._tip(repo) != commit:
                 raise RemoteVerificationError("remote ref does not contain the published commit")

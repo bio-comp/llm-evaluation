@@ -64,27 +64,14 @@ class GitHubPullRequestMergeRecord(_StrictFrozenProjectRecord):
     canonical_identity_domain: ClassVar[str] = "llm-evaluation.github-pr-merge"
     canonical_identity_version: ClassVar[int] = 1
     record_type: Literal["llm_evaluation_github_pr_merge"] = "llm_evaluation_github_pr_merge"
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     repository: Literal["bio-comp/llm-evaluation"] = _PUBLIC_REPOSITORY
     pull_request_number: int
     head_ref: str
     head_commit_sha: str
     base_ref: Literal["refs/heads/main"] = _PUBLIC_MAIN_REF
     merged_commit_sha: str
-
-    @field_validator("head_ref", mode="before")
-    @classmethod
-    def _normalize_head_ref(cls, value: object) -> object:
-        if isinstance(value, str) and not value.startswith("refs/"):
-            return f"refs/heads/{value}"
-        return value
-
-    @field_validator("base_ref", mode="before")
-    @classmethod
-    def _normalize_base_ref(cls, value: object) -> object:
-        if isinstance(value, str) and not value.startswith("refs/"):
-            return f"refs/heads/{value}"
-        return value
+    merged_at: str
 
     @field_validator("pull_request_number")
     @classmethod
@@ -97,7 +84,7 @@ class GitHubPullRequestMergeRecord(_StrictFrozenProjectRecord):
     @classmethod
     def validate_head_ref(cls, value: str) -> str:
         if not value.startswith("refs/heads/") or value == _PUBLIC_MAIN_REF:
-            raise ValueError("reviewed pull request must identify a non-main branch ref")
+            raise ValueError("reviewed pull request must identify a non-main branch ref (refs/heads/...)")
         return value
 
     @field_validator("head_commit_sha", "merged_commit_sha")
@@ -107,24 +94,36 @@ class GitHubPullRequestMergeRecord(_StrictFrozenProjectRecord):
             raise ValueError("project Git commits must be lowercase Git object IDs")
         return value
 
+    @field_validator("merged_at")
+    @classmethod
+    def validate_merged_at(cls, value: str) -> str:
+        if not value or value != value.strip():
+            raise ValueError("merged_at must be non-empty and trimmed")
+        return value
+
 
 class GitHubCIVerificationRecord(_StrictFrozenProjectRecord):
     canonical_identity_domain: ClassVar[str] = "llm-evaluation.github-ci-verification"
     canonical_identity_version: ClassVar[int] = 1
     record_type: Literal["llm_evaluation_github_ci"] = "llm_evaluation_github_ci"
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     repository: Literal["bio-comp/llm-evaluation"] = _PUBLIC_REPOSITORY
     run_id: int
-    workflow_name: Literal["Public CI"]
-    check_name: Literal["verify"] = _PUBLIC_VERIFY_CHECK
+    workflow_name: Literal["Public CI"] = "Public CI"
+    workflow_path: Literal[".github/workflows/ci.yml"] = ".github/workflows/ci.yml"
+    event: Literal["push"] = "push"
+    head_branch: Literal["refs/heads/main"] = _PUBLIC_MAIN_REF
     commit_sha: str
-    conclusion: Literal["success"] = "success"
+    run_conclusion: Literal["success"] = "success"
+    job_id: int
+    job_name: Literal["verify"] = _PUBLIC_VERIFY_CHECK
+    job_conclusion: Literal["success"] = "success"
 
-    @field_validator("run_id")
+    @field_validator("run_id", "job_id")
     @classmethod
-    def validate_run_id(cls, value: int) -> int:
+    def validate_positive_ids(cls, value: int) -> int:
         if value < 1:
-            raise ValueError("CI run ID must be positive")
+            raise ValueError("CI run ID and job ID must be positive")
         return value
 
     @field_validator("commit_sha")
@@ -141,7 +140,7 @@ class VerifiedPublicationReceiptRecord(_StrictFrozenProjectRecord):
     record_type: Literal["llm_evaluation_verified_publication"] = (
         "llm_evaluation_verified_publication"
     )
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     snapshot_state_sha256: str
     public_contract_sha256: str
     publication_tree_sha256: str
@@ -181,7 +180,7 @@ class ReconciliationDispositionRecord(_StrictFrozenProjectRecord):
     record_type: Literal["llm_evaluation_reconciliation_disposition"] = (
         "llm_evaluation_reconciliation_disposition"
     )
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     current_snapshot_sha256: str
     previous_snapshot_sha256: str | None = None
     impact: ProjectImpact
@@ -272,12 +271,16 @@ class ReconciliationPolicyContract(_StrictFrozenProjectRecord):
     projection_type: Literal["llm_evaluation_reconciliation_policy"] = (
         "llm_evaluation_reconciliation_policy"
     )
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     dispositions: tuple[Literal["NONE", "REQUIRED", "BLOCKED", "COMPLETE"], ...]
     complete_requires_snapshot_match: bool
     complete_requires_contract_match: bool
     complete_requires_readback: bool
-    complete_requires_ci: bool
+    complete_requires_authoritative_github_evidence: bool
+    complete_requires_merged_pull_request: bool
+    complete_requires_post_merge_main_push_ci: bool
+    complete_requires_exact_workflow_identity: bool
+    complete_requires_exact_required_job_identity: bool
 
 
 class ReviewedCanonicalImpact(_StrictFrozenProjectRecord):
@@ -307,7 +310,11 @@ def current_executable_policy_contract() -> ReconciliationPolicyContract:
         complete_requires_snapshot_match=True,
         complete_requires_contract_match=True,
         complete_requires_readback=True,
-        complete_requires_ci=True,
+        complete_requires_authoritative_github_evidence=True,
+        complete_requires_merged_pull_request=True,
+        complete_requires_post_merge_main_push_ci=True,
+        complete_requires_exact_workflow_identity=True,
+        complete_requires_exact_required_job_identity=True,
     )
 
 

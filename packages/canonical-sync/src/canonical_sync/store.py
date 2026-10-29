@@ -56,26 +56,58 @@ class VerifiedSnapshot:
     representations: tuple[AcquiredRepresentation, ...]
 
 
+def _is_platform_root_alias(path: Path) -> bool:
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    if not stat.S_ISLNK(st.st_mode):
+        return False
+    if path.parent != Path("/"):
+        return False
+    if hasattr(st, "st_uid") and st.st_uid != 0:
+        return False
+    try:
+        resolved = path.resolve()
+        return resolved.is_dir() and os.lstat(resolved).st_uid == 0
+    except OSError:
+        return False
+
+
 def _reject_symlink_chain(path: Path) -> None:
     current = path.absolute()
+    try:
+        mode = os.lstat(current).st_mode
+        if stat.S_ISLNK(mode):
+            raise SnapshotIntegrityError("snapshot store path contains a symlink")
+    except FileNotFoundError:
+        pass
+    except OSError:
+        raise SnapshotIntegrityError("snapshot-store path could not be accessed safely") from None
+
     while True:
-        try:
-            mode = os.lstat(current).st_mode
-        except FileNotFoundError:
-            pass
-        else:
-            if stat.S_ISLNK(mode):
-                raise SnapshotIntegrityError("snapshot store path contains a symlink")
         if current.parent == current:
             break
         current = current.parent
+        try:
+            mode = os.lstat(current).st_mode
+        except FileNotFoundError:
+            continue
+        except OSError:
+            raise SnapshotIntegrityError("snapshot-store path could not be accessed safely") from None
+        if stat.S_ISLNK(mode):
+            if _is_platform_root_alias(current):
+                continue
+            raise SnapshotIntegrityError("snapshot store path contains a symlink")
 
 
 def _require_directory(path: Path) -> None:
     try:
         mode = os.lstat(path).st_mode
-    except FileNotFoundError as exc:
-        raise SnapshotIntegrityError("required snapshot-store directory is missing") from exc
+    except FileNotFoundError:
+        raise SnapshotIntegrityError("required snapshot-store directory is missing") from None
+    except OSError:
+        raise SnapshotIntegrityError("snapshot-store operational directory could not be accessed") from None
     if stat.S_ISLNK(mode):
         raise SnapshotIntegrityError("snapshot-store directory is a symlink")
     if not stat.S_ISDIR(mode):
@@ -85,42 +117,58 @@ def _require_directory(path: Path) -> None:
 def _require_regular(path: Path) -> None:
     try:
         mode = os.lstat(path).st_mode
-    except FileNotFoundError as exc:
-        raise SnapshotIntegrityError("required snapshot file is missing") from exc
+    except FileNotFoundError:
+        raise SnapshotIntegrityError("required snapshot file is missing") from None
+    except OSError:
+        raise SnapshotIntegrityError("snapshot file could not be accessed") from None
     if stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
         raise SnapshotIntegrityError("snapshot entries must be regular files; symlink rejected")
 
 
 def _fsync_dir(path: Path) -> None:
-    fd = os.open(path, os.O_RDONLY)
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        raise SnapshotIntegrityError("snapshot-store directory could not be opened for fsync") from None
     try:
         os.fsync(fd)
+    except OSError:
+        raise SnapshotIntegrityError("snapshot-store directory fsync failed") from None
     finally:
         os.close(fd)
 
 
 def _write_fsync(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("xb") as handle:
-        handle.write(data)
-        handle.flush()
-        os.fsync(handle.fileno())
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("xb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError:
+        raise SnapshotIntegrityError("snapshot-store entry write failed") from None
 
 
 class SnapshotStore:
     def __init__(self, root: Path) -> None:
         self.root = root
         _reject_symlink_chain(root)
-        root.mkdir(parents=True, exist_ok=True)
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            raise SnapshotIntegrityError("snapshot-store root directory could not be created") from None
         _require_directory(root)
         self._staging = root / DIR_STAGING
         self._snapshots = root / DIR_SNAPSHOTS
         self._observations = root / DIR_OBSERVATIONS
         self._receipts = root / DIR_RECEIPTS
-        for directory in (self._staging, self._snapshots, self._observations, self._receipts):
-            directory.mkdir(exist_ok=True)
-            _require_directory(directory)
-        _fsync_dir(root)
+        try:
+            for directory in (self._staging, self._snapshots, self._observations, self._receipts):
+                directory.mkdir(exist_ok=True)
+                _require_directory(directory)
+            _fsync_dir(root)
+        except OSError:
+            raise SnapshotIntegrityError("snapshot-store operational directory could not be initialized") from None
 
     def _validate_operational_dirs(self) -> None:
         _reject_symlink_chain(self.root)
@@ -136,17 +184,26 @@ class SnapshotStore:
             flags |= os.O_NOFOLLOW
         try:
             fd = os.open(self.root / FILE_LOCK, flags, 0o600)
-        except OSError as exc:
-            raise SnapshotIntegrityError("snapshot lock could not be opened safely") from exc
+        except OSError:
+            raise SnapshotIntegrityError("snapshot lock could not be opened safely") from None
         try:
-            mode = os.fstat(fd).st_mode
+            try:
+                mode = os.fstat(fd).st_mode
+            except OSError:
+                raise SnapshotIntegrityError("snapshot lock stat failed") from None
             if not stat.S_ISREG(mode):
                 raise SnapshotIntegrityError("snapshot lock must be a regular file")
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            except OSError:
+                raise SnapshotIntegrityError("snapshot lock acquisition failed") from None
             yield
         finally:
             try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                except OSError:
+                    pass
             finally:
                 os.close(fd)
 
@@ -179,12 +236,18 @@ class SnapshotStore:
     def stage(self, candidate: AcquisitionCandidate) -> StagedAcquisition:
         self._validate_operational_dirs()
         self._validate_candidate(candidate)
-        stage_root = Path(tempfile.mkdtemp(prefix="acquisition-", dir=self._staging))
+        try:
+            stage_root = Path(tempfile.mkdtemp(prefix="acquisition-", dir=self._staging))
+        except OSError:
+            raise SnapshotIntegrityError("snapshot staging directory could not be created") from None
         try:
             snapshot_root = stage_root / "snapshot"
             observation_root = stage_root / "observation"
-            (snapshot_root / "files").mkdir(parents=True)
-            observation_root.mkdir()
+            try:
+                (snapshot_root / "files").mkdir(parents=True)
+                observation_root.mkdir()
+            except OSError:
+                raise SnapshotIntegrityError("snapshot staging directories could not be created") from None
             _write_fsync(snapshot_root / FILE_STATE, canonical_record_bytes(candidate.state))
             for representation in candidate.representations:
                 _write_fsync(snapshot_root / "files" / representation.logical_path, representation.data)
@@ -192,22 +255,31 @@ class SnapshotStore:
                 observation_root / "observation.json",
                 canonical_record_bytes(candidate.observation),
             )
-            for directory in sorted(
-                {path.parent for path in snapshot_root.rglob("*") if path.is_file()},
-                key=lambda item: len(item.parts),
-                reverse=True,
-            ):
-                _fsync_dir(directory)
-            _fsync_dir(snapshot_root)
-            _fsync_dir(observation_root)
-            _fsync_dir(stage_root)
-            _fsync_dir(self._staging)
+            try:
+                for directory in sorted(
+                    {path.parent for path in snapshot_root.rglob("*") if path.is_file()},
+                    key=lambda item: len(item.parts),
+                    reverse=True,
+                ):
+                    _fsync_dir(directory)
+                _fsync_dir(snapshot_root)
+                _fsync_dir(observation_root)
+                _fsync_dir(stage_root)
+                _fsync_dir(self._staging)
+            except OSError:
+                raise SnapshotIntegrityError("snapshot staging directory sync failed") from None
             return StagedAcquisition(
                 path=stage_root,
                 state_sha256=canonical_record_hash(candidate.state),
                 observation_sha256=canonical_record_hash(candidate.observation),
             )
-        except BaseException:
+        except SnapshotIntegrityError:
+            shutil.rmtree(stage_root, ignore_errors=True)
+            raise
+        except OSError:
+            shutil.rmtree(stage_root, ignore_errors=True)
+            raise SnapshotIntegrityError("snapshot staging I/O failed") from None
+        except Exception:
             shutil.rmtree(stage_root, ignore_errors=True)
             raise
 
@@ -218,9 +290,13 @@ class SnapshotStore:
         state_path = path / FILE_STATE
         _require_regular(state_path)
         try:
-            state = parse_canonical_record(state_path.read_bytes(), SnapshotStateRecord)
-        except (OSError, ValueError) as exc:
-            raise SnapshotIntegrityError("snapshot state record failed canonical validation") from exc
+            data = state_path.read_bytes()
+        except OSError:
+            raise SnapshotIntegrityError("snapshot state file could not be read") from None
+        try:
+            state = parse_canonical_record(data, SnapshotStateRecord)
+        except (OSError, ValueError):
+            raise SnapshotIntegrityError("snapshot state record failed canonical validation") from None
         if canonical_record_hash(state) != expected_hash:
             raise SnapshotIntegrityError("snapshot state hash mismatch")
         expected_files = {Path(FILE_STATE)}
@@ -237,7 +313,10 @@ class SnapshotStore:
                 parent = parent.parent
             file_path = path / relative
             _require_regular(file_path)
-            data = file_path.read_bytes()
+            try:
+                data = file_path.read_bytes()
+            except OSError:
+                raise SnapshotIntegrityError("snapshot content file could not be read") from None
             digest = hashlib.sha256(data).hexdigest()
             if digest != entry.content_sha256:
                 raise SnapshotIntegrityError("snapshot content hash mismatch")
@@ -251,9 +330,16 @@ class SnapshotStore:
             )
         actual_files: set[Path] = set()
         actual_dirs: set[Path] = set()
-        for item in path.rglob("*"):
-            relative = item.relative_to(path)
-            mode = os.lstat(item).st_mode
+        try:
+            items = list(path.rglob("*"))
+        except OSError:
+            raise SnapshotIntegrityError("snapshot inventory traversal failed") from None
+        for item in items:
+            try:
+                relative = item.relative_to(path)
+                mode = os.lstat(item).st_mode
+            except OSError:
+                raise SnapshotIntegrityError("snapshot entry could not be accessed safely") from None
             if stat.S_ISLNK(mode):
                 raise SnapshotIntegrityError("snapshot entries must be regular files/directories; symlink rejected")
             if stat.S_ISREG(mode):
@@ -268,17 +354,22 @@ class SnapshotStore:
 
     def _verify_observation_dir(self, path: Path, expected_hash: str) -> SnapshotObservationRecord:
         _require_directory(path)
-        items = list(path.iterdir())
+        try:
+            items = list(path.iterdir())
+        except OSError:
+            raise SnapshotIntegrityError("observation inventory traversal failed") from None
         if len(items) != 1 or items[0].name != "observation.json":
             raise SnapshotIntegrityError("observation inventory is not exact")
         observation_path = path / "observation.json"
         _require_regular(observation_path)
         try:
-            observation = parse_canonical_record(
-                observation_path.read_bytes(), SnapshotObservationRecord
-            )
-        except (OSError, ValueError) as exc:
-            raise SnapshotIntegrityError("observation record failed canonical validation") from exc
+            data = observation_path.read_bytes()
+        except OSError:
+            raise SnapshotIntegrityError("observation file could not be read") from None
+        try:
+            observation = parse_canonical_record(data, SnapshotObservationRecord)
+        except (OSError, ValueError):
+            raise SnapshotIntegrityError("observation record failed canonical validation") from None
         if canonical_record_hash(observation) != expected_hash:
             raise SnapshotIntegrityError("observation hash mismatch")
         return observation
@@ -299,26 +390,31 @@ class SnapshotStore:
 
         published_state = False
         published_observation = False
-        with self._locked():
-            state_target = self._snapshots / staged.state_sha256
-            if state_target.exists():
-                self._verify_snapshot_dir(state_target, staged.state_sha256)
-                shutil.rmtree(staged_snapshot)
-            else:
-                os.rename(staged_snapshot, state_target)
-                _fsync_dir(self._snapshots)
-                published_state = True
+        try:
+            with self._locked():
+                state_target = self._snapshots / staged.state_sha256
+                if state_target.exists():
+                    self._verify_snapshot_dir(state_target, staged.state_sha256)
+                    shutil.rmtree(staged_snapshot)
+                else:
+                    os.rename(staged_snapshot, state_target)
+                    _fsync_dir(self._snapshots)
+                    published_state = True
 
-            observation_target = self._observations / staged.observation_sha256
-            if observation_target.exists():
-                self._verify_observation_dir(observation_target, staged.observation_sha256)
-                shutil.rmtree(staged_observation)
-            else:
-                os.rename(staged_observation, observation_target)
-                _fsync_dir(self._observations)
-                published_observation = True
-            staged.path.rmdir()
-            _fsync_dir(self._staging)
+                observation_target = self._observations / staged.observation_sha256
+                if observation_target.exists():
+                    self._verify_observation_dir(observation_target, staged.observation_sha256)
+                    shutil.rmtree(staged_observation)
+                else:
+                    os.rename(staged_observation, observation_target)
+                    _fsync_dir(self._observations)
+                    published_observation = True
+                staged.path.rmdir()
+                _fsync_dir(self._staging)
+        except SnapshotIntegrityError:
+            raise
+        except OSError:
+            raise SnapshotIntegrityError("snapshot publication I/O failed") from None
 
         self.verify_completed(staged.observation_sha256)
         return PublicationResult(
@@ -333,9 +429,13 @@ class SnapshotStore:
     ) -> AcquisitionReceiptRecord:
         _require_regular(path)
         try:
-            receipt = parse_canonical_record(path.read_bytes(), AcquisitionReceiptRecord)
-        except (OSError, ValueError) as exc:
-            raise SnapshotIntegrityError("acquisition receipt failed canonical validation") from exc
+            data = path.read_bytes()
+        except OSError:
+            raise SnapshotIntegrityError("acquisition receipt file could not be read") from None
+        try:
+            receipt = parse_canonical_record(data, AcquisitionReceiptRecord)
+        except (OSError, ValueError):
+            raise SnapshotIntegrityError("acquisition receipt failed canonical validation") from None
         if canonical_record_hash(receipt) != expected_hash:
             raise SnapshotIntegrityError("acquisition receipt hash mismatch")
         return receipt
@@ -350,6 +450,8 @@ class SnapshotStore:
                 os.lstat(target)
             except FileNotFoundError:
                 pass
+            except OSError:
+                raise SnapshotIntegrityError("snapshot receipt path could not be accessed") from None
             else:
                 self._verify_receipt_file(target, receipt_hash)
                 return receipt_hash
@@ -386,7 +488,11 @@ class SnapshotStore:
         self._validate_operational_dirs()
         with self._locked():
             hashes: list[str] = []
-            for item in self._receipts.iterdir():
+            try:
+                items = list(self._receipts.iterdir())
+            except OSError:
+                raise SnapshotIntegrityError("receipt inventory traversal failed") from None
+            for item in items:
                 _require_regular(item)
                 if not item.name.endswith(".json"):
                     raise SnapshotIntegrityError("receipt inventory contains an unexpected file")
@@ -402,11 +508,19 @@ class SnapshotStore:
         ):
             raise SnapshotIntegrityError("completed observation identity is malformed")
         observation_path = self._observations / observation_sha256
-        if not observation_path.exists():
+        try:
+            obs_exists = observation_path.exists()
+        except OSError:
+            raise SnapshotIntegrityError("completed observation access failed") from None
+        if not obs_exists:
             raise SnapshotIntegrityError("completed observation is missing")
         observation = self._verify_observation_dir(observation_path, observation_sha256)
         snapshot_path = self._snapshots / observation.snapshot_state_sha256
-        if not snapshot_path.exists():
+        try:
+            snap_exists = snapshot_path.exists()
+        except OSError:
+            raise SnapshotIntegrityError("semantic snapshot access failed") from None
+        if not snap_exists:
             raise SnapshotIntegrityError("semantic snapshot referenced by observation is missing")
         state, representations = self._verify_snapshot_dir(
             snapshot_path, observation.snapshot_state_sha256

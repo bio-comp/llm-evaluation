@@ -84,22 +84,51 @@ def test_private_profile_requires_expected_parent_id(tmp_path: Path) -> None:
     _write_profile(no_parent)
     content = no_parent.read_text().replace('expected_parent_id = "private-parent"\n', "", 1)
     no_parent.write_text(content)
-    with pytest.raises(ValueError, match="unsupported source declaration"):
+    with pytest.raises(ValueError, match="parent"):
         load_d016_authority_profile(no_parent)
+
+
+def test_private_profile_requires_shared_parent_id_across_required_root_roles(tmp_path: Path) -> None:
+    diff_parent = tmp_path / "diff_parent.toml"
+    _write_profile(diff_parent)
+    content = diff_parent.read_text().replace(
+        'expected_parent_id = "private-parent"', 'expected_parent_id = "different-parent"', 1
+    )
+    diff_parent.write_text(content)
+    with pytest.raises(ValueError, match="parent"):
+        load_d016_authority_profile(diff_parent)
+
+
+def test_private_profile_accepts_valid_memberships(tmp_path: Path) -> None:
+    with_memberships = tmp_path / "memberships.toml"
+    _write_profile(with_memberships)
+    extra_content = (
+        '\n[[profile.memberships]]\n'
+        'parent_id = "private-parent"\n'
+        'expected_child_ids = ["private-object-1", "private-object-2", "private-object-3", "private-object-4"]\n'
+    )
+    with_memberships.write_text(with_memberships.read_text() + extra_content)
+    profile = load_d016_authority_profile(with_memberships)
+    assert len(profile.memberships) == 1
+    assert profile.memberships[0].parent_id == "private-parent"
+
 
 
 def test_counterfactual_authoritative_contract_fails_stale_executable_until_reconciled() -> None:
     reconciled = current_executable_policy_contract()
-    stale_authoritative = ReconciliationPolicyContract(
-        dispositions=("NONE", "REQUIRED", "BLOCKED", "COMPLETE"),
-        complete_requires_snapshot_match=True,
-        complete_requires_contract_match=True,
-        complete_requires_readback=True,
-        complete_requires_ci=False,
-    )
+    stale_flags = [
+        {"complete_requires_authoritative_github_evidence": False},
+        {"complete_requires_merged_pull_request": False},
+        {"complete_requires_post_merge_main_push_ci": False},
+        {"complete_requires_exact_workflow_identity": False},
+        {"complete_requires_exact_required_job_identity": False},
+        {"complete_requires_readback": False},
+    ]
+    for flag in stale_flags:
+        stale_authoritative = reconciled.model_copy(update=flag)
+        with pytest.raises(ValueError, match="stale"):
+            verify_executable_policy_contract(stale_authoritative)
 
-    with pytest.raises(ValueError, match="stale"):
-        verify_executable_policy_contract(stale_authoritative)
     verify_executable_policy_contract(reconciled)
 
 
@@ -148,7 +177,11 @@ def test_public_contract_is_exactly_the_four_authorized_reconciliation_states() 
     assert contract.complete_requires_snapshot_match is True
     assert contract.complete_requires_contract_match is True
     assert contract.complete_requires_readback is True
-    assert contract.complete_requires_ci is True
+    assert contract.complete_requires_authoritative_github_evidence is True
+    assert contract.complete_requires_merged_pull_request is True
+    assert contract.complete_requires_post_merge_main_push_ci is True
+    assert contract.complete_requires_exact_workflow_identity is True
+    assert contract.complete_requires_exact_required_job_identity is True
 
 
 def test_public_policy_fixture_is_canonical_and_matches_executable_contract() -> None:

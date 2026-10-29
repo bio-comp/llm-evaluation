@@ -48,17 +48,34 @@ def _git_receipt(
     )
 
 
-def _pull_request() -> GitHubPullRequestMergeRecord:
-    return GitHubPullRequestMergeRecord(
-        pull_request_number=42,
-        head_ref="refs/heads/feat/task2-drive-reconciliation",
-        head_commit_sha=REVIEWED_HEAD,
-        merged_commit_sha=MERGED,
-    )
+def _pull_request(**overrides: object) -> GitHubPullRequestMergeRecord:
+    fields: dict[str, object] = {
+        "pull_request_number": 42,
+        "head_ref": "refs/heads/feat/task2-drive-reconciliation",
+        "head_commit_sha": REVIEWED_HEAD,
+        "base_ref": "refs/heads/main",
+        "merged_commit_sha": MERGED,
+        "merged_at": "2026-10-28T21:00:00Z",
+    }
+    fields.update(overrides)
+    return GitHubPullRequestMergeRecord(**fields)  # type: ignore[arg-type]
 
 
-def _ci(*, commit_sha: str = MERGED) -> GitHubCIVerificationRecord:
-    return GitHubCIVerificationRecord(run_id=12345, commit_sha=commit_sha, workflow_name="Public CI")
+def _ci(*, commit_sha: str = MERGED, **overrides: object) -> GitHubCIVerificationRecord:
+    fields: dict[str, object] = {
+        "run_id": 12345,
+        "workflow_name": "Public CI",
+        "workflow_path": ".github/workflows/ci.yml",
+        "event": "push",
+        "head_branch": "refs/heads/main",
+        "commit_sha": commit_sha,
+        "run_conclusion": "success",
+        "job_id": 88888,
+        "job_name": "verify",
+        "job_conclusion": "success",
+    }
+    fields.update(overrides)
+    return GitHubCIVerificationRecord(**fields)  # type: ignore[arg-type]
 
 
 def _required():
@@ -193,14 +210,32 @@ def test_ci_requires_explicit_workflow_identity():
 
 
 @pytest.mark.parametrize('fields', [
-    {'workflow_name': 'Unrelated'}, {'conclusion': 'failure'},
-    {'conclusion': 'cancelled'}, {'conclusion': 'skipped'},
-    {'repository': 'example/wrong'}, {'check_name': 'unrelated'},
+    {'workflow_name': 'Unrelated'},
+    {'workflow_path': '.github/workflows/other.yml'},
+    {'event': 'pull_request'},
+    {'head_branch': 'refs/heads/feature'},
+    {'run_conclusion': 'failure'},
+    {'run_conclusion': 'cancelled'},
+    {'run_conclusion': 'skipped'},
+    {'repository': 'example/wrong'},
+    {'job_name': 'unrelated'},
+    {'job_conclusion': 'failure'},
 ])
 def test_ci_rejects_unrelated_or_unsuccessful_evidence(fields):
+    base_ci = {
+        "run_id": 1,
+        "commit_sha": MERGED,
+        "workflow_name": "Public CI",
+        "workflow_path": ".github/workflows/ci.yml",
+        "event": "push",
+        "head_branch": "refs/heads/main",
+        "run_conclusion": "success",
+        "job_id": 88888,
+        "job_name": "verify",
+        "job_conclusion": "success",
+    }
     with pytest.raises(ValidationError):
-        GitHubCIVerificationRecord.model_validate(
-            dict(run_id=1, commit_sha=MERGED, workflow_name='Public CI') | fields)
+        GitHubCIVerificationRecord.model_validate(base_ci | fields)
 
 
 def test_spoofed_host_cannot_complete():
@@ -231,13 +266,18 @@ def test_durable_parent_versions_reject_historical_nested_contracts():
     required = _required().disposition
     receipt = _verified_receipt(public_contract_sha256=required.public_contract_sha256,
                                publication_tree_sha256=required.publication_tree_sha256)
-    for record, old_versions in [(receipt.git, (1, 2)), (receipt, (1, 2)),
-                                 (receipt.ci, (1,)), (required, (1,))]:
+    for record, old_versions in [
+        (receipt.git, (1, 2)),
+        (receipt.pull_request, (1,)),
+        (receipt.ci, (1, 2)),
+        (receipt, (1, 2, 3)),
+        (required, (1, 2)),
+    ]:
         for old in old_versions:
             raw = canonical_record_bytes(record.model_copy(update={'schema_version': old}))
             with pytest.raises(ValidationError):
                 parse_canonical_record(raw, type(record))
-    assert ReconciliationDispositionRecord.model_fields['schema_version'].default == 2
+    assert ReconciliationDispositionRecord.model_fields['schema_version'].default == 3
 
 
 def test_complete_disposition_rejects_unchanged_snapshot() -> None:

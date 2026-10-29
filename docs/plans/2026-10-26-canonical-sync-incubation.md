@@ -310,3 +310,15 @@ Report, without private Drive material:
 - whether any Drive canonical required an update.
 
 A Drive update is allowed only if implementation evidence changes durable project state. If needed, update the same authoritative object in place and reread/verify it; never create a replacement canonical.
+
+## 2026-10-28 Plan amendment: Task 2 pre-merge review hardening and authoritative closure reconciliation
+
+Following review of PR #9 and the 2026-10-28 D-016 clarification in Google Drive, the implementation plan incorporates the following pre-merge hardening steps:
+
+1. **GitPublisher atomic CAS lease**: Replace unguarded remote pushes with `--force-with-lease=<ref>:<expected_base>` (or `--force-with-lease=<ref>:` for branch creation when `expected_base is None`), paired with mechanical verification that candidate commits declare the exact expected base as their parent. Negative tests verify that remote rewinds, deletions, and concurrent updates immediately before push raise `RemoteRaceError`.
+2. **Authoritative GitHub closure acquisition**: Distinguish internal record validity from external evidence authenticity. Wire models validate external provider payloads strictly; project logic verifies PR merge state (`merged == True`, `merged_at`, `merge_commit_sha`) and CI post-merge push execution (`event == "push"`, `head_branch == "refs/heads/main"`, workflow path `.github/workflows/ci.yml`, required job `verify` with `conclusion == "success"`) before producing versioned durable evidence records.
+3. **Public policy contract schema v2**: `fixtures/reconciliation_policy_contract.json` explicitly declares all authoritative closure requirements via dedicated boolean flags.
+4. **SnapshotStore error sanitization**: Translate all filesystem `OSError` occurrences into `SnapshotIntegrityError` without leaking private host paths in message or cause (`from None`), and support platform root directory aliases (such as macOS `/tmp`).
+5. **Base-tree path parity**: Reject case-folding and Unicode normalization (NFC/NFD) collisions in `_read_tree` to prevent platform-dependent tree desynchronization.
+6. **Narrow D-016 root parent invariant**: Ensure all four required root authority roles share the same non-null Drive parent ID.
+7. **Durable schema versioning**: Retain `GitPublicationReceiptRecord` v3 (restores declared guarantee); update `GitHubPullRequestMergeRecord` to v2; update `GitHubCIVerificationRecord` to v3; update `VerifiedPublicationReceiptRecord` to v4; update `ReconciliationDispositionRecord` to v3; update `ReconciliationPolicyContract` to v2.

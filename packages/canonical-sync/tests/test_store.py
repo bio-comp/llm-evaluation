@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import shutil
+import stat
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
@@ -174,3 +177,126 @@ def test_partial_staging_artifact_never_counts_as_completed_state(tmp_path: Path
     assert store.list_receipt_hashes() == ()
     assert list((root / "snapshots").iterdir()) == []
     assert list((root / "observations").iterdir()) == []
+
+
+def test_operational_io_failure_during_construction_sanitizes_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sentinel_path = "/secret/private/credentials/store"
+
+    def fail_mkdir(*args: object, **kwargs: object) -> None:
+        raise OSError(13, "Permission denied", sentinel_path)
+
+    monkeypatch.setattr(Path, "mkdir", fail_mkdir)
+
+    with pytest.raises(SnapshotIntegrityError) as exc_info:
+        SnapshotStore(tmp_path / "fail-store")
+
+    err = exc_info.value
+    assert sentinel_path not in str(err)
+    assert err.__cause__ is None or sentinel_path not in str(err.__cause__)
+
+
+def test_operational_io_failure_during_stage_sanitizes_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SnapshotStore(tmp_path / "private-store")
+    candidate = _candidate()
+    sentinel_path = "/secret/private/path/sentinel.txt"
+
+    import canonical_sync.store as store_mod
+
+    def fail_write(path: Path, data: bytes) -> None:
+        raise OSError(5, "Input/output error", sentinel_path)
+
+    monkeypatch.setattr(store_mod, "_write_fsync", fail_write)
+
+    with pytest.raises(SnapshotIntegrityError) as exc_info:
+        store.stage(candidate)
+
+    err = exc_info.value
+    assert sentinel_path not in str(err)
+    assert err.__cause__ is None or sentinel_path not in str(err.__cause__)
+
+
+def test_operational_io_failure_during_publish_sanitizes_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SnapshotStore(tmp_path / "private-store")
+    candidate = _candidate()
+    staged = store.stage(candidate)
+    sentinel_path = "/secret/private/path/rename.target"
+
+    def fail_rename(src: object, dst: object) -> None:
+        raise OSError(18, "Cross-device link", sentinel_path)
+
+    monkeypatch.setattr(os, "rename", fail_rename)
+
+    with pytest.raises(SnapshotIntegrityError) as exc_info:
+        store.publish(staged)
+
+    err = exc_info.value
+    assert sentinel_path not in str(err)
+    assert err.__cause__ is None or sentinel_path not in str(err.__cause__)
+
+
+def test_operational_io_failure_during_verify_completed_sanitizes_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = SnapshotStore(tmp_path / "private-store")
+    candidate = _candidate()
+    result = store.publish(store.stage(candidate))
+    sentinel_path = "/secret/private/path/read.bin"
+
+    def fail_read_bytes(self: Path) -> bytes:
+        raise OSError(13, "Permission denied", sentinel_path)
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read_bytes)
+
+    with pytest.raises(SnapshotIntegrityError) as exc_info:
+        store.verify_completed(result.observation_sha256)
+
+    err = exc_info.value
+    assert sentinel_path not in str(err)
+    assert err.__cause__ is None or sentinel_path not in str(err.__cause__)
+
+
+def test_symlink_rejection_and_macos_platform_alias_regression(tmp_path: Path) -> None:
+    # 1. Existing symlink used as store root remains rejected
+    real_dir = tmp_path / "real_dir"
+    real_dir.mkdir()
+    sym_root = tmp_path / "sym_root"
+    sym_root.symlink_to(real_dir, target_is_directory=True)
+    with pytest.raises(SnapshotIntegrityError, match="symlink"):
+        SnapshotStore(sym_root)
+
+    # 2. Symlinked operational directory remains rejected
+    valid_store_root = tmp_path / "valid_store"
+    store = SnapshotStore(valid_store_root)
+    snapshots_dir = valid_store_root / "snapshots"
+    snapshots_dir.rmdir()
+    outside_dir = tmp_path / "outside_snapshots"
+    outside_dir.mkdir()
+    snapshots_dir.symlink_to(outside_dir, target_is_directory=True)
+    with pytest.raises(SnapshotIntegrityError, match="symlink"):
+        store._validate_operational_dirs()
+
+    # 3. Relative paths and '..' cannot bypass symlink detection
+    sym_child = tmp_path / "sym_parent"
+    sym_child.symlink_to(real_dir, target_is_directory=True)
+    bypass_attempt = sym_child / "sub"
+    with pytest.raises(SnapshotIntegrityError, match="symlink"):
+        SnapshotStore(bypass_attempt)
+
+    # 4. Legitimate macOS root platform alias (/tmp /var) does not fail merely due to OS alias
+    # Test with /tmp/test-snapshot-store-path if on macOS and /tmp is a symlink
+    if stat.S_ISLNK(os.lstat("/tmp").st_mode):
+        mac_tmp_store = Path("/tmp") / f"test-store-{os.getpid()}"
+        try:
+            s = SnapshotStore(mac_tmp_store)
+            assert s.root == mac_tmp_store
+            # Root itself cannot be a symlink
+            with pytest.raises(SnapshotIntegrityError, match="symlink"):
+                SnapshotStore(Path("/tmp"))
+        finally:
+            shutil.rmtree(mac_tmp_store, ignore_errors=True)

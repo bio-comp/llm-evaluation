@@ -326,3 +326,37 @@ Only then should a standalone `canonical-sync` repository be proposed. prlab mig
 - do not implement or activate hosted OIDC/WIF until the local gate passes.
 
 No Drive canonical change is required merely to record this design: it implements the architecture already authorized by D-016 rather than changing that authority.
+
+## 17. 2026-10-28 Design amendment: authoritative GitHub closure and pre-merge hardening
+
+Following the 2026-10-28 D-016 clarification in Google Drive and pre-merge review of PR #9, the following hardening and boundary amendments are incorporated:
+
+### 17.1 Authoritative external evidence vs internal record validity
+
+Syntactically valid or internally consistent Pydantic records do not prove external real-world events. In particular:
+- An open PR can expose a synthetic test merge SHA, so `merge_commit_sha` is not evidence of actual merge; `merged == True` and explicit `merged_at` are required.
+- PR-triggered CI runs execute untrusted branch code and cannot attest post-merge `main` state; evidence must bind an authoritative `push` event on `refs/heads/main` at `head_sha == merge_commit_sha`.
+- Required job identity must bind exact workflow path (`.github/workflows/ci.yml`), workflow name `Public CI`, and job name `verify` with `conclusion == success`.
+
+Project-owned closure acquisition in `llm_evaluation.canonical_github` implements this boundary:
+`GitHub REST API` -> `strict Pydantic wire models` -> `project verification against expected state` -> `frozen trusted runtime facts` -> `durable Pydantic evidence records` (`GitHubPullRequestMergeRecord` v2, `GitHubCIVerificationRecord` v3) -> `VerifiedPublicationReceiptRecord` v4 -> `COMPLETE`.
+Network operations remain in project transport adapters, not inside Pydantic validators.
+
+### 17.2 Server-enforced atomic CAS Git publication lease
+
+`GitPublisher.publish()` enforces atomic compare-and-swap on the remote ref using server-enforced leases:
+- `--force-with-lease=<ref>:<expected_base>` when an expected base exists;
+- `--force-with-lease=<ref>:` (empty expectation) for target branch creation (`expected_base is None`), failing if the ref was created concurrently.
+In addition, the candidate publication commit must mechanically declare the exact expected base as its single parent, ensuring fast-forward semantics cannot be bypassed by an explicit lease. Competing remote rewinds, deletions, or concurrent updates raise `RemoteRaceError` and leave the remote untouched.
+
+### 17.3 SnapshotStore operational error sanitization
+
+Low-level filesystem `OSError` exceptions during store operations (directory creation, file read/write, fsync, rename, symlink checks) are sanitized into `SnapshotIntegrityError` without leaking private local filesystem paths, store root paths, or internal diagnostics in `str(exc)` or `__cause__` (`raise ... from None`). Path traversal defenses reject symlinks across store operations while safely accommodating standard platform root directory aliases (such as macOS `/tmp` and `/var` owned by root).
+
+### 17.4 Base-tree path and portable filesystem parity
+
+`GitPublisher._read_tree()` enforces portable path hygiene across the remote base tree and candidate publication tree by rejecting case-folding collisions and Unicode normalization collisions (NFC vs NFD forms), guaranteeing deterministic cross-platform compatibility on case-insensitive and Unicode-normalizing filesystems.
+
+### 17.5 Narrow D-016 authority-profile parent invariant
+
+The D-016 authority profile validator enforces that all four required root authority roles (`README.md`, `DECISIONS.md`, `EXPERIMENTS.md`, `REVIEW_LEDGER.md`) share the exact same non-null Drive parent ID, guaranteeing that root governance canonicals originate from the single authorized project folder without generalizing this invariant to secondary canonical objects.
