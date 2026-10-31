@@ -181,17 +181,36 @@ def test_environment_url_rewrite_cannot_redirect_publication(
     assert git(victim, "for-each-ref") == ""
 
 
-@pytest.mark.parametrize(('base_path', 'projected'), [('dir/KEEP.txt', 'dir'), ('a', 'a/b')])
-def test_path_hierarchy_collision_fails_before_remote_mutation(tmp_path, base_path, projected):
+@pytest.mark.parametrize(
+    ('base_path', 'projected'),
+    [
+        ('dir/KEEP.txt', 'dir'),
+        ('a', 'a/b'),
+        ('A', 'a/b'),
+        ('a/b', 'A'),
+        ('README.md', 'readme.md'),
+        ('docs/NOTE.md', 'docs/note.md'),
+    ],
+)
+def test_path_hierarchy_collision_fails_before_remote_mutation(
+    tmp_path: Path, base_path: str, projected: str
+) -> None:
     from canonical_sync.errors import GitPublicationError
+
     remote = tmp_path / 'remote.git'
     subprocess.run(['git', 'init', '--bare', str(remote)], check=True, capture_output=True)
     publisher = GitPublisher(str(remote), ref='refs/heads/main')
-    base = publisher.publish(PublicationTree((PublicationFile(base_path, b'keep'),)),
-                             expected_base=None, commit_message='base')
+    base = publisher.publish(
+        PublicationTree((PublicationFile(base_path, b'keep'),)),
+        expected_base=None,
+        commit_message='base',
+    )
     with pytest.raises(GitPublicationError):
-        publisher.publish(PublicationTree((PublicationFile(projected, b'replace'),)),
-                          expected_base=base.resulting_commit, commit_message='collision')
+        publisher.publish(
+            PublicationTree((PublicationFile(projected, b'replace'),)),
+            expected_base=base.resulting_commit,
+            commit_message='collision',
+        )
     assert git(remote, 'rev-parse', 'refs/heads/main') == base.resulting_commit
     assert git_bytes(remote, 'show', f'{base.resulting_commit}:{base_path}') == b'keep'
 

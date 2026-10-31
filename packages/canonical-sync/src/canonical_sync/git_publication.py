@@ -5,7 +5,7 @@ import os
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from pathlib import PurePosixPath, Path
+from pathlib import Path
 
 from .errors import GitPublicationError, RemoteRaceError, RemoteVerificationError
 from .records import (
@@ -278,11 +278,13 @@ class GitPublisher:
                         fast_forward_only=True,
                     )
 
-            paths = set(desired_tree)
-            for path in paths:
-                if any(str(parent) in paths for parent in PurePosixPath(path).parents
-                       if str(parent) != "."):
-                    raise GitPublicationError("projection would retype a base path or directory")
+            try:
+                folded_desired = tuple(_portable_path_key(path) for path in desired_tree)
+                if len(folded_desired) != len(set(folded_desired)):
+                    raise GitPublicationError("combined tree contains colliding portable paths")
+                _validate_no_path_hierarchy_collisions(folded_desired)
+            except ValueError as exc:
+                raise GitPublicationError("projection would retype a base path or directory") from exc
             git_tree = self._write_tree(repo, desired_tree)
             parents: tuple[str, ...] = () if expected_base is None else ("-p", expected_base)
             commit = self._git(

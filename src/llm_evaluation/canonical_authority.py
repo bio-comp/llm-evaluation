@@ -22,8 +22,8 @@ _REPRESENTATION = "google-drive-export-markdown-v1"
 def load_d016_authority_profile(path: Path) -> AuthorityProfile:
     try:
         raw = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        raise ValueError("D-016 authority profile could not be read as TOML") from exc
+    except (OSError, tomllib.TOMLDecodeError):
+        raise ValueError("D-016 authority profile could not be read as TOML") from None
     if set(raw) != {"profile"} or not isinstance(raw["profile"], dict):
         raise ValueError("D-016 authority profile must contain only a [profile] table")
     profile_raw = raw["profile"]
@@ -59,8 +59,8 @@ def load_d016_authority_profile(path: Path) -> AuthorityProfile:
             objects=objects,
             memberships=memberships,
         )
-    except ValidationError as exc:
-        raise ValueError("D-016 authority profile failed strict validation") from exc
+    except ValidationError:
+        raise ValueError("D-016 authority profile failed strict validation") from None
     roles = {item.logical_path for item in record.objects}
     if roles != D016_REQUIRED_ROLES:
         raise ValueError("D-016 authority profile must contain the exact D-016 roles")

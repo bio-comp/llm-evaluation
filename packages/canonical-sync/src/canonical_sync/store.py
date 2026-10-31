@@ -256,15 +256,14 @@ class SnapshotStore:
                 canonical_record_bytes(candidate.observation),
             )
             try:
+                all_dirs = {path for path in stage_root.rglob("*") if path.is_dir()}
+                all_dirs.add(stage_root)
                 for directory in sorted(
-                    {path.parent for path in snapshot_root.rglob("*") if path.is_file()},
+                    all_dirs,
                     key=lambda item: len(item.parts),
                     reverse=True,
                 ):
                     _fsync_dir(directory)
-                _fsync_dir(snapshot_root)
-                _fsync_dir(observation_root)
-                _fsync_dir(stage_root)
                 _fsync_dir(self._staging)
             except OSError:
                 raise SnapshotIntegrityError("snapshot staging directory sync failed") from None

@@ -300,3 +300,87 @@ def test_symlink_rejection_and_macos_platform_alias_regression(tmp_path: Path) -
                 SnapshotStore(Path("/tmp"))
         finally:
             shutil.rmtree(mac_tmp_store, ignore_errors=True)
+
+
+def test_nested_snapshot_syncs_complete_directory_hierarchy_deepest_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import canonical_sync.store as store_mod
+
+    specs = (
+        AuthorityObjectSpecRecord(
+            logical_path="nested/deeper/README.md",
+            provider="google_drive",
+            object_id="object-nested",
+            expected_name="README.md",
+            expected_mime_type=MIME,
+            expected_parent_id="parent-001",
+            representation_schema="test-representation-v1",
+        ),
+    )
+    profile = profile_from_record(AuthorityProfileRecord(profile_name="nested-test", objects=specs))
+
+    def obs(object_id: str, name: str) -> SourceObservation:
+        return SourceObservation(
+            object_id=object_id,
+            name=name,
+            mime_type=MIME,
+            version=1,
+            modified_time=T0,
+            parent_ids=("parent-001",),
+            trashed=False,
+            can_download=True,
+        )
+
+    transport = FakeTransport(
+        observations={
+            "object-nested": [obs("object-nested", "README.md"), obs("object-nested", "README.md")],
+        },
+        contents={
+            "object-nested": SourceContent("test-representation-v1", b"NESTED CONTENT\n"),
+        },
+    )
+    candidate = acquire_stable_candidate(transport, profile, clock=lambda: T0)
+
+    synced_directories: list[Path] = []
+    real_fsync_dir = store_mod._fsync_dir
+
+    def recording_fsync_dir(path: Path) -> None:
+        synced_directories.append(path)
+        real_fsync_dir(path)
+
+    monkeypatch.setattr(store_mod, "_fsync_dir", recording_fsync_dir)
+
+    store = SnapshotStore(tmp_path / "nested-store")
+    # Reset tracking before staging
+    synced_directories.clear()
+
+    staged = store.stage(candidate)
+    staged_root = staged.path
+    files_dir = staged_root / "snapshot" / "files"
+    nested_dir = files_dir / "nested"
+    deeper_dir = nested_dir / "deeper"
+
+    assert files_dir in synced_directories
+    assert nested_dir in synced_directories
+    assert deeper_dir in synced_directories
+    assert (staged_root / "snapshot") in synced_directories
+    assert (staged_root / "observation") in synced_directories
+    assert staged_root in synced_directories
+
+    # Verify deepest-first order: every child directory must appear before its parent
+    deeper_idx = synced_directories.index(deeper_dir)
+    nested_idx = synced_directories.index(nested_dir)
+    files_idx = synced_directories.index(files_dir)
+    snapshot_idx = synced_directories.index(staged_root / "snapshot")
+    stage_idx = synced_directories.index(staged_root)
+
+    assert deeper_idx < nested_idx < files_idx < snapshot_idx < stage_idx
+
+    # Successful publication and completed verification succeeds
+    result = store.publish(staged)
+    assert result.published_state is True
+    assert result.published_observation is True
+    verified = store.verify_completed(result.observation_sha256)
+    assert verified.state == candidate.state
+    assert verified.observation == candidate.observation

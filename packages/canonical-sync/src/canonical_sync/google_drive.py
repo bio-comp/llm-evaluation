@@ -193,14 +193,14 @@ class GoogleDriveTransport:
             from google_auth_httplib2 import AuthorizedHttp  # type: ignore[import-untyped]
             from googleapiclient.discovery import build  # type: ignore[import-untyped]
             from googleapiclient.errors import HttpError  # type: ignore[import-untyped]
-        except ImportError as exc:
-            raise TransportAuthError("Google Drive support is not installed") from exc
+        except ImportError:
+            raise TransportAuthError("Google Drive support is not installed") from None
         try:
             credentials, _ = google.auth.default(scopes=[DRIVE_READONLY_SCOPE])
             http = AuthorizedHttp(credentials, http=httplib2.Http(timeout=request_timeout))
             drive_service = build("drive", "v3", http=http, cache_discovery=False)
-        except (DefaultCredentialsError, GoogleAuthError, OSError) as exc:
-            raise TransportAuthError("Google application-default read credentials are unavailable") from exc
+        except (DefaultCredentialsError, GoogleAuthError, OSError):
+            raise TransportAuthError("Google application-default read credentials are unavailable") from None
         try:
             client_version = version("google-api-python-client")
         except PackageNotFoundError:
