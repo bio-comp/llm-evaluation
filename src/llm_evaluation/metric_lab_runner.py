@@ -20,6 +20,7 @@ from llm_evaluation.metric_lab_design import (
 )
 from llm_evaluation.metric_lab_targets import (
     SamplingUnit,
+    SubgroupCalibrationControl,
     TargetKind,
     generate_item_probabilities,
     generate_rater_ambiguity_items,
@@ -89,7 +90,7 @@ class PrevalenceControlResult:
 @dataclass(frozen=True, slots=True)
 class AuxiliaryDeterministicControls:
     prevalence: tuple[PrevalenceControlResult, ...]
-    subgroup: object
+    subgroup: SubgroupCalibrationControl
     aurc_upstream_negative_control: float
     aurc_prefix_oracle: float
     aurc_defect_detected: bool

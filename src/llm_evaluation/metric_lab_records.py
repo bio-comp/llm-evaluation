@@ -19,7 +19,12 @@ from llm_evaluation.metric_lab_design import (
     MetricLabDesign,
     MetricLabPhase,
 )
-from llm_evaluation.metric_lab_runner import BaseCellSummary, MetricMonteCarloSummary
+from llm_evaluation.metric_lab_runner import (
+    AmbiguityCellSummary,
+    BaseCellSummary,
+    MetricMonteCarloSummary,
+    run_auxiliary_deterministic_controls,
+)
 from llm_evaluation.metric_lab_targets import SamplingUnit, TargetKind
 from llm_evaluation.records import software_identity
 
@@ -122,11 +127,13 @@ class TargetSummaryRecord(_StrictFrozenRecord):
 
 class CellSummaryRecord(_StrictFrozenRecord):
     record_type: Literal["metric_lab_cell_summary"] = "metric_lab_cell_summary"
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
+    cell_kind: Literal["base", "ambiguity"]
     cell_key: str
-    sampling_unit: SamplingUnit
+    sampling_unit: SamplingUnit | None = None
     replicates_count: int
-    realized_budget_rows: int
+    budget_unit: Literal["rows", "ratings"]
+    realized_budget: int
     targets: tuple[TargetSummaryRecord, ...]
 
     @field_validator("cell_key")
@@ -136,7 +143,7 @@ class CellSummaryRecord(_StrictFrozenRecord):
             raise ValueError("cell_key must be non-empty and trimmed")
         return value
 
-    @field_validator("replicates_count", "realized_budget_rows")
+    @field_validator("replicates_count", "realized_budget")
     @classmethod
     def _positive_counts(cls, value: int) -> int:
         if value < 1:
@@ -155,19 +162,86 @@ class CellSummaryRecord(_StrictFrozenRecord):
             raise ValueError("cell target summaries must be unique")
         return tuple(sorted(value, key=lambda item: item.target.value))
 
+    @model_validator(mode="after")
+    def _cell_semantics(self) -> Self:
+        if self.cell_kind == "base":
+            if self.sampling_unit is None or self.budget_unit != "rows":
+                raise ValueError("base cells require a sampling_unit and row budget")
+        elif self.sampling_unit is not None or self.budget_unit != "ratings":
+            raise ValueError(
+                "ambiguity cells require no sampling_unit and a rating budget"
+            )
+        return self
+
+
+class PrevalenceControlRecord(_StrictFrozenRecord):
+    record_type: Literal["metric_lab_prevalence_control"] = (
+        "metric_lab_prevalence_control"
+    )
+    schema_version: Literal[1] = 1
+    cell_key: str
+    prevalence: float
+    tpr: float
+    fpr: float
+    precision: float
+
+    @field_validator("prevalence", "tpr", "fpr", "precision")
+    @classmethod
+    def _finite_values(cls, value: float) -> float:
+        result = _finite(value, label="prevalence control value")
+        assert result is not None
+        return result
+
+
+class AuxiliaryControlsRecord(_StrictFrozenRecord):
+    record_type: Literal["metric_lab_auxiliary_controls"] = (
+        "metric_lab_auxiliary_controls"
+    )
+    schema_version: Literal[1] = 1
+    prevalence: tuple[PrevalenceControlRecord, ...]
+    subgroup_pooled_ece: float
+    subgroup_ece: dict[str, float]
+    subgroup_max_ece: float
+    aurc_upstream_negative_control: float
+    aurc_prefix_oracle: float
+    aurc_defect_detected: bool
+
+    @field_validator(
+        "subgroup_pooled_ece",
+        "subgroup_max_ece",
+        "aurc_upstream_negative_control",
+        "aurc_prefix_oracle",
+    )
+    @classmethod
+    def _finite_controls(cls, value: float) -> float:
+        result = _finite(value, label="auxiliary control value")
+        assert result is not None
+        return result
+
+    @field_validator("subgroup_ece")
+    @classmethod
+    def _subgroup_values(cls, value: dict[str, float]) -> dict[str, float]:
+        if not value:
+            raise ValueError("subgroup_ece must be non-empty")
+        for key, metric in value.items():
+            if not key or _finite(metric, label="subgroup ece") is None:
+                raise ValueError("invalid subgroup ece")
+        return value
+
 
 class MetricLabRunRecord(_StrictFrozenRecord):
     canonical_identity_domain: ClassVar[str] = "llm-evaluation.metric-lab-run"
     canonical_identity_version: ClassVar[int] = 1
     record_type: Literal["known_truth_metric_lab_run"] = "known_truth_metric_lab_run"
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     phase: MetricLabPhase
     design_sha256: str
     frozen_design_record_sha256: str | None = None
     replicates_per_cell: int
     cell_count: int
-    realized_budget_rows: int
+    realized_budget_by_unit: dict[str, int]
     cells: tuple[CellSummaryRecord, ...]
+    auxiliary_controls: AuxiliaryControlsRecord
     software_commit: str | None = None
     package_source_sha256: str | None = None
     python_version: str
@@ -200,30 +274,44 @@ class MetricLabRunRecord(_StrictFrozenRecord):
             raise ValueError("python_version must be non-empty and trimmed")
         return value
 
-    @field_validator("replicates_per_cell", "cell_count", "realized_budget_rows")
+    @field_validator("replicates_per_cell", "cell_count")
     @classmethod
     def _positive_run_counts(cls, value: int) -> int:
         if value < 1:
             raise ValueError("run counts must be positive")
         return value
 
+    @field_validator("realized_budget_by_unit")
+    @classmethod
+    def _budget_map(cls, value: dict[str, int]) -> dict[str, int]:
+        if not value or any(key not in {"rows", "ratings"} for key in value):
+            raise ValueError("realized budget units must be rows and/or ratings")
+        if any(type(count) is not int or count < 1 for count in value.values()):
+            raise ValueError("realized budgets must be positive exact integers")
+        return dict(sorted(value.items()))
+
     @model_validator(mode="after")
     def _validate_run(self) -> Self:
         if len(self.cells) != self.cell_count:
             raise ValueError("cell_count must equal the exact cell inventory")
-        if len({(cell.cell_key, cell.sampling_unit) for cell in self.cells}) != len(
-            self.cells
-        ):
-            raise ValueError("run cells must be unique by cell_key and sampling_unit")
+        identities = {
+            (cell.cell_kind, cell.cell_key, cell.sampling_unit) for cell in self.cells
+        }
+        if len(identities) != len(self.cells):
+            raise ValueError("run cells must have unique kind/key/sampling identities")
         if any(
             cell.replicates_count != self.replicates_per_cell for cell in self.cells
         ):
             raise ValueError("all cells must use the declared replicates_per_cell")
-        if (
-            sum(cell.realized_budget_rows for cell in self.cells)
-            != self.realized_budget_rows
-        ):
-            raise ValueError("realized_budget_rows must equal the cell budget sum")
+        budget: dict[str, int] = defaultdict_int()
+        for cell in self.cells:
+            budget[cell.budget_unit] = (
+                budget.get(cell.budget_unit, 0) + cell.realized_budget
+            )
+        if dict(sorted(budget.items())) != self.realized_budget_by_unit:
+            raise ValueError(
+                "realized_budget_by_unit must equal the exact cell budget sums"
+            )
         if (self.software_commit is None) != (self.package_source_sha256 is None):
             raise ValueError(
                 "software commit and package hash must be present together"
@@ -238,6 +326,11 @@ class MetricLabRunRecord(_StrictFrozenRecord):
         return self
 
 
+def defaultdict_int() -> dict[str, int]:
+    """Small typed helper used by strict record validators/builders."""
+    return {}
+
+
 def _metric_summary_record(summary: MetricMonteCarloSummary) -> MetricSummaryRecord:
     return MetricSummaryRecord(
         true_value=summary.true_value,
@@ -250,8 +343,8 @@ def _metric_summary_record(summary: MetricMonteCarloSummary) -> MetricSummaryRec
     )
 
 
-def _cell_record(summary: BaseCellSummary) -> CellSummaryRecord:
-    targets = tuple(
+def _base_target_records(summary: BaseCellSummary) -> tuple[TargetSummaryRecord, ...]:
+    return tuple(
         TargetSummaryRecord(
             target=target,
             expected_brier=target_summary.truth.expected_brier,
@@ -270,12 +363,75 @@ def _cell_record(summary: BaseCellSummary) -> CellSummaryRecord:
             summary.targets.items(), key=lambda item: item[0].value
         )
     )
-    return CellSummaryRecord(
-        cell_key=summary.cell_key,
-        sampling_unit=summary.sampling_unit,
-        replicates_count=summary.replicates_count,
-        realized_budget_rows=summary.realized_budget_rows,
-        targets=targets,
+
+
+def _ambiguity_target_records(
+    summary: AmbiguityCellSummary,
+) -> tuple[TargetSummaryRecord, ...]:
+    return tuple(
+        TargetSummaryRecord(
+            target=target,
+            expected_brier=target_summary.truth.expected_brier,
+            expected_log_score=target_summary.truth.expected_log_score,
+            fixed_bin_calibration=target_summary.truth.fixed_bin_calibration,
+            equal_mass_calibration=target_summary.truth.equal_mass_calibration,
+            l2_calibration=target_summary.truth.l2_calibration,
+            classification_error=target_summary.truth.classification_error,
+            aurc=target_summary.truth.aurc,
+            metrics={
+                name: _metric_summary_record(metric)
+                for name, metric in sorted(target_summary.metrics.items())
+            },
+        )
+        for target, target_summary in sorted(
+            summary.targets.items(), key=lambda item: item[0].value
+        )
+    )
+
+
+def _cell_record(summary: BaseCellSummary | AmbiguityCellSummary) -> CellSummaryRecord:
+    if isinstance(summary, BaseCellSummary):
+        return CellSummaryRecord(
+            cell_kind="base",
+            cell_key=summary.cell_key,
+            sampling_unit=summary.sampling_unit,
+            replicates_count=summary.replicates_count,
+            budget_unit="rows",
+            realized_budget=summary.realized_budget_rows,
+            targets=_base_target_records(summary),
+        )
+    if isinstance(summary, AmbiguityCellSummary):
+        return CellSummaryRecord(
+            cell_kind="ambiguity",
+            cell_key=summary.cell_key,
+            sampling_unit=None,
+            replicates_count=summary.replicates_count,
+            budget_unit="ratings",
+            realized_budget=summary.realized_budget_ratings,
+            targets=_ambiguity_target_records(summary),
+        )
+    raise TypeError("unsupported metric-lab cell summary type")
+
+
+def _auxiliary_record(design: MetricLabDesign) -> AuxiliaryControlsRecord:
+    controls = run_auxiliary_deterministic_controls(design)
+    return AuxiliaryControlsRecord(
+        prevalence=tuple(
+            PrevalenceControlRecord(
+                cell_key=item.cell_key,
+                prevalence=item.prevalence,
+                tpr=item.tpr,
+                fpr=item.fpr,
+                precision=item.precision,
+            )
+            for item in controls.prevalence
+        ),
+        subgroup_pooled_ece=controls.subgroup.pooled_ece,
+        subgroup_ece=controls.subgroup.subgroup_ece,
+        subgroup_max_ece=controls.subgroup.max_subgroup_ece,
+        aurc_upstream_negative_control=controls.aurc_upstream_negative_control,
+        aurc_prefix_oracle=controls.aurc_prefix_oracle,
+        aurc_defect_detected=controls.aurc_defect_detected,
     )
 
 
@@ -302,7 +458,7 @@ def preview_metric_lab_run_record(
     *,
     design: MetricLabDesign,
     phase: MetricLabPhase,
-    cell_summaries: tuple[BaseCellSummary, ...],
+    cell_summaries: tuple[BaseCellSummary | AmbiguityCellSummary, ...],
     frozen_design: FrozenMetricLabDesignRecord | None = None,
 ) -> MetricLabRunRecord:
     if not cell_summaries:
@@ -331,14 +487,20 @@ def preview_metric_lab_run_record(
         raise ValueError("development preview must not supply a frozen final design")
 
     cells = tuple(_cell_record(summary) for summary in cell_summaries)
+    budget: dict[str, int] = defaultdict_int()
+    for cell in cells:
+        budget[cell.budget_unit] = (
+            budget.get(cell.budget_unit, 0) + cell.realized_budget
+        )
     return MetricLabRunRecord(
         phase=phase,
         design_sha256=design_hash,
         frozen_design_record_sha256=frozen_hash,
         replicates_per_cell=replicates_per_cell,
         cell_count=len(cells),
-        realized_budget_rows=sum(cell.realized_budget_rows for cell in cells),
+        realized_budget_by_unit=budget,
         cells=cells,
+        auxiliary_controls=_auxiliary_record(design),
         software_commit=None,
         package_source_sha256=None,
         python_version=platform.python_version(),
@@ -371,7 +533,6 @@ def finalize_metric_lab_run(
             "python_version": platform.python_version(),
         }
     )
-    # Re-validate after model_copy, which intentionally skips Pydantic validation.
     finalized = MetricLabRunRecord.model_validate(finalized.model_dump(), strict=True)
     publish_immutable(path, metric_lab_record_bytes(finalized))
     readback = read_metric_lab_run(path)

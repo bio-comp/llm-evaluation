@@ -147,3 +147,60 @@ def test_read_rejects_noncanonical_json_even_when_semantically_valid(
     )
     with pytest.raises(ValueError, match="canonical"):
         read_metric_lab_run(noncanonical)
+
+
+def test_preview_records_base_ambiguity_and_auxiliary_controls() -> None:
+    from llm_evaluation.metric_lab_design import AmbiguityCellSpec
+    from llm_evaluation.metric_lab_runner import summarize_ambiguity_cell
+
+    design = MetricLabDesign(
+        p_values=("0.5",),
+        forecast_kinds=("constant",),
+        n_base_items=(8,),
+        k_within_item=(2,),
+        shared_within_item=(False, True),
+        reference_flip_etas=("0",),
+        ambiguity_theta_values=("0.5",),
+        ambiguity_n_items=(8,),
+        ambiguity_raters_per_item=(3,),
+        prevalence_values=("0.01", "0.5"),
+        fixed_bin_count=1,
+        equal_mass_bin_count=1,
+    )
+    base_cell = BaseCellSpec(
+        forecast_kind="constant",
+        n_base_items=8,
+        k_within_item=2,
+        shared_within_item=False,
+        reference_flip_eta=0.0,
+    )
+    ambiguity_cell = AmbiguityCellSpec(
+        forecast_kind="constant", n_items=8, raters_per_item=3
+    )
+    base = summarize_base_cell(
+        design=design,
+        cell=base_cell,
+        phase=MetricLabPhase.DEVELOPMENT,
+        sampling_unit=SamplingUnit.FIXED_CASE,
+        num_replicates=2,
+    )
+    ambiguity = summarize_ambiguity_cell(
+        design=design,
+        cell=ambiguity_cell,
+        phase=MetricLabPhase.DEVELOPMENT,
+        num_replicates=2,
+    )
+    preview = preview_metric_lab_run_record(
+        design=design,
+        phase=MetricLabPhase.DEVELOPMENT,
+        cell_summaries=(base, ambiguity),
+    )
+    assert preview.cell_count == 2
+    assert {cell.cell_kind for cell in preview.cells} == {"base", "ambiguity"}
+    assert preview.realized_budget_by_unit == {"ratings": 48, "rows": 32}
+    assert len(preview.auxiliary_controls.prevalence) == 2
+    assert preview.auxiliary_controls.subgroup_pooled_ece == 0.0
+    assert preview.auxiliary_controls.subgroup_max_ece == 0.25
+    assert preview.auxiliary_controls.aurc_upstream_negative_control == 0.5
+    assert preview.auxiliary_controls.aurc_prefix_oracle == 0.75
+    assert preview.auxiliary_controls.aurc_defect_detected is True
