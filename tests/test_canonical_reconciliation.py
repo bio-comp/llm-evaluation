@@ -9,8 +9,12 @@ from canonical_sync.codec import (
     canonical_record_bytes,
     canonical_record_hash,
 )
+from canonical_sync.git_publication import PublicationFile, PublicationTree
 from canonical_sync.records import GitPublicationReceiptRecord
-from llm_evaluation.canonical_authority import D016_REQUIRED_ROLES, load_d016_authority_profile
+from llm_evaluation.canonical_authority import (
+    D016_REQUIRED_ROLES,
+    load_d016_authority_profile,
+)
 from llm_evaluation.canonical_reconciliation import (
     DEFAULT_RECONCILIATION_STATE_PATH,
     RECONCILIATION_STATE_ENV_VAR,
@@ -42,7 +46,7 @@ H2 = "2" * 64
 
 def _write_profile(path: Path, *, roles: tuple[str, ...] | None = None) -> None:
     selected = roles or tuple(sorted(D016_REQUIRED_ROLES))
-    lines = ['[profile]', 'profile_name = "llm-evaluation-d016"']
+    lines = ["[profile]", 'profile_name = "llm-evaluation-d016"']
     for index, role in enumerate(selected, start=1):
         lines.extend(
             [
@@ -60,7 +64,9 @@ def _write_profile(path: Path, *, roles: tuple[str, ...] | None = None) -> None:
     path.write_text("\n".join(lines) + "\n")
 
 
-def test_private_d016_profile_loads_exact_roles_without_public_defaults(tmp_path: Path) -> None:
+def test_private_d016_profile_loads_exact_roles_without_public_defaults(
+    tmp_path: Path,
+) -> None:
     profile_path = tmp_path / "authority.toml"
     _write_profile(profile_path)
     profile = load_d016_authority_profile(profile_path)
@@ -77,14 +83,18 @@ def test_private_d016_profile_loads_exact_roles_without_public_defaults(tmp_path
     assert b"private-parent" not in public_bytes
 
 
-def test_private_profile_rejects_missing_extra_and_unknown_top_level_state(tmp_path: Path) -> None:
+def test_private_profile_rejects_missing_extra_and_unknown_top_level_state(
+    tmp_path: Path,
+) -> None:
     missing = tmp_path / "missing.toml"
     _write_profile(missing, roles=tuple(sorted(D016_REQUIRED_ROLES))[:-1])
     with pytest.raises(ValueError, match="exact D-016 roles"):
         load_d016_authority_profile(missing)
 
     extra = tmp_path / "extra.toml"
-    _write_profile(extra, roles=tuple(sorted(D016_REQUIRED_ROLES)) + ("SOURCE_INDEX.md",))
+    _write_profile(
+        extra, roles=tuple(sorted(D016_REQUIRED_ROLES)) + ("SOURCE_INDEX.md",)
+    )
     with pytest.raises(ValueError, match="exact D-016 roles"):
         load_d016_authority_profile(extra)
 
@@ -98,17 +108,23 @@ def test_private_profile_rejects_missing_extra_and_unknown_top_level_state(tmp_p
 def test_private_profile_requires_expected_parent_id(tmp_path: Path) -> None:
     no_parent = tmp_path / "no_parent.toml"
     _write_profile(no_parent)
-    content = no_parent.read_text().replace('expected_parent_id = "private-parent"\n', "", 1)
+    content = no_parent.read_text().replace(
+        'expected_parent_id = "private-parent"\n', "", 1
+    )
     no_parent.write_text(content)
     with pytest.raises(ValueError, match="parent"):
         load_d016_authority_profile(no_parent)
 
 
-def test_private_profile_requires_shared_parent_id_across_required_root_roles(tmp_path: Path) -> None:
+def test_private_profile_requires_shared_parent_id_across_required_root_roles(
+    tmp_path: Path,
+) -> None:
     diff_parent = tmp_path / "diff_parent.toml"
     _write_profile(diff_parent)
     content = diff_parent.read_text().replace(
-        'expected_parent_id = "private-parent"', 'expected_parent_id = "different-parent"', 1
+        'expected_parent_id = "private-parent"',
+        'expected_parent_id = "different-parent"',
+        1,
     )
     diff_parent.write_text(content)
     with pytest.raises(ValueError, match="parent"):
@@ -119,7 +135,7 @@ def test_private_profile_accepts_valid_memberships(tmp_path: Path) -> None:
     with_memberships = tmp_path / "memberships.toml"
     _write_profile(with_memberships)
     extra_content = (
-        '\n[[profile.memberships]]\n'
+        "\n[[profile.memberships]]\n"
         'parent_id = "private-parent"\n'
         'expected_child_ids = ["private-object-1", "private-object-2", "private-object-3", "private-object-4"]\n'
     )
@@ -129,8 +145,9 @@ def test_private_profile_accepts_valid_memberships(tmp_path: Path) -> None:
     assert profile.memberships[0].parent_id == "private-parent"
 
 
-
-def test_counterfactual_authoritative_contract_fails_stale_executable_until_reconciled() -> None:
+def test_counterfactual_authoritative_contract_fails_stale_executable_until_reconciled() -> (
+    None
+):
     reconciled = current_executable_policy_contract()
     stale_flags = [
         {"complete_requires_authoritative_github_evidence": False},
@@ -138,6 +155,8 @@ def test_counterfactual_authoritative_contract_fails_stale_executable_until_reco
         {"complete_requires_post_merge_main_push_ci": False},
         {"complete_requires_exact_workflow_identity": False},
         {"complete_requires_exact_required_job_identity": False},
+        {"complete_requires_exact_publication_tree": False},
+        {"complete_requires_obligation_set_match": False},
         {"complete_requires_readback": False},
     ]
     for flag in stale_flags:
@@ -148,21 +167,95 @@ def test_counterfactual_authoritative_contract_fails_stale_executable_until_reco
     verify_executable_policy_contract(reconciled)
 
 
+def _approved_multi_file_tree(
+    contract: ReconciliationPolicyContract,
+) -> PublicationTree:
+    return PublicationTree(
+        files=(
+            *approved_policy_tree(contract).files,
+            PublicationFile(
+                path="scripts/refresh_google_drive_adc.py",
+                data=b"# exact approved helper bytes\n",
+            ),
+            PublicationFile(
+                path="tests/test_refresh_google_drive_adc.py",
+                data=b"# exact approved helper tests\n",
+            ),
+        )
+    )
+
+
+def test_public_change_requires_exact_approved_tree_and_nonempty_obligation_set() -> (
+    None
+):
+    contract = current_executable_policy_contract()
+    with pytest.raises(ValidationError, match="publication tree|publication_tree"):
+        ReviewedCanonicalImpact(
+            impact=ProjectImpact.PUBLIC_CHANGE_REQUIRED,
+            public_contract=contract,
+        )
+
+    tree = _approved_multi_file_tree(contract)
+    reviewed = ReviewedCanonicalImpact(
+        impact=ProjectImpact.PUBLIC_CHANGE_REQUIRED,
+        public_contract=contract,
+        publication_tree=tree,
+        obligation_ids=(
+            "D-016:local-auth-runbook",
+            "D-016:portable-adc-helper",
+        ),
+    )
+    result = reconcile_reviewed_snapshot(
+        current_snapshot_sha256=H2,
+        previous=LastReconciledStateRecord(snapshot_state_sha256=H1),
+        reviewed=reviewed,
+    )
+    assert result.publication_tree == tree
+    assert result.disposition.publication_tree_sha256 == tree.sha256
+    assert result.disposition.obligation_ids == (
+        "D-016:local-auth-runbook",
+        "D-016:portable-adc-helper",
+    )
+
+
+def test_public_change_rejects_duplicate_or_missing_obligation_ids() -> None:
+    contract = current_executable_policy_contract()
+    tree = _approved_multi_file_tree(contract)
+    with pytest.raises(ValidationError, match="obligation"):
+        ReviewedCanonicalImpact(
+            impact=ProjectImpact.PUBLIC_CHANGE_REQUIRED,
+            public_contract=contract,
+            publication_tree=tree,
+            obligation_ids=(),
+        )
+    with pytest.raises(ValidationError, match="obligation"):
+        ReviewedCanonicalImpact(
+            impact=ProjectImpact.PUBLIC_CHANGE_REQUIRED,
+            public_contract=contract,
+            publication_tree=tree,
+            obligation_ids=("D-016:portable-adc-helper", "D-016:portable-adc-helper"),
+        )
+
+
 def test_public_change_yields_required_contract_and_matching_identity() -> None:
     contract = current_executable_policy_contract()
+    tree = approved_policy_tree(contract)
     result = reconcile_reviewed_snapshot(
         current_snapshot_sha256=H2,
         previous=LastReconciledStateRecord(snapshot_state_sha256=H1),
         reviewed=ReviewedCanonicalImpact(
             impact=ProjectImpact.PUBLIC_CHANGE_REQUIRED,
             public_contract=contract,
+            publication_tree=tree,
+            obligation_ids=("D-016:test-obligation",),
         ),
     )
     assert result.disposition.disposition is ReconciliationDisposition.REQUIRED
     assert result.public_projection == contract
-    assert result.publication_tree == approved_policy_tree(contract)
+    assert result.publication_tree == tree
     assert result.disposition.public_contract_sha256 == canonical_record_hash(contract)
     assert result.disposition.publication_tree_sha256 == result.publication_tree.sha256
+    assert result.disposition.obligation_ids == ("D-016:test-obligation",)
 
 
 def test_private_only_change_produces_none_and_no_public_artifact() -> None:
@@ -198,6 +291,8 @@ def test_public_contract_is_exactly_the_four_authorized_reconciliation_states() 
     assert contract.complete_requires_post_merge_main_push_ci is True
     assert contract.complete_requires_exact_workflow_identity is True
     assert contract.complete_requires_exact_required_job_identity is True
+    assert contract.complete_requires_exact_publication_tree is True
+    assert contract.complete_requires_obligation_set_match is True
 
 
 def test_public_policy_fixture_is_canonical_and_matches_executable_contract() -> None:
@@ -342,6 +437,7 @@ def _make_valid_complete_disposition(
         snapshot_state_sha256=snapshot_sha,
         public_contract_sha256=contract_sha,
         publication_tree_sha256=tree_sha,
+        obligation_ids=("D-016:test-obligation",),
         git=git_receipt,
         pull_request=pr_record,
         ci=ci_record,
@@ -353,13 +449,16 @@ def _make_valid_complete_disposition(
         disposition=ReconciliationDisposition.COMPLETE,
         public_contract_sha256=contract_sha,
         publication_tree_sha256=tree_sha,
+        obligation_ids=("D-016:test-obligation",),
         verified_publication=receipt,
     )
 
 
 def test_durable_reconciliation_state_record_valid_construction() -> None:
     comp = _make_valid_complete_disposition()
-    state = LastReconciledStateRecord(snapshot_state_sha256=comp.current_snapshot_sha256)
+    state = LastReconciledStateRecord(
+        snapshot_state_sha256=comp.current_snapshot_sha256
+    )
     record = DurableReconciliationStateRecord(state=state, disposition=comp)
     assert record.state.snapshot_state_sha256 == H1
     assert record.disposition.disposition is ReconciliationDisposition.COMPLETE
@@ -374,6 +473,7 @@ def test_durable_reconciliation_state_record_rejects_non_complete_disposition() 
         disposition=ReconciliationDisposition.REQUIRED,
         public_contract_sha256=H2,
         publication_tree_sha256=H2,
+        obligation_ids=("D-016:test-obligation",),
     )
     state = LastReconciledStateRecord(snapshot_state_sha256=H1)
     with pytest.raises(ValidationError, match="requires disposition COMPLETE"):
@@ -387,7 +487,9 @@ def test_durable_reconciliation_state_record_rejects_mismatched_snapshot_hash() 
         DurableReconciliationStateRecord(state=state, disposition=comp)
 
 
-def test_resolve_reconciliation_state_path_default_and_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_resolve_reconciliation_state_path_default_and_overrides(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.delenv(RECONCILIATION_STATE_ENV_VAR, raising=False)
     default_path = resolve_reconciliation_state_path()
     assert default_path == DEFAULT_RECONCILIATION_STATE_PATH.expanduser()
@@ -405,7 +507,9 @@ def test_resolve_reconciliation_state_path_default_and_overrides(monkeypatch: py
 def test_save_and_load_durable_reconciliation_state_roundtrip(tmp_path: Path) -> None:
     store_path = tmp_path / "state" / "reconciled.json"
     comp = _make_valid_complete_disposition()
-    state = LastReconciledStateRecord(snapshot_state_sha256=comp.current_snapshot_sha256)
+    state = LastReconciledStateRecord(
+        snapshot_state_sha256=comp.current_snapshot_sha256
+    )
     record = DurableReconciliationStateRecord(state=state, disposition=comp)
 
     saved_path = save_durable_reconciliation_state(record, path=store_path)
@@ -421,10 +525,14 @@ def test_save_and_load_durable_reconciliation_state_roundtrip(tmp_path: Path) ->
     assert loaded_last == state
 
 
-def test_save_durable_reconciliation_state_permissions_and_atomicity(tmp_path: Path) -> None:
+def test_save_durable_reconciliation_state_permissions_and_atomicity(
+    tmp_path: Path,
+) -> None:
     store_path = tmp_path / "secure_dir" / "last-reconciled-state.json"
     comp = _make_valid_complete_disposition()
-    state = LastReconciledStateRecord(snapshot_state_sha256=comp.current_snapshot_sha256)
+    state = LastReconciledStateRecord(
+        snapshot_state_sha256=comp.current_snapshot_sha256
+    )
     record = DurableReconciliationStateRecord(state=state, disposition=comp)
 
     save_durable_reconciliation_state(record, path=store_path)
@@ -435,20 +543,26 @@ def test_save_durable_reconciliation_state_permissions_and_atomicity(tmp_path: P
     assert dir_mode == 0o700
 
 
-def test_load_durable_reconciliation_state_missing_file_returns_none(tmp_path: Path) -> None:
+def test_load_durable_reconciliation_state_missing_file_returns_none(
+    tmp_path: Path,
+) -> None:
     missing = tmp_path / "nonexistent.json"
     assert load_durable_reconciliation_state(missing) is None
     assert load_last_reconciled_state(missing) is None
 
 
-def test_load_durable_reconciliation_state_empty_or_malformed_fails_closed(tmp_path: Path) -> None:
+def test_load_durable_reconciliation_state_empty_or_malformed_fails_closed(
+    tmp_path: Path,
+) -> None:
     empty = tmp_path / "empty.json"
     empty.write_bytes(b"")
     with pytest.raises(ReconciliationStateError, match="empty"):
         load_durable_reconciliation_state(empty)
 
     malformed = tmp_path / "bad.json"
-    malformed.write_text('{"record_type": "llm_evaluation_durable_reconciliation_state"')
+    malformed.write_text(
+        '{"record_type": "llm_evaluation_durable_reconciliation_state"'
+    )
     with pytest.raises(ReconciliationStateError, match="parse"):
         load_durable_reconciliation_state(malformed)
 
@@ -458,10 +572,70 @@ def test_load_durable_reconciliation_state_empty_or_malformed_fails_closed(tmp_p
         load_durable_reconciliation_state(wrong_schema)
 
 
-def test_durable_reconciliation_state_rejects_symlink_target_and_parent(tmp_path: Path) -> None:
+def test_legacy_v1_durable_state_is_rejected_until_explicitly_superseded(
+    tmp_path: Path,
+) -> None:
+    import hashlib
+    import llm_evaluation.canonical_reconciliation as reconciliation
+
+    target = tmp_path / "last-reconciled-state.json"
+    comp = _make_valid_complete_disposition()
+    state = LastReconciledStateRecord(
+        snapshot_state_sha256=comp.current_snapshot_sha256
+    )
+    current = DurableReconciliationStateRecord(state=state, disposition=comp)
+    legacy = current.model_copy(update={"schema_version": 1})
+    raw = canonical_record_bytes(legacy)
+    target.write_bytes(raw)
+
+    with pytest.raises(ReconciliationStateError, match="legacy|supersed"):
+        load_durable_reconciliation_state(target)
+
+    raw_sha = hashlib.sha256(raw).hexdigest()
+    archive = reconciliation.supersede_legacy_reconciliation_state(
+        expected_raw_sha256=raw_sha,
+        path=target,
+    )
+    assert archive.read_bytes() == raw
+    assert hashlib.sha256(archive.read_bytes()).hexdigest() == raw_sha
+    assert archive.name == f"superseded-v1-{raw_sha}.json"
+    assert archive.parent.name == "reconciliation-history"
+    assert not target.exists()
+    assert load_durable_reconciliation_state(target) is None
+
+
+def test_legacy_state_supersession_refuses_hash_mismatch_without_removing_active_state(
+    tmp_path: Path,
+) -> None:
+    import llm_evaluation.canonical_reconciliation as reconciliation
+
+    target = tmp_path / "last-reconciled-state.json"
+    comp = _make_valid_complete_disposition()
+    state = LastReconciledStateRecord(
+        snapshot_state_sha256=comp.current_snapshot_sha256
+    )
+    legacy = DurableReconciliationStateRecord(state=state, disposition=comp).model_copy(
+        update={"schema_version": 1}
+    )
+    raw = canonical_record_bytes(legacy)
+    target.write_bytes(raw)
+
+    with pytest.raises(ReconciliationStateError, match="hash"):
+        reconciliation.supersede_legacy_reconciliation_state(
+            expected_raw_sha256="0" * 64,
+            path=target,
+        )
+    assert target.read_bytes() == raw
+
+
+def test_durable_reconciliation_state_rejects_symlink_target_and_parent(
+    tmp_path: Path,
+) -> None:
     real_file = tmp_path / "real.json"
     comp = _make_valid_complete_disposition()
-    state = LastReconciledStateRecord(snapshot_state_sha256=comp.current_snapshot_sha256)
+    state = LastReconciledStateRecord(
+        snapshot_state_sha256=comp.current_snapshot_sha256
+    )
     record = DurableReconciliationStateRecord(state=state, disposition=comp)
     save_durable_reconciliation_state(record, path=real_file)
 
@@ -489,7 +663,9 @@ def test_save_durable_reconciliation_state_readback_mismatch_fails_closed(
 ) -> None:
     target = tmp_path / "tampered.json"
     comp = _make_valid_complete_disposition()
-    state = LastReconciledStateRecord(snapshot_state_sha256=comp.current_snapshot_sha256)
+    state = LastReconciledStateRecord(
+        snapshot_state_sha256=comp.current_snapshot_sha256
+    )
     record = DurableReconciliationStateRecord(state=state, disposition=comp)
 
     # Simulate readback byte corruption
@@ -507,7 +683,9 @@ def test_save_durable_reconciliation_state_readback_mismatch_fails_closed(
         save_durable_reconciliation_state(record, path=target)
 
 
-def test_persist_completed_reconciliation_success_and_rejections(tmp_path: Path) -> None:
+def test_persist_completed_reconciliation_success_and_rejections(
+    tmp_path: Path,
+) -> None:
     target = tmp_path / "persisted.json"
     comp = _make_valid_complete_disposition()
 
@@ -526,7 +704,95 @@ def test_persist_completed_reconciliation_success_and_rejections(tmp_path: Path)
         disposition=ReconciliationDisposition.REQUIRED,
         public_contract_sha256=H2,
         publication_tree_sha256=H2,
+        obligation_ids=("D-016:test-obligation",),
     )
-    with pytest.raises(ValueError, match="only a COMPLETE disposition can be durably persisted"):
+    with pytest.raises(
+        ValueError, match="only a COMPLETE disposition can be durably persisted"
+    ):
         persist_completed_reconciliation(req, path=target)
 
+
+def test_legacy_state_supersession_rejects_symlinked_history_without_removing_active_state(
+    tmp_path: Path,
+) -> None:
+    import hashlib
+    import llm_evaluation.canonical_reconciliation as reconciliation
+
+    target = tmp_path / "last-reconciled-state.json"
+    comp = _make_valid_complete_disposition()
+    state = LastReconciledStateRecord(snapshot_state_sha256=comp.current_snapshot_sha256)
+    legacy = DurableReconciliationStateRecord(state=state, disposition=comp).model_copy(
+        update={"schema_version": 1}
+    )
+    raw = canonical_record_bytes(legacy)
+    target.write_bytes(raw)
+    real_history = tmp_path / "real-history"
+    real_history.mkdir()
+    (tmp_path / "reconciliation-history").symlink_to(real_history)
+
+    with pytest.raises(ReconciliationStateError, match="history.*symlink"):
+        reconciliation.supersede_legacy_reconciliation_state(
+            expected_raw_sha256=hashlib.sha256(raw).hexdigest(),
+            path=target,
+        )
+    assert target.read_bytes() == raw
+
+
+def test_legacy_state_supersession_verifies_archive_before_removing_active_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+    import llm_evaluation.canonical_reconciliation as reconciliation
+
+    target = tmp_path / "last-reconciled-state.json"
+    comp = _make_valid_complete_disposition()
+    state = LastReconciledStateRecord(snapshot_state_sha256=comp.current_snapshot_sha256)
+    legacy = DurableReconciliationStateRecord(state=state, disposition=comp).model_copy(
+        update={"schema_version": 1}
+    )
+    raw = canonical_record_bytes(legacy)
+    raw_sha = hashlib.sha256(raw).hexdigest()
+    target.write_bytes(raw)
+    original_read_bytes = Path.read_bytes
+
+    def corrupt_archive_readback(self: Path) -> bytes:
+        if self.parent.name == "reconciliation-history":
+            return b"corrupted-history"
+        return original_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", corrupt_archive_readback)
+    with pytest.raises(ReconciliationStateError, match="readback verification"):
+        reconciliation.supersede_legacy_reconciliation_state(
+            expected_raw_sha256=raw_sha,
+            path=target,
+        )
+    assert original_read_bytes(target) == raw
+
+
+def test_v2_state_writer_refuses_to_overwrite_legacy_v1_without_supersession(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "last-reconciled-state.json"
+    legacy_comp = _make_valid_complete_disposition()
+    legacy_state = LastReconciledStateRecord(
+        snapshot_state_sha256=legacy_comp.current_snapshot_sha256
+    )
+    legacy_record = DurableReconciliationStateRecord(
+        state=legacy_state,
+        disposition=legacy_comp,
+    ).model_copy(update={"schema_version": 1})
+    legacy_bytes = canonical_record_bytes(legacy_record)
+    target.write_bytes(legacy_bytes)
+
+    new_comp = _make_valid_complete_disposition(snapshot_sha=H2)
+    new_state = LastReconciledStateRecord(
+        snapshot_state_sha256=new_comp.current_snapshot_sha256
+    )
+    new_record = DurableReconciliationStateRecord(
+        state=new_state,
+        disposition=new_comp,
+    )
+
+    with pytest.raises(ReconciliationStateError, match="legacy|supersession"):
+        save_durable_reconciliation_state(new_record, path=target)
+    assert target.read_bytes() == legacy_bytes

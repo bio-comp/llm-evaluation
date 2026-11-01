@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import time
@@ -21,7 +23,9 @@ from canonical_sync.records import GitPublicationReceiptRecord
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _GIT_OID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
-_ISO8601_UTC_SECOND_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+_ISO8601_UTC_SECOND_RE = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+)
 _PUBLIC_REPOSITORY: Literal["bio-comp/llm-evaluation"] = "bio-comp/llm-evaluation"
 _PUBLIC_MAIN_REF: Literal["refs/heads/main"] = "refs/heads/main"
 _PUBLIC_VERIFY_CHECK: Literal["verify"] = "verify"
@@ -33,6 +37,35 @@ _PUBLIC_GIT_REMOTES = frozenset(
         "ssh://git@github.com/bio-comp/llm-evaluation.git",
     }
 )
+_POLICY_FIXTURE_PATH: Final = "fixtures/reconciliation_policy_contract.json"
+
+
+def _normalize_obligation_ids(value: tuple[str, ...]) -> tuple[str, ...]:
+    if not value:
+        raise ValueError("public reconciliation requires at least one obligation ID")
+    normalized = tuple(sorted(value))
+    for item in normalized:
+        if not item or item != item.strip() or any(ord(char) < 32 for char in item):
+            raise ValueError(
+                "obligation IDs must be non-empty, trimmed, and contain no control characters"
+            )
+    if len(normalized) != len(set(normalized)):
+        raise ValueError("obligation IDs must be unique")
+    return normalized
+
+
+def _validate_contract_in_publication_tree(
+    contract: "ReconciliationPolicyContract", tree: PublicationTree
+) -> None:
+    contract_bytes = tree.as_dict().get(_POLICY_FIXTURE_PATH)
+    if contract_bytes is None:
+        raise ValueError(
+            f"approved publication tree must contain '{_POLICY_FIXTURE_PATH}'"
+        )
+    if contract_bytes != canonical_record_bytes(contract):
+        raise ValueError(
+            "approved publication tree policy fixture must exactly match the reviewed contract"
+        )
 
 
 class _StrictFrozenProjectRecord(BaseModel):
@@ -79,7 +112,9 @@ class LastReconciledStateRecord(_StrictFrozenProjectRecord):
 class GitHubPullRequestMergeRecord(_StrictFrozenProjectRecord):
     canonical_identity_domain: ClassVar[str] = "llm-evaluation.github-pr-merge"
     canonical_identity_version: ClassVar[int] = 1
-    record_type: Literal["llm_evaluation_github_pr_merge"] = "llm_evaluation_github_pr_merge"
+    record_type: Literal["llm_evaluation_github_pr_merge"] = (
+        "llm_evaluation_github_pr_merge"
+    )
     schema_version: Literal[2] = 2
     repository: Literal["bio-comp/llm-evaluation"] = _PUBLIC_REPOSITORY
     pull_request_number: int
@@ -100,7 +135,9 @@ class GitHubPullRequestMergeRecord(_StrictFrozenProjectRecord):
     @classmethod
     def validate_head_ref(cls, value: str) -> str:
         if not value.startswith("refs/heads/") or value == _PUBLIC_MAIN_REF:
-            raise ValueError("reviewed pull request must identify a non-main branch ref (refs/heads/...)")
+            raise ValueError(
+                "reviewed pull request must identify a non-main branch ref (refs/heads/...)"
+            )
         return value
 
     @field_validator("head_commit_sha", "merged_commit_sha")
@@ -122,7 +159,9 @@ class GitHubPullRequestMergeRecord(_StrictFrozenProjectRecord):
         try:
             datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
         except Exception as exc:
-            raise ValueError(f"merged_at must be a valid calendar date and time: {exc}") from exc
+            raise ValueError(
+                f"merged_at must be a valid calendar date and time: {exc}"
+            ) from exc
         return value
 
 
@@ -159,18 +198,26 @@ class GitHubCIVerificationRecord(_StrictFrozenProjectRecord):
 
 
 class VerifiedPublicationReceiptRecord(_StrictFrozenProjectRecord):
-    canonical_identity_domain: ClassVar[str] = "llm-evaluation.verified-publication-receipt"
+    canonical_identity_domain: ClassVar[str] = (
+        "llm-evaluation.verified-publication-receipt"
+    )
     canonical_identity_version: ClassVar[int] = 1
     record_type: Literal["llm_evaluation_verified_publication"] = (
         "llm_evaluation_verified_publication"
     )
-    schema_version: Literal[4] = 4
+    schema_version: Literal[5] = 5
     snapshot_state_sha256: str
     public_contract_sha256: str
     publication_tree_sha256: str
+    obligation_ids: tuple[str, ...]
     git: GitPublicationReceiptRecord
     pull_request: GitHubPullRequestMergeRecord
     ci: GitHubCIVerificationRecord
+
+    @field_validator("obligation_ids")
+    @classmethod
+    def validate_obligation_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _normalize_obligation_ids(value)
 
     @field_validator(
         "snapshot_state_sha256",
@@ -186,31 +233,40 @@ class VerifiedPublicationReceiptRecord(_StrictFrozenProjectRecord):
     @model_validator(mode="after")
     def validate_project_transaction(self) -> Self:
         if self.git.remote not in _PUBLIC_GIT_REMOTES:
-            raise ValueError("completion Git evidence must bind the public llm-evaluation repository")
+            raise ValueError(
+                "completion Git evidence must bind the public llm-evaluation repository"
+            )
         if self.git.remote_ref != _PUBLIC_MAIN_REF or self.git.status != "unchanged":
-            raise ValueError("completion Git evidence must be post-merge main-branch readback")
+            raise ValueError(
+                "completion Git evidence must be post-merge main-branch readback"
+            )
         merged_commit = self.git.resulting_commit
         if (
             self.pull_request.merged_commit_sha != merged_commit
             or self.ci.commit_sha != merged_commit
         ):
-            raise ValueError("PR merge, Git readback, and CI must bind the same merged commit")
+            raise ValueError(
+                "PR merge, Git readback, and CI must bind the same merged commit"
+            )
         return self
 
 
 class ReconciliationDispositionRecord(_StrictFrozenProjectRecord):
-    canonical_identity_domain: ClassVar[str] = "llm-evaluation.reconciliation-disposition"
+    canonical_identity_domain: ClassVar[str] = (
+        "llm-evaluation.reconciliation-disposition"
+    )
     canonical_identity_version: ClassVar[int] = 1
     record_type: Literal["llm_evaluation_reconciliation_disposition"] = (
         "llm_evaluation_reconciliation_disposition"
     )
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     current_snapshot_sha256: str
     previous_snapshot_sha256: str | None = None
     impact: ProjectImpact
     disposition: ReconciliationDisposition
     public_contract_sha256: str | None = None
     publication_tree_sha256: str | None = None
+    obligation_ids: tuple[str, ...] = ()
     verified_publication: VerifiedPublicationReceiptRecord | None = None
 
     @field_validator(
@@ -225,6 +281,13 @@ class ReconciliationDispositionRecord(_StrictFrozenProjectRecord):
             raise ValueError("reconciliation identities must be lowercase SHA-256")
         return value
 
+    @field_validator("obligation_ids")
+    @classmethod
+    def validate_obligation_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if not value:
+            return value
+        return _normalize_obligation_ids(value)
+
     @model_validator(mode="after")
     def validate_transition(self) -> Self:
         changed = self.previous_snapshot_sha256 != self.current_snapshot_sha256
@@ -236,12 +299,18 @@ class ReconciliationDispositionRecord(_StrictFrozenProjectRecord):
                 or self.publication_tree_sha256 is not None
             ):
                 raise ValueError("NONE disposition must not declare publication hashes")
+            if self.obligation_ids:
+                raise ValueError(
+                    "NONE must not declare public reconciliation obligations"
+                )
             if self.verified_publication is not None:
                 raise ValueError("NONE cannot contain verified publication evidence")
             return self
 
         if not changed:
-            raise ValueError(f"{self.disposition.value} disposition requires a changed snapshot")
+            raise ValueError(
+                f"{self.disposition.value} disposition requires a changed snapshot"
+            )
 
         if self.disposition is ReconciliationDisposition.BLOCKED:
             if self.impact is not ProjectImpact.UNKNOWN_OR_UNSAFE:
@@ -250,9 +319,17 @@ class ReconciliationDispositionRecord(_StrictFrozenProjectRecord):
                 self.public_contract_sha256 is not None
                 or self.publication_tree_sha256 is not None
             ):
-                raise ValueError("BLOCKED disposition must not declare publication hashes")
+                raise ValueError(
+                    "BLOCKED disposition must not declare publication hashes"
+                )
+            if self.obligation_ids:
+                raise ValueError(
+                    "BLOCKED must not declare public reconciliation obligations"
+                )
             if self.verified_publication is not None:
-                raise ValueError("BLOCKED needs unknown/unsafe impact and no completion receipt")
+                raise ValueError(
+                    "BLOCKED needs unknown/unsafe impact and no completion receipt"
+                )
             return self
 
         if self.disposition is ReconciliationDisposition.REQUIRED:
@@ -261,10 +338,15 @@ class ReconciliationDispositionRecord(_StrictFrozenProjectRecord):
             if (
                 self.public_contract_sha256 is None
                 or self.publication_tree_sha256 is None
+                or not self.obligation_ids
             ):
-                raise ValueError("REQUIRED needs an approved contract/tree and no completion receipt")
+                raise ValueError(
+                    "REQUIRED needs an approved contract/tree, non-empty obligation set, and no completion receipt"
+                )
             if self.verified_publication is not None:
-                raise ValueError("REQUIRED needs an approved contract/tree and no completion receipt")
+                raise ValueError(
+                    "REQUIRED needs an approved contract/tree, non-empty obligation set, and no completion receipt"
+                )
             return self
 
         if self.disposition is ReconciliationDisposition.COMPLETE:
@@ -277,13 +359,18 @@ class ReconciliationDispositionRecord(_StrictFrozenProjectRecord):
                 or receipt.snapshot_state_sha256 != self.current_snapshot_sha256
                 or receipt.public_contract_sha256 != self.public_contract_sha256
                 or receipt.publication_tree_sha256 != self.publication_tree_sha256
+                or not self.obligation_ids
+                or receipt.obligation_ids != self.obligation_ids
                 or receipt.git.publication_tree_sha256 != self.publication_tree_sha256
                 or not receipt.git.readback_verified
                 or not receipt.git.fast_forward_only
-                or receipt.pull_request.merged_commit_sha != receipt.git.resulting_commit
+                or receipt.pull_request.merged_commit_sha
+                != receipt.git.resulting_commit
                 or receipt.ci.commit_sha != receipt.git.resulting_commit
             ):
-                raise ValueError("COMPLETE requires exact verified Git/readback/CI evidence")
+                raise ValueError(
+                    "COMPLETE requires exact verified Git/readback/CI evidence"
+                )
             return self
 
         raise ValueError(f"unsupported disposition: {self.disposition}")
@@ -294,12 +381,14 @@ class ReconciliationStateError(RuntimeError):
 
 
 class DurableReconciliationStateRecord(_StrictFrozenProjectRecord):
-    canonical_identity_domain: ClassVar[str] = "llm-evaluation.durable-reconciliation-state"
+    canonical_identity_domain: ClassVar[str] = (
+        "llm-evaluation.durable-reconciliation-state"
+    )
     canonical_identity_version: ClassVar[int] = 1
     record_type: Literal["llm_evaluation_durable_reconciliation_state"] = (
         "llm_evaluation_durable_reconciliation_state"
     )
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     state: LastReconciledStateRecord
     disposition: ReconciliationDispositionRecord
 
@@ -328,7 +417,7 @@ class ReconciliationPolicyContract(_StrictFrozenProjectRecord):
     projection_type: Literal["llm_evaluation_reconciliation_policy"] = (
         "llm_evaluation_reconciliation_policy"
     )
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     dispositions: tuple[Literal["NONE", "REQUIRED", "BLOCKED", "COMPLETE"], ...]
     complete_requires_snapshot_match: bool
     complete_requires_contract_match: bool
@@ -338,19 +427,49 @@ class ReconciliationPolicyContract(_StrictFrozenProjectRecord):
     complete_requires_post_merge_main_push_ci: bool
     complete_requires_exact_workflow_identity: bool
     complete_requires_exact_required_job_identity: bool
+    complete_requires_exact_publication_tree: bool
+    complete_requires_obligation_set_match: bool
 
 
 class ReviewedCanonicalImpact(_StrictFrozenProjectRecord):
     impact: ProjectImpact
     public_contract: ReconciliationPolicyContract | None = None
+    publication_tree: PublicationTree | None = None
+    obligation_ids: tuple[str, ...] = ()
+
+    @field_validator("obligation_ids")
+    @classmethod
+    def validate_obligation_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if not value:
+            return value
+        return _normalize_obligation_ids(value)
 
     @model_validator(mode="after")
     def validate_contract(self) -> Self:
         if self.impact is ProjectImpact.PUBLIC_CHANGE_REQUIRED:
             if self.public_contract is None:
-                raise ValueError("public-change-required review must include a public contract")
-        elif self.public_contract is not None:
-            raise ValueError("only a public-change-required review may include a public contract")
+                raise ValueError(
+                    "public-change-required review must include a public contract"
+                )
+            if self.publication_tree is None:
+                raise ValueError(
+                    "public-change-required review must include an exact approved publication tree"
+                )
+            if not self.obligation_ids:
+                raise ValueError(
+                    "public-change-required review must include a non-empty obligation set"
+                )
+            _validate_contract_in_publication_tree(
+                self.public_contract, self.publication_tree
+            )
+        elif (
+            self.public_contract is not None
+            or self.publication_tree is not None
+            or self.obligation_ids
+        ):
+            raise ValueError(
+                "only a public-change-required review may include a public contract, publication tree, or obligations"
+            )
         return self
 
 
@@ -372,12 +491,16 @@ def current_executable_policy_contract() -> ReconciliationPolicyContract:
         complete_requires_post_merge_main_push_ci=True,
         complete_requires_exact_workflow_identity=True,
         complete_requires_exact_required_job_identity=True,
+        complete_requires_exact_publication_tree=True,
+        complete_requires_obligation_set_match=True,
     )
 
 
 def approved_policy_tree(contract: ReconciliationPolicyContract) -> PublicationTree:
     if not isinstance(contract, ReconciliationPolicyContract):
-        raise TypeError("approved policy publication requires a ReconciliationPolicyContract")
+        raise TypeError(
+            "approved policy publication requires a ReconciliationPolicyContract"
+        )
     return PublicationTree(
         files=(
             PublicationFile(
@@ -388,9 +511,13 @@ def approved_policy_tree(contract: ReconciliationPolicyContract) -> PublicationT
     )
 
 
-def verify_executable_policy_contract(authoritative: ReconciliationPolicyContract) -> None:
+def verify_executable_policy_contract(
+    authoritative: ReconciliationPolicyContract,
+) -> None:
     if authoritative != current_executable_policy_contract():
-        raise ValueError("executable reconciliation policy is stale relative to reviewed authority")
+        raise ValueError(
+            "executable reconciliation policy is stale relative to reviewed authority"
+        )
 
 
 def classify_reconciliation(
@@ -400,6 +527,7 @@ def classify_reconciliation(
     impact: ProjectImpact,
     public_contract_sha256: str | None = None,
     publication_tree_sha256: str | None = None,
+    obligation_ids: tuple[str, ...] = (),
 ) -> ReconciliationDispositionRecord:
     previous_hash = previous.snapshot_state_sha256 if previous is not None else None
     if previous_hash == current_snapshot_sha256:
@@ -412,8 +540,14 @@ def classify_reconciliation(
     if impact is ProjectImpact.NO_PUBLIC_IMPACT:
         disposition = ReconciliationDisposition.NONE
     elif impact is ProjectImpact.PUBLIC_CHANGE_REQUIRED:
-        if public_contract_sha256 is None or publication_tree_sha256 is None:
-            raise ValueError("public change requires approved contract and publication-tree identities")
+        if (
+            public_contract_sha256 is None
+            or publication_tree_sha256 is None
+            or not obligation_ids
+        ):
+            raise ValueError(
+                "public change requires approved contract/publication-tree identities and obligations"
+            )
         disposition = ReconciliationDisposition.REQUIRED
     else:
         disposition = ReconciliationDisposition.BLOCKED
@@ -424,6 +558,9 @@ def classify_reconciliation(
         disposition=disposition,
         public_contract_sha256=public_contract_sha256,
         publication_tree_sha256=publication_tree_sha256,
+        obligation_ids=obligation_ids
+        if disposition is ReconciliationDisposition.REQUIRED
+        else (),
     )
 
 
@@ -441,10 +578,13 @@ def complete_reconciliation(
             disposition=ReconciliationDisposition.COMPLETE,
             public_contract_sha256=required.public_contract_sha256,
             publication_tree_sha256=required.publication_tree_sha256,
+            obligation_ids=required.obligation_ids,
             verified_publication=receipt,
         )
     except ValueError as exc:
-        raise ValueError("reconciliation cannot complete without exact verified evidence") from exc
+        raise ValueError(
+            "reconciliation cannot complete without exact verified evidence"
+        ) from exc
 
 
 def reconcile_reviewed_snapshot(
@@ -454,7 +594,7 @@ def reconcile_reviewed_snapshot(
     reviewed: ReviewedCanonicalImpact,
 ) -> ProjectReconciliationResult:
     contract = reviewed.public_contract
-    tree = approved_policy_tree(contract) if contract is not None else None
+    tree = reviewed.publication_tree
     contract_hash = canonical_record_hash(contract) if contract is not None else None
     tree_hash = tree.sha256 if tree is not None else None
     disposition = classify_reconciliation(
@@ -463,6 +603,7 @@ def reconcile_reviewed_snapshot(
         impact=reviewed.impact,
         public_contract_sha256=contract_hash,
         publication_tree_sha256=tree_hash,
+        obligation_ids=reviewed.obligation_ids,
     )
     if disposition.disposition is not ReconciliationDisposition.REQUIRED:
         contract = None
@@ -514,6 +655,22 @@ def load_durable_reconciliation_state(
             f"durable reconciliation state file '{target}' is empty"
         )
     try:
+        untrusted = json.loads(raw_bytes)
+    except Exception as exc:
+        raise ReconciliationStateError(
+            f"failed to parse durable reconciliation state from '{target}': {exc}"
+        ) from exc
+    if (
+        isinstance(untrusted, dict)
+        and untrusted.get("record_type")
+        == "llm_evaluation_durable_reconciliation_state"
+        and untrusted.get("schema_version") == 1
+    ):
+        raise ReconciliationStateError(
+            "legacy durable reconciliation state v1 requires explicit supersession recovery; "
+            "refusing to treat it as current state"
+        )
+    try:
         record = parse_canonical_record(raw_bytes, DurableReconciliationStateRecord)
     except Exception as exc:
         raise ReconciliationStateError(
@@ -529,6 +686,143 @@ def load_last_reconciled_state(
     return durable.state if durable is not None else None
 
 
+def supersede_legacy_reconciliation_state(
+    *,
+    expected_raw_sha256: str,
+    path: Path | str | None = None,
+) -> Path:
+    if _SHA256_RE.fullmatch(expected_raw_sha256) is None:
+        raise ValueError("expected_raw_sha256 must be a lowercase SHA-256")
+    target = resolve_reconciliation_state_path(path)
+    if target.is_symlink():
+        raise ReconciliationStateError(
+            f"legacy reconciliation state path must not be a symlink: {target}"
+        )
+    if not target.exists() or not target.is_file():
+        raise ReconciliationStateError(
+            "legacy reconciliation state file is unavailable for supersession"
+        )
+    parent = target.parent
+    if parent.is_symlink():
+        raise ReconciliationStateError(
+            f"legacy reconciliation state parent directory must not be a symlink: {parent}"
+        )
+    try:
+        raw_bytes = target.read_bytes()
+    except OSError as exc:
+        raise ReconciliationStateError(
+            "failed to read legacy reconciliation state for supersession"
+        ) from exc
+    raw_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+    if raw_sha256 != expected_raw_sha256:
+        raise ReconciliationStateError(
+            f"legacy reconciliation state hash mismatch ({raw_sha256} != {expected_raw_sha256})"
+        )
+    try:
+        untrusted = json.loads(raw_bytes)
+    except Exception as exc:
+        raise ReconciliationStateError(
+            "legacy reconciliation state is not valid JSON"
+        ) from exc
+    if not (
+        isinstance(untrusted, dict)
+        and untrusted.get("record_type")
+        == "llm_evaluation_durable_reconciliation_state"
+        and untrusted.get("schema_version") == 1
+    ):
+        raise ReconciliationStateError(
+            "supersession is restricted to legacy durable reconciliation state schema v1"
+        )
+
+    history_dir = parent / "reconciliation-history"
+    if history_dir.is_symlink():
+        raise ReconciliationStateError(
+            "reconciliation history directory must not be a symlink"
+        )
+    try:
+        history_dir.mkdir(mode=0o700, parents=False, exist_ok=True)
+        try:
+            os.chmod(history_dir, 0o700)
+        except OSError:
+            pass
+    except OSError as exc:
+        raise ReconciliationStateError(
+            "failed to create reconciliation history directory"
+        ) from exc
+    archive = history_dir / f"superseded-v1-{raw_sha256}.json"
+    if archive.is_symlink():
+        raise ReconciliationStateError(
+            "legacy reconciliation history target must not be a symlink"
+        )
+    if archive.exists():
+        try:
+            if archive.read_bytes() != raw_bytes:
+                raise ReconciliationStateError(
+                    "existing reconciliation history file does not match the legacy state bytes"
+                )
+        except OSError as exc:
+            raise ReconciliationStateError(
+                "failed to verify existing reconciliation history file"
+            ) from exc
+    else:
+        try:
+            fd = os.open(str(archive), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with open(fd, "wb", closefd=True) as f:
+                f.write(raw_bytes)
+                f.flush()
+                os.fsync(f.fileno())
+        except OSError as exc:
+            raise ReconciliationStateError(
+                "failed to archive legacy reconciliation state"
+            ) from exc
+    try:
+        archived_bytes = archive.read_bytes()
+    except OSError as exc:
+        raise ReconciliationStateError(
+            "failed to read back archived legacy reconciliation state"
+        ) from exc
+    if (
+        archived_bytes != raw_bytes
+        or hashlib.sha256(archived_bytes).hexdigest() != raw_sha256
+    ):
+        raise ReconciliationStateError(
+            "legacy reconciliation history readback verification failed"
+        )
+    try:
+        history_fd = os.open(str(history_dir), os.O_RDONLY)
+        try:
+            os.fsync(history_fd)
+        finally:
+            os.close(history_fd)
+    except OSError as exc:
+        raise ReconciliationStateError(
+            "failed to durably synchronize reconciliation history before supersession"
+        ) from exc
+
+    try:
+        current_bytes = target.read_bytes()
+    except OSError as exc:
+        raise ReconciliationStateError(
+            "failed to re-read active legacy reconciliation state"
+        ) from exc
+    if current_bytes != raw_bytes:
+        raise ReconciliationStateError(
+            "active legacy reconciliation state changed during supersession; refusing to remove it"
+        )
+    try:
+        target.unlink()
+        dir_fd = os.open(str(parent), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError as exc:
+        raise ReconciliationStateError(
+            "failed to retire active legacy reconciliation state"
+        ) from exc
+    return archive
+
+
 def save_durable_reconciliation_state(
     record: DurableReconciliationStateRecord,
     path: Path | str | None = None,
@@ -542,6 +836,27 @@ def save_durable_reconciliation_state(
         raise ReconciliationStateError(
             f"durable reconciliation state target must not be a symlink: {target}"
         )
+    if target.exists():
+        if not target.is_file():
+            raise ReconciliationStateError(
+                f"durable reconciliation state target must be a regular file: {target}"
+            )
+        try:
+            existing_bytes = target.read_bytes()
+            existing_untrusted = json.loads(existing_bytes)
+        except (OSError, ValueError, TypeError) as exc:
+            raise ReconciliationStateError(
+                "existing durable reconciliation state cannot be safely classified before replacement"
+            ) from exc
+        if (
+            isinstance(existing_untrusted, dict)
+            and existing_untrusted.get("record_type")
+            == "llm_evaluation_durable_reconciliation_state"
+            and existing_untrusted.get("schema_version") == 1
+        ):
+            raise ReconciliationStateError(
+                "legacy durable reconciliation state v1 requires explicit supersession before v2 persistence"
+            )
     parent = target.parent
     if parent.is_symlink():
         raise ReconciliationStateError(
@@ -559,7 +874,9 @@ def save_durable_reconciliation_state(
         ) from exc
 
     payload = canonical_record_bytes(record)
-    temp_path = parent / f".last-reconciled-state.tmp.{os.getpid()}.{time.time_ns()}.json"
+    temp_path = (
+        parent / f".last-reconciled-state.tmp.{os.getpid()}.{time.time_ns()}.json"
+    )
     try:
         fd = os.open(str(temp_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with open(fd, "wb", closefd=True) as f:
@@ -597,7 +914,9 @@ def save_durable_reconciliation_state(
             f"readback verification failed: written bytes do not match expected canonical bytes for '{target}'"
         )
     try:
-        readback_record = parse_canonical_record(readback_bytes, DurableReconciliationStateRecord)
+        readback_record = parse_canonical_record(
+            readback_bytes, DurableReconciliationStateRecord
+        )
     except Exception as exc:
         raise ReconciliationStateError(
             f"readback verification failed to parse record from '{target}': {exc}"
@@ -618,9 +937,7 @@ def persist_completed_reconciliation(
             f"only a COMPLETE disposition can be durably persisted, got {completed.disposition.value}"
         )
     if completed.verified_publication is None:
-        raise ValueError(
-            "persisted completion requires a verified_publication receipt"
-        )
+        raise ValueError("persisted completion requires a verified_publication receipt")
     state = LastReconciledStateRecord(
         snapshot_state_sha256=completed.current_snapshot_sha256
     )

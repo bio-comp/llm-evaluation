@@ -14,6 +14,7 @@ from llm_evaluation.canonical_reconciliation import (
     ReconciliationDisposition,
     ReviewedCanonicalImpact,
     VerifiedPublicationReceiptRecord,
+    approved_policy_tree,
     complete_reconciliation,
     current_executable_policy_contract,
     reconcile_reviewed_snapshot,
@@ -79,12 +80,15 @@ def _ci(*, commit_sha: str = MERGED, **overrides: object) -> GitHubCIVerificatio
 
 
 def _required():
+    contract = current_executable_policy_contract()
     result = reconcile_reviewed_snapshot(
         current_snapshot_sha256=H2,
         previous=LastReconciledStateRecord(snapshot_state_sha256=H1),
         reviewed=ReviewedCanonicalImpact(
             impact=ProjectImpact.PUBLIC_CHANGE_REQUIRED,
-            public_contract=current_executable_policy_contract(),
+            public_contract=contract,
+            publication_tree=approved_policy_tree(contract),
+            obligation_ids=("D-016:test-obligation",),
         ),
     )
     assert result.publication_tree is not None
@@ -98,11 +102,13 @@ def _verified_receipt(
     publication_tree_sha256: str,
     git: GitPublicationReceiptRecord | None = None,
     ci: GitHubCIVerificationRecord | None = None,
+    obligation_ids: tuple[str, ...] = ("D-016:test-obligation",),
 ) -> VerifiedPublicationReceiptRecord:
     return VerifiedPublicationReceiptRecord(
         snapshot_state_sha256=snapshot_state_sha256,
         public_contract_sha256=public_contract_sha256,
         publication_tree_sha256=publication_tree_sha256,
+        obligation_ids=obligation_ids,
         git=git or _git_receipt(publication_tree_sha256),
         pull_request=_pull_request(),
         ci=ci or _ci(),
@@ -138,6 +144,11 @@ def test_complete_rejects_project_binding_mismatch() -> None:
         _verified_receipt(
             public_contract_sha256="3" * 64,
             publication_tree_sha256=required.publication_tree_sha256,
+        ),
+        _verified_receipt(
+            public_contract_sha256=required.public_contract_sha256,
+            publication_tree_sha256=required.publication_tree_sha256,
+            obligation_ids=("D-016:different-obligation",),
         ),
     )
     for receipt in bad_receipts:
@@ -209,18 +220,21 @@ def test_ci_requires_explicit_workflow_identity():
         GitHubCIVerificationRecord(run_id=1, commit_sha=MERGED)
 
 
-@pytest.mark.parametrize('fields', [
-    {'workflow_name': 'Unrelated'},
-    {'workflow_path': '.github/workflows/other.yml'},
-    {'event': 'pull_request'},
-    {'head_branch': 'refs/heads/feature'},
-    {'run_conclusion': 'failure'},
-    {'run_conclusion': 'cancelled'},
-    {'run_conclusion': 'skipped'},
-    {'repository': 'example/wrong'},
-    {'job_name': 'unrelated'},
-    {'job_conclusion': 'failure'},
-])
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"workflow_name": "Unrelated"},
+        {"workflow_path": ".github/workflows/other.yml"},
+        {"event": "pull_request"},
+        {"head_branch": "refs/heads/feature"},
+        {"run_conclusion": "failure"},
+        {"run_conclusion": "cancelled"},
+        {"run_conclusion": "skipped"},
+        {"repository": "example/wrong"},
+        {"job_name": "unrelated"},
+        {"job_conclusion": "failure"},
+    ],
+)
 def test_ci_rejects_unrelated_or_unsuccessful_evidence(fields):
     base_ci = {
         "run_id": 1,
@@ -241,21 +255,28 @@ def test_ci_rejects_unrelated_or_unsuccessful_evidence(fields):
 def test_spoofed_host_cannot_complete():
     required = _required().disposition
     with pytest.raises(ValidationError):
-        _verified_receipt(public_contract_sha256=required.public_contract_sha256,
-                          publication_tree_sha256=required.publication_tree_sha256,
-                          git=_git_receipt(required.publication_tree_sha256,
-                              remote='https://github.com.evil.invalid/bio-comp/llm-evaluation.git'))
+        _verified_receipt(
+            public_contract_sha256=required.public_contract_sha256,
+            publication_tree_sha256=required.publication_tree_sha256,
+            git=_git_receipt(
+                required.publication_tree_sha256,
+                remote="https://github.com.evil.invalid/bio-comp/llm-evaluation.git",
+            ),
+        )
 
 
 def test_wrong_base_and_merge_are_rejected():
     with pytest.raises(ValidationError):
-        GitHubPullRequestMergeRecord.model_validate(_pull_request().model_dump() |
-                                                    {'base_ref': 'refs/heads/other'})
+        GitHubPullRequestMergeRecord.model_validate(
+            _pull_request().model_dump() | {"base_ref": "refs/heads/other"}
+        )
     required = _required().disposition
-    receipt = _verified_receipt(public_contract_sha256=required.public_contract_sha256,
-                               publication_tree_sha256=required.publication_tree_sha256)
+    receipt = _verified_receipt(
+        public_contract_sha256=required.public_contract_sha256,
+        publication_tree_sha256=required.publication_tree_sha256,
+    )
     changed = receipt.model_dump()
-    changed['pull_request']['merged_commit_sha'] = 'f' * 40
+    changed["pull_request"]["merged_commit_sha"] = "f" * 40
     with pytest.raises(ValidationError):
         VerifiedPublicationReceiptRecord.model_validate(changed)
 
@@ -263,25 +284,31 @@ def test_wrong_base_and_merge_are_rejected():
 def test_durable_parent_versions_reject_historical_nested_contracts():
     from canonical_sync.codec import canonical_record_bytes, parse_canonical_record
     from llm_evaluation.canonical_reconciliation import ReconciliationDispositionRecord
+
     required = _required().disposition
-    receipt = _verified_receipt(public_contract_sha256=required.public_contract_sha256,
-                               publication_tree_sha256=required.publication_tree_sha256)
+    receipt = _verified_receipt(
+        public_contract_sha256=required.public_contract_sha256,
+        publication_tree_sha256=required.publication_tree_sha256,
+    )
     for record, old_versions in [
         (receipt.git, (1, 2)),
         (receipt.pull_request, (1,)),
         (receipt.ci, (1, 2)),
-        (receipt, (1, 2, 3)),
-        (required, (1, 2)),
+        (receipt, (1, 2, 3, 4)),
+        (required, (1, 2, 3)),
     ]:
         for old in old_versions:
-            raw = canonical_record_bytes(record.model_copy(update={'schema_version': old}))
+            raw = canonical_record_bytes(
+                record.model_copy(update={"schema_version": old})
+            )
             with pytest.raises(ValidationError):
                 parse_canonical_record(raw, type(record))
-    assert ReconciliationDispositionRecord.model_fields['schema_version'].default == 3
+    assert ReconciliationDispositionRecord.model_fields["schema_version"].default == 4
 
 
 def test_complete_disposition_rejects_unchanged_snapshot() -> None:
     from llm_evaluation.canonical_reconciliation import ReconciliationDispositionRecord
+
     required = _required().disposition
     receipt = _verified_receipt(
         public_contract_sha256=required.public_contract_sha256,
@@ -297,4 +324,3 @@ def test_complete_disposition_rejects_unchanged_snapshot() -> None:
             publication_tree_sha256=required.publication_tree_sha256,
             verified_publication=receipt,
         )
-
