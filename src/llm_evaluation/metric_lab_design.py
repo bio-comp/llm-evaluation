@@ -64,6 +64,39 @@ class MetricLabDesign(_StrictFrozenRecord):
     aurc_tie_convention: Literal["average", "optimistic", "pessimistic"] = "average"
     l1_debias_resamples: int = Field(default=1000, ge=1)
 
+    ambiguity_theta_values: tuple[str, ...] = (
+        "0.01",
+        "0.1",
+        "0.3",
+        "0.5",
+        "0.7",
+        "0.9",
+        "0.99",
+    )
+    ambiguity_n_items: tuple[int, ...] = (50, 200, 1000)
+    ambiguity_raters_per_item: tuple[int, ...] = (3, 9, 25)
+    prevalence_values: tuple[str, ...] = ("0.01", "0.1", "0.5")
+    prevalence_tpr: str = "0.9"
+    prevalence_fpr: str = "0.01"
+    operational_coverages: tuple[str, ...] = ("0.1", "0.5", "0.9", "1")
+    sampling_units: tuple[Literal["fixed_case", "question_population"], ...] = (
+        "fixed_case",
+        "question_population",
+    )
+    interval_method: Literal["normal95-row-and-item-cluster-v1"] = (
+        "normal95-row-and-item-cluster-v1"
+    )
+    l2_debias_method: Literal["kumar-unbiased-l2-v1"] = "kumar-unbiased-l2-v1"
+    l1_debias_method: Literal["kumar-normal-resampling-l1-v1"] = (
+        "kumar-normal-resampling-l1-v1"
+    )
+    aurc_reference_negative_control: Literal["han678-get_AURC-fa445bcd"] = (
+        "han678-get_AURC-fa445bcd"
+    )
+    subgroup_control_version: Literal["opposing-gap-cancellation-v1"] = (
+        "opposing-gap-cancellation-v1"
+    )
+
     @staticmethod
     def _validate_probability_text(value: str, *, label: str) -> str:
         if not value or value != value.strip():
@@ -87,6 +120,37 @@ class MetricLabDesign(_StrictFrozenRecord):
             cls._validate_probability_text(item, label="p_values") for item in value
         )
 
+    @field_validator("ambiguity_theta_values", "prevalence_values")
+    @classmethod
+    def _validate_probability_grids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if not value or len(value) != len(set(value)):
+            raise ValueError("probability grids must be non-empty and unique")
+        return tuple(
+            cls._validate_probability_text(item, label="probability grid")
+            for item in value
+        )
+
+    @field_validator("prevalence_tpr", "prevalence_fpr")
+    @classmethod
+    def _validate_rate_text(cls, value: str) -> str:
+        return cls._validate_probability_text(value, label="rate")
+
+    @field_validator("operational_coverages")
+    @classmethod
+    def _validate_operational_coverages(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if not value or len(value) != len(set(value)):
+            raise ValueError("operational_coverages must be non-empty and unique")
+        normalized = tuple(
+            cls._validate_probability_text(item, label="operational_coverages")
+            for item in value
+        )
+        parsed = tuple(Decimal(item) for item in normalized)
+        if tuple(sorted(parsed)) != parsed or parsed[-1] != Decimal("1"):
+            raise ValueError(
+                "operational_coverages must be increasing and terminate at 1"
+            )
+        return normalized
+
     @field_validator("forecast_kinds")
     @classmethod
     def _validate_forecast_kinds(
@@ -96,7 +160,12 @@ class MetricLabDesign(_StrictFrozenRecord):
             raise ValueError("forecast_kinds must be non-empty and unique")
         return value
 
-    @field_validator("n_base_items", "k_within_item")
+    @field_validator(
+        "n_base_items",
+        "k_within_item",
+        "ambiguity_n_items",
+        "ambiguity_raters_per_item",
+    )
     @classmethod
     def _validate_positive_unique_ints(cls, value: tuple[int, ...]) -> tuple[int, ...]:
         if not value or len(value) != len(set(value)):
@@ -104,6 +173,16 @@ class MetricLabDesign(_StrictFrozenRecord):
         if any(type(item) is not int or item < 1 for item in value):
             raise ValueError("grid integer values must be positive exact integers")
         return value
+
+    @model_validator(mode="after")
+    def _odd_rater_counts(self) -> Self:
+        if any(count % 2 == 0 for count in self.ambiguity_raters_per_item):
+            raise ValueError("ambiguity_raters_per_item must all be odd")
+        if self.sampling_units != ("fixed_case", "question_population"):
+            raise ValueError(
+                "sampling_units must explicitly contain fixed_case and question_population"
+            )
+        return self
 
     @field_validator("shared_within_item")
     @classmethod
@@ -144,6 +223,26 @@ class MetricLabDesign(_StrictFrozenRecord):
     def decision_threshold_float(self) -> float:
         return float(self.decision_threshold)
 
+    @property
+    def ambiguity_theta_floats(self) -> tuple[float, ...]:
+        return tuple(float(item) for item in self.ambiguity_theta_values)
+
+    @property
+    def prevalence_floats(self) -> tuple[float, ...]:
+        return tuple(float(item) for item in self.prevalence_values)
+
+    @property
+    def prevalence_tpr_float(self) -> float:
+        return float(self.prevalence_tpr)
+
+    @property
+    def prevalence_fpr_float(self) -> float:
+        return float(self.prevalence_fpr)
+
+    @property
+    def operational_coverage_floats(self) -> tuple[float, ...]:
+        return tuple(float(item) for item in self.operational_coverages)
+
 
 class BaseCellSpec(_StrictFrozenRecord):
     record_type: Literal["known_truth_metric_lab_base_cell"] = (
@@ -164,6 +263,43 @@ class BaseCellSpec(_StrictFrozenRecord):
             f"k={self.k_within_item}|dependence={dependence}|"
             f"eta={self.reference_flip_eta:g}"
         )
+
+
+class AmbiguityCellSpec(_StrictFrozenRecord):
+    record_type: Literal["known_truth_metric_lab_ambiguity_cell"] = (
+        "known_truth_metric_lab_ambiguity_cell"
+    )
+    schema_version: Literal[1] = 1
+    forecast_kind: ForecastKind
+    n_items: int = Field(ge=1)
+    raters_per_item: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def _odd_raters(self) -> Self:
+        if self.raters_per_item % 2 == 0:
+            raise ValueError("raters_per_item must be odd")
+        return self
+
+    @property
+    def cell_key(self) -> str:
+        return (
+            f"ambiguity|forecast={self.forecast_kind}|n={self.n_items}|"
+            f"raters={self.raters_per_item}"
+        )
+
+
+class PrevalenceCellSpec(_StrictFrozenRecord):
+    record_type: Literal["known_truth_metric_lab_prevalence_cell"] = (
+        "known_truth_metric_lab_prevalence_cell"
+    )
+    schema_version: Literal[1] = 1
+    prevalence: float = Field(ge=0.0, le=1.0)
+    tpr: float = Field(ge=0.0, le=1.0)
+    fpr: float = Field(ge=0.0, le=1.0)
+
+    @property
+    def cell_key(self) -> str:
+        return f"prevalence|pi={self.prevalence:g}|tpr={self.tpr:g}|fpr={self.fpr:g}"
 
 
 class FrozenMetricLabDesignRecord(_StrictFrozenRecord):
@@ -211,6 +347,32 @@ def base_grid_cells(design: MetricLabDesign) -> tuple[BaseCellSpec, ...]:
                             )
                         )
     return tuple(cells)
+
+
+def ambiguity_grid_cells(design: MetricLabDesign) -> tuple[AmbiguityCellSpec, ...]:
+    cells: list[AmbiguityCellSpec] = []
+    for forecast_kind in design.forecast_kinds:
+        for n_items in design.ambiguity_n_items:
+            for raters_per_item in design.ambiguity_raters_per_item:
+                cells.append(
+                    AmbiguityCellSpec(
+                        forecast_kind=forecast_kind,
+                        n_items=n_items,
+                        raters_per_item=raters_per_item,
+                    )
+                )
+    return tuple(cells)
+
+
+def prevalence_grid_cells(design: MetricLabDesign) -> tuple[PrevalenceCellSpec, ...]:
+    return tuple(
+        PrevalenceCellSpec(
+            prevalence=prevalence,
+            tpr=design.prevalence_tpr_float,
+            fpr=design.prevalence_fpr_float,
+        )
+        for prevalence in design.prevalence_floats
+    )
 
 
 def balanced_probability_schedule(

@@ -132,3 +132,44 @@ def test_design_is_strict_frozen_and_rejects_invalid_grid_values() -> None:
         MetricLabDesign.model_validate(
             design.model_dump() | {"unknown_field": "not allowed"}
         )
+
+
+def test_auxiliary_grid_parameters_are_identity_bearing_and_enumerable() -> None:
+    from llm_evaluation.metric_lab_design import (
+        ambiguity_grid_cells,
+        prevalence_grid_cells,
+    )
+
+    design = MetricLabDesign()
+    ambiguity = ambiguity_grid_cells(design)
+    prevalence = prevalence_grid_cells(design)
+    assert len(ambiguity) == 4 * 3 * 3 == 36
+    assert len({cell.cell_key for cell in ambiguity}) == 36
+    assert {cell.raters_per_item for cell in ambiguity} == {3, 9, 25}
+    assert {cell.n_items for cell in ambiguity} == {50, 200, 1000}
+    assert {cell.forecast_kind for cell in ambiguity} == set(design.forecast_kinds)
+    assert [cell.prevalence for cell in prevalence] == [0.01, 0.1, 0.5]
+    assert all(cell.tpr == 0.9 and cell.fpr == 0.01 for cell in prevalence)
+
+
+def test_design_hash_changes_when_auxiliary_or_operational_policy_changes() -> None:
+    design = MetricLabDesign()
+    baseline = canonical_record_hash(design)
+    changed_raters = design.model_copy(
+        update={"ambiguity_raters_per_item": (3, 11, 25)}
+    )
+    changed_coverages = design.model_copy(
+        update={"operational_coverages": ("0.25", "0.5", "0.9", "1")}
+    )
+    changed_interval = design.model_copy(update={"interval_method": "different-method"})
+    assert canonical_record_hash(changed_raters) != baseline
+    assert canonical_record_hash(changed_coverages) != baseline
+    assert canonical_record_hash(changed_interval) != baseline
+
+
+def test_candidate_operational_and_sampling_policies_are_explicit() -> None:
+    design = MetricLabDesign()
+    assert design.operational_coverage_floats == (0.1, 0.5, 0.9, 1.0)
+    assert design.sampling_units == ("fixed_case", "question_population")
+    assert design.interval_method == "normal95-row-and-item-cluster-v1"
+    assert design.aurc_reference_negative_control == "han678-get_AURC-fa445bcd"
