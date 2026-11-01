@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore[import-untyped]
 
 _SCRIPT_PATH = Path(__file__).parents[1] / "scripts" / "refresh_google_drive_adc.py"
 _SPEC = importlib.util.spec_from_file_location("refresh_google_drive_adc", _SCRIPT_PATH)
@@ -68,7 +68,7 @@ class _FakeFlow:
 
 
 def _credentials(*, scopes: list[str] | None = None) -> Credentials:
-    return Credentials(
+    return Credentials(  # type: ignore[no-untyped-call]
         token="synthetic-access-token",
         refresh_token="synthetic-refresh-token",
         token_uri="https://oauth2.googleapis.com/token",
@@ -231,7 +231,7 @@ def test_unexpected_broader_oauth_scope_fails_closed(
 
 def test_plain_credentials_to_json_is_not_a_completed_adc_artifact(tmp_path: Path) -> None:
     path = tmp_path / "adc.json"
-    path.write_text(_credentials().to_json(), encoding="utf-8")
+    path.write_text(_credentials().to_json(), encoding="utf-8")  # type: ignore[no-untyped-call]
     if os.name != "nt":
         path.chmod(0o600)
     assert "type" not in json.loads(path.read_text(encoding="utf-8"))
