@@ -10,6 +10,7 @@ from typing import Sequence
 
 from canonical_sync.codec import canonical_record_hash
 from llm_evaluation.metric_lab_design import (
+    AmbiguityCellSpec,
     BaseCellSpec,
     MetricLabDesign,
     MetricLabPhase,
@@ -19,6 +20,7 @@ from llm_evaluation.metric_lab_targets import (
     SamplingUnit,
     TargetKind,
     generate_item_probabilities,
+    generate_rater_ambiguity_items,
 )
 from llm_evaluation.metric_laboratory import (
     binary_decision,
@@ -603,5 +605,373 @@ def summarize_base_cell(
         sampling_unit=sampling_unit,
         replicates_count=num_replicates,
         realized_budget_rows=sum(rep.realized_budget_rows for rep in replicates),
+        targets=target_summaries,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class AmbiguityTargetTruth:
+    target: TargetKind
+    expected_brier: float
+    expected_log_score: float
+    fixed_bin_calibration: float
+    equal_mass_calibration: float
+    l2_calibration: float
+    classification_error: float
+    aurc: float
+
+
+@dataclass(frozen=True, slots=True)
+class AmbiguityTargetReplicateResult:
+    target: TargetKind
+    evaluation_count: int
+    brier: float
+    log_score: float
+    fixed_bin_ece: float
+    equal_mass_ece: float
+    debiased_l2: float
+    classification_error: float
+    aurc: float
+    brier_intervals: MeanLossIntervals
+    risk_coverage: tuple[RiskCoveragePoint, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AmbiguityReplicateResult:
+    design_sha256: str
+    cell_key: str
+    phase: MetricLabPhase
+    replicate_index: int
+    item_count: int
+    realized_budget_ratings: int
+    targets: dict[TargetKind, AmbiguityTargetReplicateResult]
+
+
+@dataclass(frozen=True, slots=True)
+class AmbiguityTargetCellSummary:
+    target: TargetKind
+    truth: AmbiguityTargetTruth
+    metrics: dict[str, MetricMonteCarloSummary]
+
+
+@dataclass(frozen=True, slots=True)
+class AmbiguityCellSummary:
+    design_sha256: str
+    cell_key: str
+    phase: MetricLabPhase
+    replicates_count: int
+    realized_budget_ratings: int
+    targets: dict[TargetKind, AmbiguityTargetCellSummary]
+
+
+def _majority_positive_probability(theta: float, raters_per_item: int) -> float:
+    threshold = raters_per_item // 2 + 1
+    return sum(
+        math.comb(raters_per_item, positives)
+        * theta**positives
+        * (1.0 - theta) ** (raters_per_item - positives)
+        for positives in range(threshold, raters_per_item + 1)
+    )
+
+
+def _ambiguity_truth_from_probabilities(
+    *,
+    design: MetricLabDesign,
+    cell: AmbiguityCellSpec,
+    target: TargetKind,
+    thetas: tuple[float, ...],
+    forecasts: tuple[float, ...],
+) -> AmbiguityTargetTruth:
+    if target in {TargetKind.RATER_DISTRIBUTION, TargetKind.SOFT_LABEL}:
+        target_probabilities = thetas
+    elif target is TargetKind.MAJORITY_CONSENSUS:
+        target_probabilities = tuple(
+            _majority_positive_probability(theta, cell.raters_per_item)
+            for theta in thetas
+        )
+    else:
+        raise ValueError("unsupported ambiguity target")
+
+    if target is TargetKind.SOFT_LABEL:
+        expected_b = sum(
+            (forecast - theta) ** 2 + theta * (1.0 - theta) / cell.raters_per_item
+            for theta, forecast in zip(thetas, forecasts, strict=True)
+        ) / len(thetas)
+    else:
+        expected_b = sum(
+            expected_brier(probability, forecast)
+            for probability, forecast in zip(
+                target_probabilities, forecasts, strict=True
+            )
+        ) / len(forecasts)
+    expected_log = sum(
+        expected_log_score(probability, forecast)
+        for probability, forecast in zip(target_probabilities, forecasts, strict=True)
+    ) / len(forecasts)
+    fixed_ece = fixed_bin_ece(
+        forecasts, target_probabilities, num_bins=design.fixed_bin_count
+    )[0]
+    equal_ece = equal_mass_ece(
+        forecasts, target_probabilities, num_bins=design.equal_mass_bin_count
+    )[0]
+    l2 = _population_l2_from_fixed_bins(
+        forecasts, target_probabilities, num_bins=design.fixed_bin_count
+    )
+    predictions = tuple(
+        binary_decision(
+            forecast,
+            threshold=design.decision_threshold_float,
+            tie_break=design.decision_tie_break,
+        )
+        for forecast in forecasts
+    )
+    error_probabilities = tuple(
+        (1.0 - probability) if prediction == 1 else probability
+        for probability, prediction in zip(
+            target_probabilities, predictions, strict=True
+        )
+    )
+    classification_error = sum(error_probabilities) / len(error_probabilities)
+    confidences = tuple(max(forecast, 1.0 - forecast) for forecast in forecasts)
+    aurc = compute_aurc(
+        confidences,
+        error_probabilities,
+        tie_convention=design.aurc_tie_convention,
+    )
+    return AmbiguityTargetTruth(
+        target=target,
+        expected_brier=expected_b,
+        expected_log_score=expected_log,
+        fixed_bin_calibration=fixed_ece,
+        equal_mass_calibration=equal_ece,
+        l2_calibration=l2,
+        classification_error=classification_error,
+        aurc=aurc,
+    )
+
+
+def ambiguity_target_truths(
+    *, design: MetricLabDesign, cell: AmbiguityCellSpec
+) -> dict[TargetKind, AmbiguityTargetTruth]:
+    thetas = generate_item_probabilities(
+        p_values=design.ambiguity_theta_floats,
+        n_items=cell.n_items,
+        sampling_unit=SamplingUnit.FIXED_CASE,
+        seed=0,
+    )
+    forecasts = tuple(compute_forecast(theta, cell.forecast_kind) for theta in thetas)
+    return {
+        target: _ambiguity_truth_from_probabilities(
+            design=design,
+            cell=cell,
+            target=target,
+            thetas=thetas,
+            forecasts=forecasts,
+        )
+        for target in (
+            TargetKind.RATER_DISTRIBUTION,
+            TargetKind.SOFT_LABEL,
+            TargetKind.MAJORITY_CONSENSUS,
+        )
+    }
+
+
+def _evaluate_ambiguity_target(
+    *,
+    design: MetricLabDesign,
+    target: TargetKind,
+    forecasts: tuple[float, ...],
+    outcomes: tuple[float, ...],
+    item_ids: tuple[int, ...],
+) -> AmbiguityTargetReplicateResult:
+    predictions = tuple(
+        binary_decision(
+            forecast,
+            threshold=design.decision_threshold_float,
+            tie_break=design.decision_tie_break,
+        )
+        for forecast in forecasts
+    )
+    errors = tuple(
+        (1.0 - outcome) if prediction == 1 else outcome
+        for prediction, outcome in zip(predictions, outcomes, strict=True)
+    )
+    confidences = tuple(max(forecast, 1.0 - forecast) for forecast in forecasts)
+    brier_losses = tuple(
+        (forecast - outcome) ** 2
+        for forecast, outcome in zip(forecasts, outcomes, strict=True)
+    )
+    fixed = fixed_bin_ece(forecasts, outcomes, num_bins=design.fixed_bin_count)[0]
+    equal = equal_mass_ece(forecasts, outcomes, num_bins=design.equal_mass_bin_count)[0]
+    return AmbiguityTargetReplicateResult(
+        target=target,
+        evaluation_count=len(outcomes),
+        brier=brier_score(forecasts, outcomes),
+        log_score=log_score(forecasts, outcomes),
+        fixed_bin_ece=fixed,
+        equal_mass_ece=equal,
+        debiased_l2=debiased_l2_calibration_error(
+            forecasts, outcomes, num_bins=design.fixed_bin_count
+        ),
+        classification_error=sum(errors) / len(errors),
+        aurc=compute_aurc(
+            confidences, errors, tie_convention=design.aurc_tie_convention
+        ),
+        brier_intervals=mean_loss_intervals(values=brier_losses, item_ids=item_ids),
+        risk_coverage=risk_coverage_tie_blocks(confidences=confidences, errors=errors),
+    )
+
+
+def evaluate_ambiguity_replicate(
+    *,
+    design: MetricLabDesign,
+    cell: AmbiguityCellSpec,
+    phase: MetricLabPhase,
+    replicate_index: int,
+) -> AmbiguityReplicateResult:
+    design_hash = canonical_record_hash(design)
+    seed = derive_metric_lab_seed(
+        design_hash=design_hash,
+        phase=phase,
+        cell_key=cell.cell_key,
+        replicate_index=replicate_index,
+        purpose="rater-population",
+    )
+    items = generate_rater_ambiguity_items(
+        theta_values=design.ambiguity_theta_floats,
+        n_items=cell.n_items,
+        raters_per_item=cell.raters_per_item,
+        seed=seed,
+    )
+    item_forecasts = tuple(
+        compute_forecast(item.rater_distribution_probability, cell.forecast_kind)
+        for item in items
+    )
+
+    rater_forecasts: list[float] = []
+    rater_outcomes: list[float] = []
+    rater_item_ids: list[int] = []
+    for item, forecast in zip(items, item_forecasts, strict=True):
+        for rating in item.ratings:
+            rater_forecasts.append(forecast)
+            rater_outcomes.append(float(rating))
+            rater_item_ids.append(item.item_id)
+
+    targets = {
+        TargetKind.RATER_DISTRIBUTION: _evaluate_ambiguity_target(
+            design=design,
+            target=TargetKind.RATER_DISTRIBUTION,
+            forecasts=tuple(rater_forecasts),
+            outcomes=tuple(rater_outcomes),
+            item_ids=tuple(rater_item_ids),
+        ),
+        TargetKind.SOFT_LABEL: _evaluate_ambiguity_target(
+            design=design,
+            target=TargetKind.SOFT_LABEL,
+            forecasts=item_forecasts,
+            outcomes=tuple(item.soft_label_probability for item in items),
+            item_ids=tuple(item.item_id for item in items),
+        ),
+        TargetKind.MAJORITY_CONSENSUS: _evaluate_ambiguity_target(
+            design=design,
+            target=TargetKind.MAJORITY_CONSENSUS,
+            forecasts=item_forecasts,
+            outcomes=tuple(float(item.majority_consensus_label) for item in items),
+            item_ids=tuple(item.item_id for item in items),
+        ),
+    }
+    return AmbiguityReplicateResult(
+        design_sha256=design_hash,
+        cell_key=cell.cell_key,
+        phase=phase,
+        replicate_index=replicate_index,
+        item_count=cell.n_items,
+        realized_budget_ratings=cell.n_items * cell.raters_per_item,
+        targets=targets,
+    )
+
+
+def summarize_ambiguity_cell(
+    *,
+    design: MetricLabDesign,
+    cell: AmbiguityCellSpec,
+    phase: MetricLabPhase,
+    num_replicates: int,
+) -> AmbiguityCellSummary:
+    if type(num_replicates) is not int or num_replicates < 1:
+        raise ValueError("num_replicates must be a positive exact integer")
+    replicates = tuple(
+        evaluate_ambiguity_replicate(
+            design=design,
+            cell=cell,
+            phase=phase,
+            replicate_index=index,
+        )
+        for index in range(num_replicates)
+    )
+    truths = ambiguity_target_truths(design=design, cell=cell)
+    target_summaries: dict[TargetKind, AmbiguityTargetCellSummary] = {}
+    for target, truth in truths.items():
+        values = tuple(rep.targets[target] for rep in replicates)
+        metric_specs = {
+            "brier": (tuple(value.brier for value in values), truth.expected_brier),
+            "log_score": (
+                tuple(value.log_score for value in values),
+                truth.expected_log_score,
+            ),
+            "fixed_bin_ece": (
+                tuple(value.fixed_bin_ece for value in values),
+                truth.fixed_bin_calibration,
+            ),
+            "equal_mass_ece": (
+                tuple(value.equal_mass_ece for value in values),
+                truth.equal_mass_calibration,
+            ),
+            "debiased_l2": (
+                tuple(value.debiased_l2 for value in values),
+                truth.l2_calibration,
+            ),
+            "classification_error": (
+                tuple(value.classification_error for value in values),
+                truth.classification_error,
+            ),
+            "aurc": (tuple(value.aurc for value in values), truth.aurc),
+        }
+        metrics = {
+            name: summarize_metric_estimates(estimates=estimates, true_value=true_value)
+            for name, (estimates, true_value) in metric_specs.items()
+        }
+        brier_estimates = tuple(value.brier for value in values)
+        metrics["brier_cluster_interval"] = summarize_metric_estimates(
+            estimates=brier_estimates,
+            true_value=truth.expected_brier,
+            intervals=tuple(
+                (
+                    value.brier_intervals.cluster.lower,
+                    value.brier_intervals.cluster.upper,
+                )
+                for value in values
+            ),
+        )
+        metrics["brier_naive_interval"] = summarize_metric_estimates(
+            estimates=brier_estimates,
+            true_value=truth.expected_brier,
+            intervals=tuple(
+                (
+                    value.brier_intervals.naive.lower,
+                    value.brier_intervals.naive.upper,
+                )
+                for value in values
+            ),
+        )
+        target_summaries[target] = AmbiguityTargetCellSummary(
+            target=target, truth=truth, metrics=metrics
+        )
+    return AmbiguityCellSummary(
+        design_sha256=canonical_record_hash(design),
+        cell_key=cell.cell_key,
+        phase=phase,
+        replicates_count=num_replicates,
+        realized_budget_ratings=sum(rep.realized_budget_ratings for rep in replicates),
         targets=target_summaries,
     )

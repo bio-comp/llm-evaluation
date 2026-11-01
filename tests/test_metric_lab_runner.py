@@ -211,3 +211,92 @@ def test_population_truth_differs_from_small_fixed_case_composition_when_unbalan
     assert fixed.case_probabilities != population.case_probabilities
     assert len(fixed.case_probabilities) == 3
     assert population.case_probabilities == (0.1, 0.9)
+
+
+def test_ambiguity_truth_distinguishes_rater_distribution_soft_and_consensus() -> None:
+    from llm_evaluation.metric_lab_design import AmbiguityCellSpec
+    from llm_evaluation.metric_lab_runner import ambiguity_target_truths
+
+    design = MetricLabDesign(
+        p_values=("0.9",),
+        forecast_kinds=("oracle",),
+        n_base_items=(10,),
+        k_within_item=(1,),
+        shared_within_item=(False, True),
+        reference_flip_etas=("0",),
+        ambiguity_theta_values=("0.9",),
+        ambiguity_n_items=(10,),
+        ambiguity_raters_per_item=(3,),
+        prevalence_values=("0.5",),
+    )
+    cell = AmbiguityCellSpec(forecast_kind="oracle", n_items=10, raters_per_item=3)
+    truths = ambiguity_target_truths(design=design, cell=cell)
+    rater = truths[TargetKind.RATER_DISTRIBUTION]
+    soft = truths[TargetKind.SOFT_LABEL]
+    consensus = truths[TargetKind.MAJORITY_CONSENSUS]
+
+    assert math.isclose(rater.expected_brier, 0.09, rel_tol=1e-12)
+    # q == theta, so squared loss against the sample mean is exactly its sampling variance.
+    assert math.isclose(soft.expected_brier, 0.9 * 0.1 / 3, rel_tol=1e-12)
+    majority_p = 3 * (0.9**2) * 0.1 + 0.9**3
+    expected_consensus_brier = (0.9 - majority_p) ** 2 + majority_p * (1 - majority_p)
+    assert math.isclose(
+        consensus.expected_brier, expected_consensus_brier, rel_tol=1e-12
+    )
+    assert (
+        len({rater.expected_brier, soft.expected_brier, consensus.expected_brier}) == 3
+    )
+
+
+def test_ambiguity_replicate_reports_target_specific_evaluation_counts_and_budget() -> (
+    None
+):
+    from llm_evaluation.metric_lab_design import AmbiguityCellSpec
+    from llm_evaluation.metric_lab_runner import evaluate_ambiguity_replicate
+
+    design = MetricLabDesign(
+        ambiguity_theta_values=("0.1", "0.5", "0.9"),
+        ambiguity_n_items=(9,),
+        ambiguity_raters_per_item=(3,),
+    )
+    cell = AmbiguityCellSpec(forecast_kind="oracle", n_items=9, raters_per_item=3)
+    result = evaluate_ambiguity_replicate(
+        design=design,
+        cell=cell,
+        phase=MetricLabPhase.DEVELOPMENT,
+        replicate_index=4,
+    )
+    assert result.item_count == 9
+    assert result.realized_budget_ratings == 27
+    assert result.targets[TargetKind.RATER_DISTRIBUTION].evaluation_count == 27
+    assert result.targets[TargetKind.SOFT_LABEL].evaluation_count == 9
+    assert result.targets[TargetKind.MAJORITY_CONSENSUS].evaluation_count == 9
+    assert all(
+        target.risk_coverage[-1].coverage == 1.0 for target in result.targets.values()
+    )
+
+
+def test_ambiguity_summary_reports_known_target_truths_and_rating_budget() -> None:
+    from llm_evaluation.metric_lab_design import AmbiguityCellSpec
+    from llm_evaluation.metric_lab_runner import summarize_ambiguity_cell
+
+    design = MetricLabDesign(
+        ambiguity_theta_values=("0.5",),
+        ambiguity_n_items=(8,),
+        ambiguity_raters_per_item=(3,),
+        fixed_bin_count=1,
+        equal_mass_bin_count=1,
+    )
+    cell = AmbiguityCellSpec(forecast_kind="constant", n_items=8, raters_per_item=3)
+    summary = summarize_ambiguity_cell(
+        design=design,
+        cell=cell,
+        phase=MetricLabPhase.DEVELOPMENT,
+        num_replicates=20,
+    )
+    assert summary.replicates_count == 20
+    assert summary.realized_budget_ratings == 20 * 8 * 3
+    rater = summary.targets[TargetKind.RATER_DISTRIBUTION]
+    assert rater.metrics["brier"].true_value == 0.25
+    assert rater.metrics["brier"].mean_estimate == 0.25
+    assert rater.metrics["brier"].bias == 0.0
