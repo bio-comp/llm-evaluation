@@ -22,6 +22,17 @@ Pydantic validates durable record structure, but hash identity is not `sha256(mo
 
 Live Drive acquisition is opt-in and is never part of ordinary PR CI. It uses Google Application Default Credentials with the single scope `https://www.googleapis.com/auth/drive.readonly`. Operator provisioning of isolated local credentials across multiple consumers is detailed in [Local Google Authentication Runbook](canonical-sync-local-google-auth.md).
 
+For the current `llm-evaluation` consumer, provision, renew, or validate the isolated authorized-user ADC with the tested operator helper rather than an ad-hoc serialization recipe:
+
+```bash
+uv run --all-packages --extra local-auth \
+  python scripts/refresh_google_drive_adc.py \
+  --client-secrets ~/.config/llm-evaluation/llm-evaluation-oauth.json \
+  --cloud-sdk-config ~/.config/gcloud-llm-evaluation
+```
+
+Use `--check` for noninteractive validation and `--force` only for deliberate replacement of an existing destination. This repo-local helper is temporary migration debt pending separately authorized standalone `canonical-sync` extraction; it is not part of the acquisition runtime API.
+
 Keep the authority profile outside the repository. It is a private TOML file containing the exact registered object and parent identities for the D-016 roles `README.md`, `DECISIONS.md`, `EXPERIMENTS.md`, and `REVIEW_LEDGER.md`. A schematic profile entry is:
 
 ```toml
@@ -111,4 +122,4 @@ Historical payloads remain untouched; current readers explicitly reject old sche
 - **Implemented and deterministically verified**: `canonical_sync` acquisition/store/Git mechanics, `llm_evaluation` authority and reconciliation adapters, read-only Git + GitHub operational closure (`complete_reconciliation_with_github`), the `fixtures/reconciliation_policy_contract.json` vertical slice, and the project-owned durable reconciliation state store (`~/.config/llm-evaluation/last-reconciled-state.json`).
 - **Verified local live acquisition**: Dedicated local OAuth Desktop client (`LLM Evaluation - Mac`), isolated authorized-user ADC (`CLOUDSDK_CONFIG="$HOME/.config/gcloud-llm-evaluation"`), exact `https://www.googleapis.com/auth/drive.readonly` scope, and live Drive acquisition against the registered D-016 authority profile have been verified. Sessions without live Drive credentials run the deterministic offline test suite (`-m 'not live_drive'`).
 - **Durable reconciliation store and PR closure**: PR #9 operational closure was verified at merge commit `869bdb26c3038edeb7fd1627a1acce6ca723c25c` with post-merge `Public CI` success and Git readback. The project-owned durable store for `LastReconciledStateRecord` and `ReconciliationDispositionRecord` is designated at `~/.config/llm-evaluation/last-reconciled-state.json` (overrideable via `LLM_EVALUATION_RECONCILIATION_STATE_PATH`) with atomic write and readback verification.
-- **Pending activation gates**: D-016 remains `REQUIRED` until this local-auth runbook and durable store PR is reviewed, merged into `main`, verified in post-merge `Public CI`, read back via Git, and the latest last-reconciled state is durably persisted. Hosted GitHub OIDC -> Google WIF remains unprovisioned, and E-002 remains `PLANNED` (no real model sampling is authorized here).
+- **Pending activation gates**: the durable reconciliation store is already on `main` via PR #11. D-016 remains `REQUIRED` until the tested local-auth helper/documentation change is reviewed and merged, the resulting `main` is verified in post-merge `Public CI` and Git readback, and the latest last-reconciled state is durably persisted/read back. Hosted GitHub OIDC -> Google WIF remains unprovisioned, and E-002 remains `PLANNED` (no real model sampling is authorized here).

@@ -141,9 +141,39 @@ mkdir -p "$CLOUDSDK_CONFIG"
 chmod 0700 "$CLOUDSDK_CONFIG"
 ```
 
-### 4.1 Official gcloud CLI Flow (Try First)
+### 4.1 Supported Repository Helper
 
-Attempt the documented `gcloud` flow requesting only the exact read-only Drive scope:
+During the current `canonical-sync` incubation period, the supported local provisioning and renewal path is the tested repository helper:
+
+```bash
+uv sync --frozen --all-packages --group dev --extra drive --extra local-auth
+
+uv run --all-packages --extra local-auth \
+  python scripts/refresh_google_drive_adc.py \
+  --client-secrets ~/.config/llm-evaluation/llm-evaluation-oauth.json \
+  --cloud-sdk-config ~/.config/gcloud-llm-evaluation
+```
+
+The helper exposes no scope override and requests exactly:
+
+```text
+https://www.googleapis.com/auth/drive.readonly
+```
+
+Its writable ADC destination resolves in this order:
+
+1. explicit `--adc-path`;
+2. explicit `--cloud-sdk-config/application_default_credentials.json`;
+3. existing `CLOUDSDK_CONFIG/application_default_credentials.json`;
+4. the platform-standard ADC location (`~/.config/gcloud/application_default_credentials.json` on macOS/Linux or `%APPDATA%\gcloud\application_default_credentials.json` on Windows).
+
+`GOOGLE_APPLICATION_CREDENTIALS` is deliberately not a writable default because it can identify service-account, Workload Identity Federation, external-account, or other credential material that this operator helper must never overwrite.
+
+Use `--check` to validate an existing ADC without launching consent. If an ADC already exists, deliberate reauthorization requires `--force`; `--force` acknowledges replacement but never bypasses client-file, credential-type, exact-scope, refresh-readiness, or loader validation.
+
+### 4.2 gcloud Exact-Scope Compatibility Boundary
+
+An operator may use the official `gcloud auth application-default login` path only if it completes with the exact Drive read-only scope. In the verified macOS condition with Google Cloud SDK 590.0.0, this command:
 
 ```bash
 CLOUDSDK_CONFIG="$HOME/.config/gcloud-<consumer-name>" \
@@ -152,67 +182,33 @@ gcloud auth application-default login \
   --scopes=https://www.googleapis.com/auth/drive.readonly
 ```
 
-Inspect the resulting authorization prompt and output:
-- If `gcloud` successfully completes browser authentication with **only** `https://www.googleapis.com/auth/drive.readonly`, verify that `application_default_credentials.json` is generated inside `$CLOUDSDK_CONFIG` with permissions `0600`.
+failed because that `gcloud` path demanded `cloud-platform`. **Do not broaden the credential merely to satisfy tooling.** Use the tested repository helper instead. This is an observed compatibility fact for that SDK condition, not a universal statement about every Cloud SDK release.
 
-### 4.2 Historical gcloud Compatibility Note and Installed-App Fallback
-
-In tested macOS environments with Google Cloud SDK 590.0.0, running `gcloud auth application-default login` with `--scopes=https://www.googleapis.com/auth/drive.readonly` failed with:
-
-```text
-ERROR: (gcloud.auth.application-default.login) Invalid value for [--scopes]:
-https://www.googleapis.com/auth/cloud-platform scope is required but not requested.
-Please include it in the --scopes flag.
-```
-
-**Do not add `cloud-platform` or broader scopes merely to satisfy tooling.** Least privilege requires restricting read access strictly to Google Drive.
-
-If `gcloud` demands broader scopes, use the narrow installed-application flow using `google-auth-oauthlib`.
-
-### 4.3 Valid ADC Document Schema and the `credentials.to_json()` Serialization Trap
+### 4.3 Valid ADC Representation and Loader Compatibility Check
 
 > [!WARNING]
-> Calling `credentials.to_json()` from `google.oauth2.credentials.Credentials` produces a JSON payload that lacks the top-level `"type": "authorized_user"` discriminator required by Application Default Credentials.
->
-> If saved directly to `application_default_credentials.json`, `google.auth.default()` will fail with:
-> ```text
-> google.auth.exceptions.DefaultCredentialsError:
-> The file .../application_default_credentials.json does not have a valid type.
-> Type is None, expected one of ('authorized_user', 'service_account', ...)
-> ```
+> Calling `credentials.to_json()` from `google.oauth2.credentials.Credentials` produces authorized-user fields but omits the top-level `"type": "authorized_user"` discriminator required by Application Default Credentials. Saving that payload directly as `application_default_credentials.json` causes the ADC loader to reject it.
 
-The correct bootstrap pattern explicitly structures the authorized-user ADC document:
+The helper therefore writes an explicit refresh-capable authorized-user ADC document containing the required discriminator, client fields, refresh token, Google token endpoint, and exactly the Drive read-only scope. It does not persist a short-lived access token or expiry.
 
-```python
-import json
-import os
-from google_auth_oauthlib.flow import InstalledAppFlow
+After structural validation, the helper deliberately calls `google.auth.load_credentials_from_file()` as a compatibility assertion: the artifact must be accepted by the same generic ADC loading path that exposed the original missing-`type` regression. Current `google-auth` emits a generic deprecation/security warning for that loader because arbitrary externally sourced credential configurations can be unsafe. The helper suppresses that warning only around this already-prevalidated compatibility check; it first requires `type == "authorized_user"`, exact required fields, and the exact scope, then verifies the returned credential class and fields again. This warning suppression is not a validation bypass.
 
-CLIENT_SECRETS_FILE = os.path.expanduser("~/.config/llm-evaluation/llm-evaluation-oauth.json")
-CONFIG_DIR = os.path.expanduser("~/.config/gcloud-llm-evaluation")
-ADC_FILE = os.path.join(CONFIG_DIR, "application_default_credentials.json")
-SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+### 4.4 Transactional Replacement and Headless Operation
 
-os.makedirs(CONFIG_DIR, exist_ok=True)
-os.chmod(CONFIG_DIR, 0o700)
+Provisioning and renewal are fail-closed. The helper:
 
-flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRETS_FILE, scopes=SCOPES)
-creds = flow.run_local_server(port=0)
+1. validates the installed/Desktop OAuth client file;
+2. runs `InstalledAppFlow.run_local_server()` with exactly Drive read-only scope;
+3. constructs an explicit `authorized_user` ADC candidate;
+4. writes the candidate to a temporary file on the destination filesystem and `fsync`s it;
+5. restricts permissions to `0600` on POSIX;
+6. loads and refresh-validates the candidate before replacement;
+7. atomically installs it with `os.replace()`; and
+8. reloads the final destination to verify the persisted contract.
 
-# Build valid ADC document with the required 'type' discriminator
-payload = {
-    "type": "authorized_user",
-    "client_id": creds.client_id,
-    "client_secret": creds.client_secret,
-    "refresh_token": creds.refresh_token,
-    "scopes": list(creds.scopes),
-}
+Any failure before replacement leaves an existing ADC byte-for-byte unchanged. Windows success does not pretend POSIX `chmod(0600)` is an equivalent Windows ACL guarantee.
 
-with open(ADC_FILE, "w", encoding="utf-8") as f:
-    json.dump(payload, f, indent=2)
-os.chmod(ADC_FILE, 0o600)
-print("Isolated authorized-user ADC generated successfully at:", ADC_FILE)
-```
+`--no-open-browser` prevents automatic GUI browser launch but does not remove the localhost OAuth callback requirement. Use deliberate SSH/local-port forwarding or another supported topology for a remote/headless host; pass `--port PORT` when a stable forwarded port is required.
 
 ---
 
@@ -247,3 +243,11 @@ Before treating the credential context as operational, verify it mechanically:
    uv run --all-packages --extra drive pytest -m live_drive tests/test_canonical_drive_live.py -q
    ```
    Confirm that the test passes (`1 passed`), verifies the state and receipt hashes, and produces no Drive mutations.
+
+---
+
+## 7. Temporary Duplication Exit Condition
+
+The repo-local helper is intentional temporary migration debt while `canonical-sync` remains incubating. Prompt Research carries the same behavioral implementation without a cross-repository runtime dependency. Keep both copies mechanically synchronized unless a divergence is explicitly justified.
+
+Standalone extraction is complete only after a shared operator tool is separately authorized and validated, both consumers migrate their runbooks/invocations to it, both repo-local helper copies are deleted, consumer-specific authority semantics remain outside the shared tool, parity with this verified contract is demonstrated, and each consumer's relevant deterministic/live verification still passes. Do not retain the repo-local copies as fallback implementations without a new explicit architecture decision.
