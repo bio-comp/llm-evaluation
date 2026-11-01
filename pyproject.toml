@@ -14,6 +14,9 @@ dependencies = [
 
 [project.optional-dependencies]
 drive = ["canonical-sync[drive]"]
+local-auth = [
+    "google-auth-oauthlib==1.5.0",
+]
 
 [project.scripts]
 llm-evaluation = "llm_evaluation.cli:main"
