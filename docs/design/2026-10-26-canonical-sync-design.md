@@ -251,7 +251,7 @@ No Drive IDs, parent IDs, modified times, tokens, local credential paths, or pri
 
 ## 12. Canonical -> executable regression vertical slice
 
-The first vertical slice is the public reconciliation-policy contract itself, not E-002 scientific content.
+The first vertical slice is the public reconciliation-policy contract itself, not E-002 scientific content. That fixture proves the policy seam only; later public-change reconciliations must bind the exact project-reviewed implementation/documentation projection rather than treating the one-file fixture as sufficient evidence.
 
 A public-safe project fixture represents only the admitted contract facts needed by code: the four reconciliation dispositions and the rule that `COMPLETE` requires a verified publication receipt bound to the exact semantic identity. The project adapter consumes a controlled verified-snapshot fixture and produces this narrow contract.
 
@@ -340,10 +340,10 @@ Syntactically valid or internally consistent Pydantic records validate durable d
 - A caller-supplied or deserialized `GitPublicationReceiptRecord` cannot substitute for Git verification during operational closure.
 
 Project-owned closure in `llm_evaluation.canonical_github.complete_reconciliation_with_github` executes the complete read-only verification sequence:
-1. Recomputes and binds the supplied `PublicationTree` / `ReconciliationPolicyContract` to `required.public_contract_sha256` and `required.publication_tree_sha256`;
+1. Requires and binds the exact project-reviewed `PublicationTree` to `required.publication_tree_sha256`; verifies that its policy fixture bytes match `required.public_contract_sha256`; and preserves the non-empty reviewed obligation set. A `ReconciliationPolicyContract` alone may not synthesize the implementation tree;
 2. Fetches PR, workflow run, and workflow jobs from the GitHub REST API, validates them with strict Pydantic wire models (no network I/O in validators), and verifies repository/PR/merge/branch/workflow/job invariants to produce `VerifiedGitHubClosureFacts`;
 3. Runs `GitPublisher(remote, ref="refs/heads/main").verify(publication_tree, expected_commit=M)` to read back `refs/heads/main` at `M` and verify the exact approved `PublicationTree` bytes;
-4. Assembles `VerifiedPublicationReceiptRecord` v4 and transitions the matching `REQUIRED` disposition to `COMPLETE` (`ReconciliationDispositionRecord` v3).
+4. Assembles `VerifiedPublicationReceiptRecord` v5 and transitions the matching `REQUIRED` disposition to `COMPLETE` (`ReconciliationDispositionRecord` v4), preserving exact tree and obligation-set identity.
 
 Pure structural validation remains available in `complete_reconciliation(required, receipt)` for persisted record checks and is explicitly distinct from operational closure.
 
@@ -369,4 +369,4 @@ Path and inventory validation is enforced consistently across authority configur
 
 The D-016 authority profile validator enforces that all four required root authority roles (`README.md`, `DECISIONS.md`, `EXPERIMENTS.md`, `REVIEW_LEDGER.md`) share the exact same non-null Drive parent ID, guaranteeing that root governance canonicals originate from the single authorized project folder without generalizing this invariant to secondary canonical objects.
 
-The current `llm_evaluation` vertical slice acquires only those four root roles and projects only the single public-safe fixture `fixtures/reconciliation_policy_contract.json`. Dedicated local OAuth/ADC and live acquisition have been verified, PR #9 operational closure was verified at merge commit `869bdb26c3038edeb7fd1627a1acce6ca723c25c` with post-merge `Public CI` success and Git readback, and the durable store for `LastReconciledStateRecord` is designated at `~/.config/llm-evaluation/last-reconciled-state.json`. D-016 remains `REQUIRED` until the local-auth runbook and durable store PR is merged into `main`, post-merge `Public CI` passes, Git readback succeeds, and state is persisted. Hosted WIF remains unprovisioned and E-002 remains `PLANNED`.
+The current `llm_evaluation` acquisition slice reads only those four root roles. The public policy fixture remains mandatory in any public-change tree but is no longer accepted as an automatically sufficient implementation projection. PR #10 merged the portable local-auth helper/documentation path at `040715c91115a4adab29035bec4a38c76ac6846f` with post-merge `Public CI`; a later audit found the existing durable v1 state semantically stale because it paired the current Drive snapshot with older PR #11 closure evidence while an outstanding helper obligation remained. Current code therefore fail-closes legacy v1 state pending explicit hash-verified supersession and requires exact approved-tree plus obligation-set binding for corrected closure. The live D-016 disposition remains owned by Drive. Hosted WIF remains unprovisioned and E-002 model sampling remains separately governed.

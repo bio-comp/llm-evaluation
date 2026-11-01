@@ -7,7 +7,11 @@ from typing import Any, Final, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from canonical_sync.codec import canonical_record_hash, parse_canonical_record
+from canonical_sync.codec import (
+    canonical_record_bytes,
+    canonical_record_hash,
+    parse_canonical_record,
+)
 from canonical_sync.git_publication import (
     DEFAULT_GIT_COMMAND_TIMEOUT,
     GitPublisher,
@@ -22,7 +26,6 @@ from llm_evaluation.canonical_reconciliation import (
     ReconciliationDispositionRecord,
     ReconciliationPolicyContract,
     VerifiedPublicationReceiptRecord,
-    approved_policy_tree,
     complete_reconciliation,
 )
 
@@ -129,13 +132,19 @@ class DefaultGitHubTransport:
         page = 1
         total_count: int | None = None
         while True:
-            resp = self._get(f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100&page={page}")
+            resp = self._get(
+                f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100&page={page}"
+            )
             jobs = resp.get("jobs")
             if not isinstance(jobs, list):
-                raise ValueError("unexpected non-list 'jobs' field in GitHub workflow jobs response")
+                raise ValueError(
+                    "unexpected non-list 'jobs' field in GitHub workflow jobs response"
+                )
             raw_total = resp.get("total_count")
             if type(raw_total) is not int or raw_total < 0:
-                raise ValueError("GitHub workflow jobs response missing valid integer 'total_count'")
+                raise ValueError(
+                    "GitHub workflow jobs response missing valid integer 'total_count'"
+                )
             if total_count is None:
                 total_count = raw_total
             elif raw_total != total_count:
@@ -208,7 +217,10 @@ def acquire_and_verify_github_closure(
     if not wire_pr.merged or wire_pr.merged_at is None:
         raise ValueError(f"GitHub PR #{expected_pr_number} is not merged")
 
-    if wire_pr.merge_commit_sha is None or wire_pr.merge_commit_sha != expected_merged_commit:
+    if (
+        wire_pr.merge_commit_sha is None
+        or wire_pr.merge_commit_sha != expected_merged_commit
+    ):
         raise ValueError(
             f"GitHub PR #{expected_pr_number} merged commit '{wire_pr.merge_commit_sha}' "
             f"does not match expected commit '{expected_merged_commit}'"
@@ -241,12 +253,16 @@ def acquire_and_verify_github_closure(
             merged_at=wire_pr.merged_at,
         )
     except Exception as exc:
-        raise ValueError(f"constructed PR merge record failed validation: {exc}") from exc
+        raise ValueError(
+            f"constructed PR merge record failed validation: {exc}"
+        ) from exc
 
     try:
         wire_run = _WireWorkflowRun.model_validate(run_payload)
     except Exception as exc:
-        raise ValueError(f"GitHub workflow run response failed wire validation: {exc}") from exc
+        raise ValueError(
+            f"GitHub workflow run response failed wire validation: {exc}"
+        ) from exc
 
     run_repo_name = wire_run.repository.get("full_name")
     if run_repo_name != expected_repo:
@@ -288,7 +304,9 @@ def acquire_and_verify_github_closure(
     try:
         wire_jobs = _WireJobsResponse.model_validate(jobs_payload)
     except Exception as exc:
-        raise ValueError(f"GitHub workflow jobs response failed wire validation: {exc}") from exc
+        raise ValueError(
+            f"GitHub workflow jobs response failed wire validation: {exc}"
+        ) from exc
 
     matching_jobs = [job for job in wire_jobs.jobs if job.name == _EXPECTED_JOB_NAME]
     if not matching_jobs:
@@ -331,7 +349,9 @@ def acquire_and_verify_github_closure(
             job_conclusion="success",
         )
     except Exception as exc:
-        raise ValueError(f"constructed CI verification record failed validation: {exc}") from exc
+        raise ValueError(
+            f"constructed CI verification record failed validation: {exc}"
+        ) from exc
 
     return VerifiedGitHubClosureFacts(pull_request=pr_record, ci=ci_record)
 
@@ -344,11 +364,37 @@ def _resolve_verified_projection_tree(
 ) -> tuple[PublicationTree, str, str]:
     if required.disposition is not ReconciliationDisposition.REQUIRED:
         raise ValueError("only a REQUIRED reconciliation can become COMPLETE")
-    if required.public_contract_sha256 is None or required.publication_tree_sha256 is None:
-        raise ValueError("REQUIRED reconciliation disposition missing contract or tree hash")
-    if publication_tree is None and public_contract is None:
+    if (
+        required.public_contract_sha256 is None
+        or required.publication_tree_sha256 is None
+    ):
         raise ValueError(
-            "operational closure requires an approved publication_tree or public_contract"
+            "REQUIRED reconciliation disposition missing contract or tree hash"
+        )
+    if publication_tree is None:
+        raise ValueError(
+            "operational closure requires the exact approved publication_tree; "
+            "a public_contract alone cannot synthesize implementation evidence"
+        )
+    if not isinstance(publication_tree, PublicationTree):
+        raise TypeError("publication_tree must be a PublicationTree")
+    files_by_path = publication_tree.as_dict()
+    contract_bytes = files_by_path.get(_POLICY_FIXTURE_PATH)
+    if contract_bytes is None:
+        raise ValueError(
+            f"approved publication_tree must contain '{_POLICY_FIXTURE_PATH}'"
+        )
+    try:
+        parsed_contract = parse_canonical_record(
+            contract_bytes, ReconciliationPolicyContract
+        )
+    except Exception as exc:
+        raise ValueError(
+            "supplied publication_tree does not contain the REQUIRED public contract"
+        ) from exc
+    if canonical_record_hash(parsed_contract) != required.public_contract_sha256:
+        raise ValueError(
+            "supplied publication_tree does not match REQUIRED public_contract_sha256"
         )
     if public_contract is not None:
         if not isinstance(public_contract, ReconciliationPolicyContract):
@@ -357,40 +403,9 @@ def _resolve_verified_projection_tree(
             raise ValueError(
                 "supplied public_contract does not match REQUIRED public_contract_sha256"
             )
-        derived_tree = approved_policy_tree(public_contract)
-        if publication_tree is not None:
-            if not isinstance(publication_tree, PublicationTree):
-                raise TypeError("publication_tree must be a PublicationTree")
-            if publication_tree != derived_tree:
-                raise ValueError(
-                    "supplied publication_tree does not match supplied public_contract"
-                )
-        else:
-            publication_tree = derived_tree
-    else:
-        assert publication_tree is not None
-        if not isinstance(publication_tree, PublicationTree):
-            raise TypeError("publication_tree must be a PublicationTree")
-        files_by_path = publication_tree.as_dict()
-        contract_bytes = files_by_path.get(_POLICY_FIXTURE_PATH)
-        if contract_bytes is None:
+        if contract_bytes != canonical_record_bytes(public_contract):
             raise ValueError(
-                f"approved publication_tree must contain '{_POLICY_FIXTURE_PATH}'"
-            )
-        try:
-            parsed_contract = parse_canonical_record(
-                contract_bytes, ReconciliationPolicyContract
-            )
-        except Exception as exc:
-            raise ValueError(
-                "supplied publication_tree does not match REQUIRED public_contract_sha256"
-            ) from exc
-        if (
-            canonical_record_hash(parsed_contract) != required.public_contract_sha256
-            or approved_policy_tree(parsed_contract) != publication_tree
-        ):
-            raise ValueError(
-                "supplied publication_tree does not match REQUIRED public_contract_sha256"
+                "supplied publication_tree policy fixture does not exactly match supplied public_contract"
             )
 
     if publication_tree.sha256 != required.publication_tree_sha256:
@@ -405,11 +420,18 @@ def _resolve_verified_projection_tree(
 
 
 def _resolve_closure_git_remote(git_remote: str) -> str:
-    if not isinstance(git_remote, str) or not git_remote or git_remote != git_remote.strip():
+    if (
+        not isinstance(git_remote, str)
+        or not git_remote
+        or git_remote != git_remote.strip()
+    ):
         raise ValueError(
             "git_remote must identify the authorized bio-comp/llm-evaluation repository"
         )
-    if git_remote in _PUBLIC_GIT_REMOTES or safe_remote_identity(git_remote) in _PUBLIC_GIT_REMOTES:
+    if (
+        git_remote in _PUBLIC_GIT_REMOTES
+        or safe_remote_identity(git_remote) in _PUBLIC_GIT_REMOTES
+    ):
         return git_remote
     raise ValueError(
         "git_remote must identify the authorized bio-comp/llm-evaluation repository"
@@ -439,7 +461,9 @@ def complete_reconciliation_with_github(
     run_raw = github_client.get_workflow_run(_EXPECTED_REPO, run_id)
     jobs_raw = github_client.get_workflow_run_jobs(_EXPECTED_REPO, run_id)
 
-    raw_merged_commit = pr_raw.get("merge_commit_sha") if isinstance(pr_raw, dict) else None
+    raw_merged_commit = (
+        pr_raw.get("merge_commit_sha") if isinstance(pr_raw, dict) else None
+    )
     merged_commit = raw_merged_commit if isinstance(raw_merged_commit, str) else ""
 
     facts = acquire_and_verify_github_closure(
@@ -466,6 +490,7 @@ def complete_reconciliation_with_github(
         snapshot_state_sha256=required.current_snapshot_sha256,
         public_contract_sha256=contract_sha256,
         publication_tree_sha256=tree_sha256,
+        obligation_ids=required.obligation_ids,
         git=git_readback,
         pull_request=facts.pull_request,
         ci=facts.ci,

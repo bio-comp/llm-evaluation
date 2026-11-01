@@ -4,7 +4,7 @@
 
 The reusable mechanics are incubated in the workspace package `packages/canonical-sync` (import namespace `canonical_sync`). The governing boundary is: `canonical_sync` owns verified acquisition/snapshot mechanics and mechanical Git application/readback of an already-approved path/byte projection over an exact verified base; omitted base paths are preserved and are not implicit deletion authorization. `llm_evaluation` owns authority-role interpretation, material significance, public-safe projection construction, repository/ref/review/CI completion semantics, and the `NONE` / `REQUIRED` / `BLOCKED` / `COMPLETE` governance state machine. A `VerifiedSnapshot` is evidence, not authorization to mutate Git.
 
-The current vertical slice in `llm_evaluation` is intentionally narrow: it acquires the four configured root governance roles (`README.md`, `DECISIONS.md`, `EXPERIMENTS.md`, and `REVIEW_LEDGER.md`) and projects only one public-safe fixture (`fixtures/reconciliation_policy_contract.json`), rather than mirroring or compiling the entire evaluation methodology.
+The acquisition vertical slice in `llm_evaluation` is intentionally narrow: it acquires the four configured root governance roles (`README.md`, `DECISIONS.md`, `EXPERIMENTS.md`, and `REVIEW_LEDGER.md`) rather than mirroring the entire evaluation methodology. The public policy fixture (`fixtures/reconciliation_policy_contract.json`) is a mandatory component of a public-change projection, but it is not a substitute for the exact project-reviewed implementation/documentation files required by a specific reconciliation obligation.
 
 ## Identity and canonical serialization
 
@@ -67,16 +67,16 @@ Ordinary public CI is credential-free. It may install the optional Google client
 
 ## Public reconciliation contract
 
-`fixtures/reconciliation_policy_contract.json` is deliberately public-safe. It records only the executable four-state reconciliation contract (`NONE`, `REQUIRED`, `BLOCKED`, `COMPLETE`) and the verified-publication conditions required for `COMPLETE` under schema version 2. Private Drive identities and canonical narrative are excluded by design.
+`fixtures/reconciliation_policy_contract.json` is deliberately public-safe. It records only the executable four-state reconciliation contract (`NONE`, `REQUIRED`, `BLOCKED`, `COMPLETE`) and the verified-publication conditions required for `COMPLETE` under schema version 3. Private Drive identities and canonical narrative are excluded by design.
 
 Under D-016, structural record validation is strictly distinguished from operational acquisition and readback. Pure structural helpers (`complete_reconciliation`, `VerifiedPublicationReceiptRecord`, `GitPublicationReceiptRecord`) validate persisted record invariants, but a caller-constructed or deserialized receipt never substitutes for live operational verification. Operational closure in `llm_evaluation.canonical_github.complete_reconciliation_with_github` executes the following read-only sequence:
-1. Recomputes and binds the supplied `PublicationTree` and/or `ReconciliationPolicyContract` against `required.public_contract_sha256` and `required.publication_tree_sha256` before any network or Git call;
+1. Requires the exact project-reviewed `PublicationTree` and binds it against `required.publication_tree_sha256`; the tree must contain canonical bytes for the reviewed `ReconciliationPolicyContract`, and a contract alone can never synthesize implementation evidence. The matching non-empty reconciliation-obligation set is carried in the `REQUIRED` record;
 2. Validates external GitHub responses (`_WirePullRequest`, `_WireWorkflowRun`, `_WireWorkflowJob`) using strict Pydantic wire models without network I/O inside validators;
 3. Verifies exact bindings for `bio-comp/llm-evaluation`: pull request `pr_number` is merged (`merged == True`, explicit ISO-8601 UTC `merged_at`, `merge_commit_sha == M`, reviewed `head.sha == H` on a non-`main` branch where `H` and `M` may legitimately differ, and `base.ref == "refs/heads/main"`), and post-merge `push` workflow run `run_id` on `refs/heads/main` at `head_sha == M` succeeded for `.github/workflows/ci.yml` (`Public CI`) with unique required job `verify` (`conclusion == "success"`);
 4. Performs actual read-only Git verification via `GitPublisher(remote, ref="refs/heads/main").verify(publication_tree, expected_commit=M)` to confirm `refs/heads/main` is at `M` without concurrent movement and contains the exact approved `PublicationTree` bytes;
-5. Produces versioned durable evidence records (`GitHubPullRequestMergeRecord` schema v2, `GitHubCIVerificationRecord` schema v3, `GitPublicationReceiptRecord` schema v3) bound into `VerifiedPublicationReceiptRecord` schema v4 and `ReconciliationDispositionRecord` schema v3 (`COMPLETE`).
+5. Produces versioned durable evidence records (`GitHubPullRequestMergeRecord` schema v2, `GitHubCIVerificationRecord` schema v3, `GitPublicationReceiptRecord` schema v3) bound into `VerifiedPublicationReceiptRecord` schema v5 and `ReconciliationDispositionRecord` schema v4 (`COMPLETE`), preserving the exact obligation set and approved tree identity.
 
-The policy contract schema v2 explicitly declares these invariants via dedicated boolean fields (`complete_requires_authoritative_github_evidence`, `complete_requires_merged_pull_request`, `complete_requires_post_merge_main_push_ci`, `complete_requires_exact_workflow_identity`, `complete_requires_exact_required_job_identity`, `complete_requires_snapshot_match`, `complete_requires_contract_match`, `complete_requires_readback`).
+The policy contract schema v3 explicitly declares these invariants via dedicated boolean fields, including exact approved-publication-tree and obligation-set matching in addition to snapshot/contract/readback, authoritative GitHub evidence, merged PR, post-merge `push`/`main` CI, exact workflow identity, and exact required-job identity.
 
 ## Related design records
 
@@ -111,15 +111,16 @@ The D-016 authority profile validator in `llm_evaluation.canonical_authority` en
 - `GitPublicationReceiptRecord`: schema v3 retained (restores declared CAS and verified-readback guarantees without changing persisted fields).
 - `GitHubPullRequestMergeRecord`: schema v2 (`merged_at` ISO 8601 UTC timestamp, canonical `refs/heads/...` ref format).
 - `GitHubCIVerificationRecord`: schema v3 (`workflow_path`, `event="push"`, `head_branch="refs/heads/main"`, `run_conclusion="success"`, `job_id`, `job_name="verify"`, `job_conclusion="success"`).
-- `VerifiedPublicationReceiptRecord`: schema v4 (binds PR v2, CI v3, and verified Git readback v3).
-- `ReconciliationDispositionRecord`: schema v3 (binds `VerifiedPublicationReceiptRecord` v4).
-- `ReconciliationPolicyContract`: schema v2 (explicit booleans for all authoritative closure requirements).
+- `VerifiedPublicationReceiptRecord`: schema v5 (binds the exact obligation set, PR v2, CI v3, and verified Git readback v3).
+- `ReconciliationDispositionRecord`: schema v4 (binds the exact obligation set and `VerifiedPublicationReceiptRecord` v5).
+- `ReconciliationPolicyContract`: schema v3 (adds exact approved-publication-tree and obligation-set closure requirements).
+- `DurableReconciliationStateRecord`: schema v2 (requires the new completion evidence shape).
 
-Historical payloads remain untouched; current readers explicitly reject old schema versions and never infer missing provenance or completion evidence. No historical private receipt is deleted or migrated.
+Historical payloads are never silently reinterpreted. Durable schema v1 is fail-closed as active state and requires explicit supersession recovery: exact legacy bytes are archived under a hash-addressed local `reconciliation-history/` record with readback verification before the active legacy pathname is removed. The v2 writer also refuses to replace a detected v1 active file, so this recovery step cannot be bypassed by direct persistence. This preserves the historical receipt without allowing it to act as the current reconciliation baseline.
 
-### Current status and pending gates
+### Current operational boundary
 
-- **Implemented and deterministically verified**: `canonical_sync` acquisition/store/Git mechanics, `llm_evaluation` authority and reconciliation adapters, read-only Git + GitHub operational closure (`complete_reconciliation_with_github`), the `fixtures/reconciliation_policy_contract.json` vertical slice, and the project-owned durable reconciliation state store (`~/.config/llm-evaluation/last-reconciled-state.json`).
-- **Verified local live acquisition**: Dedicated local OAuth Desktop client (`LLM Evaluation - Mac`), isolated authorized-user ADC (`CLOUDSDK_CONFIG="$HOME/.config/gcloud-llm-evaluation"`), exact `https://www.googleapis.com/auth/drive.readonly` scope, and live Drive acquisition against the registered D-016 authority profile have been verified. Sessions without live Drive credentials run the deterministic offline test suite (`-m 'not live_drive'`).
-- **Durable reconciliation store and PR closure**: PR #9 operational closure was verified at merge commit `869bdb26c3038edeb7fd1627a1acce6ca723c25c` with post-merge `Public CI` success and Git readback. The project-owned durable store for `LastReconciledStateRecord` and `ReconciliationDispositionRecord` is designated at `~/.config/llm-evaluation/last-reconciled-state.json` (overrideable via `LLM_EVALUATION_RECONCILIATION_STATE_PATH`) with atomic write and readback verification.
-- **Pending activation gates**: the durable reconciliation store is already on `main` via PR #11. D-016 remains `REQUIRED` until the tested local-auth helper/documentation change is reviewed and merged, the resulting `main` is verified in post-merge `Public CI` and Git readback, and the latest last-reconciled state is durably persisted/read back. Hosted GitHub OIDC -> Google WIF remains unprovisioned, and E-002 remains `PLANNED` (no real model sampling is authorized here).
+- `canonical_sync` acquisition/store/Git mechanics and `llm_evaluation` GitHub/Git readback are implemented and deterministically tested. Dedicated local OAuth/ADC plus registered live Drive acquisition have been verified.
+- PR #10 merged the tested portable local-auth helper/documentation path into `main` at `040715c91115a4adab29035bec4a38c76ac6846f`, with exact post-merge `Public CI` verification.
+- A subsequent closure audit found that the existing durable v1 state bound the then-current Drive snapshot to older PR #11 evidence while a later helper obligation was still outstanding. The v1 state therefore cannot be treated as the authoritative current baseline. The repair requires an explicit exact publication tree, a non-empty obligation set, versioned v2 durable state, and explicit byte-preserving supersession of legacy v1 before corrected closure.
+- The live `NONE` / `REQUIRED` / `BLOCKED` / `COMPLETE` disposition is Drive-owned governance state. Do not infer current completion merely from this repository document. Hosted GitHub OIDC -> Google WIF remains a later activation gate, and E-002 model sampling remains separately governed.

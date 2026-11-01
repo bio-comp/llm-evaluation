@@ -11,6 +11,7 @@ from llm_evaluation.canonical_reconciliation import (
     ProjectImpact,
     ReconciliationDisposition,
     ReviewedCanonicalImpact,
+    approved_policy_tree,
     current_executable_policy_contract,
     reconcile_reviewed_snapshot,
 )
@@ -193,7 +194,18 @@ def test_authoritative_closure_rejects_ci_with_wrong_head_sha() -> None:
 
 
 def test_authoritative_closure_rejects_absent_verify_job() -> None:
-    no_verify = {"jobs": [{"id": 1, "run_id": 99999, "name": "lint", "head_sha": MERGED_SHA, "status": "completed", "conclusion": "success"}]}
+    no_verify = {
+        "jobs": [
+            {
+                "id": 1,
+                "run_id": 99999,
+                "name": "lint",
+                "head_sha": MERGED_SHA,
+                "status": "completed",
+                "conclusion": "success",
+            }
+        ]
+    }
     with pytest.raises(ValueError, match="verify"):
         acquire_and_verify_github_closure(
             pr_payload=valid_pr_payload(),
@@ -223,7 +235,11 @@ def test_authoritative_closure_rejects_unsuccessful_verify_job(conclusion: str) 
 
 def test_authoritative_closure_rejects_wrong_repository() -> None:
     wrong_repo_pr = valid_pr_payload(
-        head={"ref": "feat", "sha": REVIEWED_HEAD_SHA, "repo": {"full_name": "other/repo"}},
+        head={
+            "ref": "feat",
+            "sha": REVIEWED_HEAD_SHA,
+            "repo": {"full_name": "other/repo"},
+        },
         base={"ref": "main", "sha": "0" * 40, "repo": {"full_name": "other/repo"}},
     )
     with pytest.raises(ValueError, match="repository"):
@@ -274,14 +290,21 @@ def test_complete_reconciliation_with_github_operational_path(
 ) -> None:
     import subprocess
     from canonical_sync.errors import RemoteVerificationError
-    from canonical_sync.git_publication import GitPublisher, PublicationFile, PublicationTree
+    from canonical_sync.git_publication import (
+        GitPublisher,
+        PublicationFile,
+        PublicationTree,
+    )
 
+    contract = current_executable_policy_contract()
     reconciled = reconcile_reviewed_snapshot(
         current_snapshot_sha256=H2,
         previous=LastReconciledStateRecord(snapshot_state_sha256=H1),
         reviewed=ReviewedCanonicalImpact(
             impact=ProjectImpact.PUBLIC_CHANGE_REQUIRED,
-            public_contract=current_executable_policy_contract(),
+            public_contract=contract,
+            publication_tree=approved_policy_tree(contract),
+            obligation_ids=("D-016:test-obligation",),
         ),
     )
     required = reconciled.disposition
@@ -292,7 +315,9 @@ def test_complete_reconciliation_with_github_operational_path(
 
     # Seed a disposable bare Git remote with the approved projection merged on refs/heads/main
     remote = tmp_path / "remote.git"
-    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "--bare", str(remote)], check=True, capture_output=True
+    )
     publisher = GitPublisher(str(remote), ref="refs/heads/main")
     base_pub = publisher.publish(
         PublicationTree(
@@ -319,7 +344,9 @@ def test_complete_reconciliation_with_github_operational_path(
     original_git = GitPublisher._git
     active_authoritative_remote = remote
 
-    def track_git(self_pub: GitPublisher, repo: Any, *args: str, **kwargs: Any) -> bytes:
+    def track_git(
+        self_pub: GitPublisher, repo: Any, *args: str, **kwargs: Any
+    ) -> bytes:
         if args:
             git_commands.append(args[0])
         if (
@@ -346,10 +373,15 @@ def test_complete_reconciliation_with_github_operational_path(
     assert completed.disposition is ReconciliationDisposition.COMPLETE
     assert completed.verified_publication is not None
     assert completed.verified_publication.pull_request.pull_request_number == 9
-    assert completed.verified_publication.pull_request.head_commit_sha == REVIEWED_HEAD_SHA
+    assert (
+        completed.verified_publication.pull_request.head_commit_sha == REVIEWED_HEAD_SHA
+    )
     assert completed.verified_publication.pull_request.merged_commit_sha == merged_sha
     assert completed.verified_publication.git.resulting_commit == merged_sha
-    assert completed.verified_publication.git.remote == "https://github.com/bio-comp/llm-evaluation.git"
+    assert (
+        completed.verified_publication.git.remote
+        == "https://github.com/bio-comp/llm-evaluation.git"
+    )
     assert completed.verified_publication.ci.run_id == 99999
 
     # Caller-constructed receipt parameter must not be accepted
@@ -366,9 +398,13 @@ def test_complete_reconciliation_with_github_operational_path(
     # Reproduction of PR #8 (2436e562ee6aa9f29e5c6fd9235cf0eab258eeff) + run 40183314427:
     # Genuine PR/CI facts at a commit lacking fixtures/reconciliation_policy_contract.json must fail!
     pr8_remote = tmp_path / "pr8_remote.git"
-    subprocess.run(["git", "init", "--bare", str(pr8_remote)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "--bare", str(pr8_remote)], check=True, capture_output=True
+    )
     pr8_pub = GitPublisher(str(pr8_remote), ref="refs/heads/main").publish(
-        PublicationTree(files=(PublicationFile("README.md", b"# pre-D016 main without fixture\n"),)),
+        PublicationTree(
+            files=(PublicationFile("README.md", b"# pre-D016 main without fixture\n"),)
+        ),
         expected_base=None,
         commit_message="Merge pull request #8",
     )
@@ -484,7 +520,6 @@ def test_complete_reconciliation_with_github_operational_path(
         )
 
 
-
 def test_canonical_record_rejects_bare_branch_payload() -> None:
     import json
 
@@ -521,7 +556,11 @@ def test_closure_rejects_pr_head_ref_being_main() -> None:
     with pytest.raises(ValueError, match="head ref cannot be the main branch"):
         acquire_and_verify_github_closure(
             pr_payload=valid_pr_payload(
-                head={"ref": "refs/heads/main", "sha": REVIEWED_HEAD_SHA, "repo": {"full_name": REPO}},
+                head={
+                    "ref": "refs/heads/main",
+                    "sha": REVIEWED_HEAD_SHA,
+                    "repo": {"full_name": REPO},
+                },
             ),
             run_payload=valid_run_payload(),
             jobs_payload=valid_jobs_payload(),
@@ -536,7 +575,11 @@ def test_closure_rejects_pr_wrong_base_ref() -> None:
     with pytest.raises(ValueError, match="base ref"):
         acquire_and_verify_github_closure(
             pr_payload=valid_pr_payload(
-                base={"ref": "refs/heads/develop", "sha": "0" * 40, "repo": {"full_name": REPO}},
+                base={
+                    "ref": "refs/heads/develop",
+                    "sha": "0" * 40,
+                    "repo": {"full_name": REPO},
+                },
             ),
             run_payload=valid_run_payload(),
             jobs_payload=valid_jobs_payload(),
@@ -551,7 +594,11 @@ def test_closure_rejects_pr_wrong_repo_in_base() -> None:
     with pytest.raises(ValueError, match="repository"):
         acquire_and_verify_github_closure(
             pr_payload=valid_pr_payload(
-                base={"ref": "refs/heads/main", "sha": "0" * 40, "repo": {"full_name": "other/repo"}},
+                base={
+                    "ref": "refs/heads/main",
+                    "sha": "0" * 40,
+                    "repo": {"full_name": "other/repo"},
+                },
             ),
             run_payload=valid_run_payload(),
             jobs_payload=valid_jobs_payload(),
@@ -621,7 +668,9 @@ def test_default_github_transport(monkeypatch: pytest.MonkeyPatch) -> None:
         def __exit__(self, *args: Any) -> None:
             pass
 
-    def fake_urlopen(req: urllib.request.Request, *args: Any, **kwargs: Any) -> FakeResponse:
+    def fake_urlopen(
+        req: urllib.request.Request, *args: Any, **kwargs: Any
+    ) -> FakeResponse:
         calls.append(req.full_url)
         assert req.get_header("Authorization") == "Bearer test-token"
         assert req.get_header("Accept") == "application/vnd.github+json"
@@ -642,7 +691,9 @@ def test_default_github_transport(monkeypatch: pytest.MonkeyPatch) -> None:
     assert jobs["jobs"] == []
 
 
-def test_default_github_transport_rejects_non_dict(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_github_transport_rejects_non_dict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from llm_evaluation.canonical_github import DefaultGitHubTransport
     import urllib.request
 
@@ -663,7 +714,9 @@ def test_default_github_transport_rejects_non_dict(monkeypatch: pytest.MonkeyPat
         transport.get_pull_request(REPO, 9)
 
 
-def test_default_github_transport_passes_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_github_transport_passes_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from llm_evaluation.canonical_github import DefaultGitHubTransport
     import urllib.request
 
@@ -679,7 +732,9 @@ def test_default_github_transport_passes_timeout(monkeypatch: pytest.MonkeyPatch
         def __exit__(self, *args: Any) -> None:
             pass
 
-    def fake_urlopen(req: urllib.request.Request, timeout: float = 30.0) -> FakeResponse:
+    def fake_urlopen(
+        req: urllib.request.Request, timeout: float = 30.0
+    ) -> FakeResponse:
         observed_timeouts.append(timeout)
         return FakeResponse()
 
@@ -858,7 +913,9 @@ def test_closure_rejects_verify_job_with_mismatched_run_id() -> None:
         )
 
 
-def test_default_github_transport_paginates_workflow_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_github_transport_paginates_workflow_jobs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from llm_evaluation.canonical_github import DefaultGitHubTransport
     import json
     import urllib.request
@@ -878,7 +935,9 @@ def test_default_github_transport_paginates_workflow_jobs(monkeypatch: pytest.Mo
         def __exit__(self, *args: Any) -> None:
             pass
 
-    def fake_urlopen(req: urllib.request.Request, *args: Any, **kwargs: Any) -> FakeResponse:
+    def fake_urlopen(
+        req: urllib.request.Request, *args: Any, **kwargs: Any
+    ) -> FakeResponse:
         requested_urls.append(req.full_url)
         if "&page=1" in req.full_url:
             payload = {"total_count": 2, "jobs": [{"id": 1, "name": "setup"}]}
@@ -900,7 +959,9 @@ def test_default_github_transport_paginates_workflow_jobs(monkeypatch: pytest.Mo
     assert "per_page=100&page=2" in requested_urls[1]
 
 
-def test_default_github_transport_workflow_jobs_edge_cases(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_github_transport_workflow_jobs_edge_cases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from llm_evaluation.canonical_github import DefaultGitHubTransport
     import urllib.request
 
@@ -919,14 +980,21 @@ def test_default_github_transport_workflow_jobs_edge_cases(monkeypatch: pytest.M
 
     # 1. Empty response
     monkeypatch.setattr(
-        urllib.request, "urlopen", lambda req, *a, **kw: FakeResponse(b'{"total_count": 0, "jobs": []}')
+        urllib.request,
+        "urlopen",
+        lambda req, *a, **kw: FakeResponse(b'{"total_count": 0, "jobs": []}'),
     )
     transport = DefaultGitHubTransport()
-    assert transport.get_workflow_run_jobs(REPO, 12345) == {"total_count": 0, "jobs": []}
+    assert transport.get_workflow_run_jobs(REPO, 12345) == {
+        "total_count": 0,
+        "jobs": [],
+    }
 
     # 2. Non-list jobs field raises ValueError
     monkeypatch.setattr(
-        urllib.request, "urlopen", lambda req, *a, **kw: FakeResponse(b'{"total_count": 1, "jobs": "invalid"}')
+        urllib.request,
+        "urlopen",
+        lambda req, *a, **kw: FakeResponse(b'{"total_count": 1, "jobs": "invalid"}'),
     )
     with pytest.raises(ValueError, match="unexpected non-list 'jobs' field"):
         transport.get_workflow_run_jobs(REPO, 12345)
@@ -939,34 +1007,45 @@ def test_default_github_transport_workflow_jobs_edge_cases(monkeypatch: pytest.M
         transport.get_workflow_run_jobs(REPO, 12345)
 
     monkeypatch.setattr(
-        urllib.request, "urlopen", lambda req, *a, **kw: FakeResponse(b'{"total_count": "1", "jobs": []}')
+        urllib.request,
+        "urlopen",
+        lambda req, *a, **kw: FakeResponse(b'{"total_count": "1", "jobs": []}'),
     )
     with pytest.raises(ValueError, match="missing valid integer 'total_count'"):
         transport.get_workflow_run_jobs(REPO, 12345)
 
     # Boolean total_count (subclass of int in Python) must also be rejected
     monkeypatch.setattr(
-        urllib.request, "urlopen", lambda req, *a, **kw: FakeResponse(b'{"total_count": true, "jobs": []}')
+        urllib.request,
+        "urlopen",
+        lambda req, *a, **kw: FakeResponse(b'{"total_count": true, "jobs": []}'),
     )
     with pytest.raises(ValueError, match="missing valid integer 'total_count'"):
         transport.get_workflow_run_jobs(REPO, 12345)
 
     monkeypatch.setattr(
-        urllib.request, "urlopen", lambda req, *a, **kw: FakeResponse(b'{"total_count": false, "jobs": []}')
+        urllib.request,
+        "urlopen",
+        lambda req, *a, **kw: FakeResponse(b'{"total_count": false, "jobs": []}'),
     )
     with pytest.raises(ValueError, match="missing valid integer 'total_count'"):
         transport.get_workflow_run_jobs(REPO, 12345)
 
     # 4. Premature truncation (fewer jobs returned than total_count before empty page)
     monkeypatch.setattr(
-        urllib.request, "urlopen", lambda req, *a, **kw: FakeResponse(b'{"total_count": 5, "jobs": []}')
+        urllib.request,
+        "urlopen",
+        lambda req, *a, **kw: FakeResponse(b'{"total_count": 5, "jobs": []}'),
     )
     with pytest.raises(ValueError, match="truncated prematurely"):
         transport.get_workflow_run_jobs(REPO, 12345)
 
     # 5. Safety cap exceeded before complete inventory fails closed
-    def fake_capped_urlopen(req: urllib.request.Request, *args: Any, **kwargs: Any) -> FakeResponse:
+    def fake_capped_urlopen(
+        req: urllib.request.Request, *args: Any, **kwargs: Any
+    ) -> FakeResponse:
         import json
+
         payload = {"total_count": 5, "jobs": [{"id": 1, "name": "job"}]}
         return FakeResponse(json.dumps(payload).encode("utf-8"))
 
@@ -980,7 +1059,9 @@ def test_default_github_transport_workflow_jobs_edge_cases(monkeypatch: pytest.M
         FakeResponse(b'{"total_count": 2, "jobs": [{"id": 1, "name": "verify"}]}'),
         FakeResponse(b'{"total_count": 3, "jobs": [{"id": 2, "name": "other"}]}'),
     ]
-    monkeypatch.setattr(urllib.request, "urlopen", lambda req, *a, **kw: drift_responses.pop(0))
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda req, *a, **kw: drift_responses.pop(0)
+    )
     drift_transport = DefaultGitHubTransport()
     with pytest.raises(ValueError, match="total_count changed during pagination"):
         drift_transport.get_workflow_run_jobs(REPO, 12345)
@@ -1010,7 +1091,11 @@ def test_complete_reconciliation_with_github_projection_and_remote_binding_edges
 ) -> None:
     import subprocess
     from canonical_sync.errors import RemoteVerificationError
-    from canonical_sync.git_publication import GitPublisher, PublicationFile, PublicationTree
+    from canonical_sync.git_publication import (
+        GitPublisher,
+        PublicationFile,
+        PublicationTree,
+    )
 
     contract = current_executable_policy_contract()
     reconciled = reconcile_reviewed_snapshot(
@@ -1019,13 +1104,17 @@ def test_complete_reconciliation_with_github_projection_and_remote_binding_edges
         reviewed=ReviewedCanonicalImpact(
             impact=ProjectImpact.PUBLIC_CHANGE_REQUIRED,
             public_contract=contract,
+            publication_tree=approved_policy_tree(contract),
+            obligation_ids=("D-016:test-obligation",),
         ),
     )
     required = reconciled.disposition
     assert reconciled.publication_tree is not None
 
     remote = tmp_path / "remote.git"
-    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "--bare", str(remote)], check=True, capture_output=True
+    )
     publisher = GitPublisher(str(remote), ref="refs/heads/main")
     pub = publisher.publish(
         reconciled.publication_tree,
@@ -1054,16 +1143,16 @@ def test_complete_reconciliation_with_github_projection_and_remote_binding_edges
 
     monkeypatch.setattr(GitPublisher, "_git", route_public_remote)
 
-    # 1. Supplying public_contract alone derives and verifies the approved PublicationTree
-    completed_by_contract = complete_reconciliation_with_github(
-        required=required,
-        public_contract=contract,
-        pr_number=9,
-        reviewed_head_sha=REVIEWED_HEAD_SHA,
-        github_client=provider,
-        run_id=99999,
-    )
-    assert completed_by_contract.disposition is ReconciliationDisposition.COMPLETE
+    # 1. public_contract alone is insufficient: implementation evidence must be an exact tree
+    with pytest.raises(ValueError, match="exact approved publication_tree"):
+        complete_reconciliation_with_github(
+            required=required,
+            public_contract=contract,
+            pr_number=9,
+            reviewed_head_sha=REVIEWED_HEAD_SHA,
+            github_client=provider,
+            run_id=99999,
+        )
 
     # 2. Supplying both public_contract and matching publication_tree succeeds
     completed_both = complete_reconciliation_with_github(
@@ -1094,7 +1183,7 @@ def test_complete_reconciliation_with_github_projection_and_remote_binding_edges
         )
 
     # 4. Missing both publication_tree and public_contract is rejected
-    with pytest.raises(ValueError, match="requires an approved publication_tree or public_contract"):
+    with pytest.raises(ValueError, match="exact approved publication_tree"):
         complete_reconciliation_with_github(
             required=required,
             pr_number=9,
@@ -1108,6 +1197,7 @@ def test_complete_reconciliation_with_github_projection_and_remote_binding_edges
     with pytest.raises(ValueError, match="public_contract_sha256"):
         complete_reconciliation_with_github(
             required=required,
+            publication_tree=reconciled.publication_tree,
             public_contract=stale_contract,
             pr_number=9,
             reviewed_head_sha=REVIEWED_HEAD_SHA,
@@ -1119,7 +1209,10 @@ def test_complete_reconciliation_with_github_projection_and_remote_binding_edges
     other_tree = PublicationTree(
         files=(PublicationFile("fixtures/other.json", b"{}\n"),)
     )
-    with pytest.raises(ValueError, match="does not match supplied public_contract"):
+    with pytest.raises(
+        ValueError,
+        match="reconciliation_policy_contract.json|policy fixture|public contract|public_contract",
+    ):
         complete_reconciliation_with_github(
             required=required,
             public_contract=contract,
@@ -1131,7 +1224,9 @@ def test_complete_reconciliation_with_github_projection_and_remote_binding_edges
         )
 
     # 7. publication_tree without fixtures/reconciliation_policy_contract.json is rejected
-    with pytest.raises(ValueError, match="fixtures/reconciliation_policy_contract.json"):
+    with pytest.raises(
+        ValueError, match="fixtures/reconciliation_policy_contract.json"
+    ):
         complete_reconciliation_with_github(
             required=required,
             publication_tree=other_tree,
@@ -1187,7 +1282,14 @@ def test_complete_reconciliation_with_github_projection_and_remote_binding_edges
         res = route_public_remote(self_pub, repo, *args, **kwargs)
         if args and args[0] == "fetch":
             subprocess.run(
-                ["git", "-C", str(remote), "update-ref", "refs/heads/main", advanced_sha],
+                [
+                    "git",
+                    "-C",
+                    str(remote),
+                    "update-ref",
+                    "refs/heads/main",
+                    advanced_sha,
+                ],
                 check=True,
                 capture_output=True,
             )
@@ -1198,6 +1300,118 @@ def test_complete_reconciliation_with_github_projection_and_remote_binding_edges
         complete_reconciliation_with_github(
             required=required,
             publication_tree=reconciled.publication_tree,
+            pr_number=9,
+            reviewed_head_sha=REVIEWED_HEAD_SHA,
+            github_client=provider,
+            run_id=99999,
+        )
+
+
+def test_operational_closure_requires_explicit_exact_multi_file_projection() -> None:
+    from canonical_sync.git_publication import PublicationFile, PublicationTree
+
+    contract = current_executable_policy_contract()
+    exact_tree = PublicationTree(
+        files=(
+            *(
+                __import__(
+                    "llm_evaluation.canonical_reconciliation",
+                    fromlist=["approved_policy_tree"],
+                )
+                .approved_policy_tree(contract)
+                .files
+            ),
+            PublicationFile(
+                "scripts/refresh_google_drive_adc.py", b"# approved helper\n"
+            ),
+        )
+    )
+    reviewed = ReviewedCanonicalImpact(
+        impact=ProjectImpact.PUBLIC_CHANGE_REQUIRED,
+        public_contract=contract,
+        publication_tree=exact_tree,
+        obligation_ids=("D-016:portable-adc-helper",),
+    )
+    reconciled = reconcile_reviewed_snapshot(
+        current_snapshot_sha256=H2,
+        previous=LastReconciledStateRecord(snapshot_state_sha256=H1),
+        reviewed=reviewed,
+    )
+    assert reconciled.publication_tree == exact_tree
+    assert reconciled.disposition.publication_tree_sha256 == exact_tree.sha256
+
+
+def test_newer_canonical_obligation_cannot_close_against_older_policy_only_merge(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+    from canonical_sync.errors import RemoteVerificationError
+    from canonical_sync.git_publication import GitPublisher, PublicationFile, PublicationTree
+
+    contract = current_executable_policy_contract()
+    policy_tree = approved_policy_tree(contract)
+    exact_tree = PublicationTree(
+        files=(
+            *policy_tree.files,
+            PublicationFile(
+                "scripts/refresh_google_drive_adc.py",
+                b"# exact helper required by newer canonical obligation\n",
+            ),
+            PublicationFile(
+                "tests/test_refresh_google_drive_adc.py",
+                b"# exact helper regression tests\n",
+            ),
+        )
+    )
+    reconciled = reconcile_reviewed_snapshot(
+        current_snapshot_sha256=H2,
+        previous=LastReconciledStateRecord(snapshot_state_sha256=H1),
+        reviewed=ReviewedCanonicalImpact(
+            impact=ProjectImpact.PUBLIC_CHANGE_REQUIRED,
+            public_contract=contract,
+            publication_tree=exact_tree,
+            obligation_ids=(
+                "D-016:local-auth-runbook",
+                "D-016:portable-adc-helper",
+            ),
+        ),
+    )
+
+    # Simulate an older merged PR that has valid policy-fixture bytes and valid PR/CI
+    # metadata but predates the helper/test files required by the newer obligation.
+    remote = tmp_path / "older-merge.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    old_pub = GitPublisher(str(remote), ref="refs/heads/main").publish(
+        policy_tree,
+        expected_base=None,
+        commit_message="older partial reconciliation",
+    )
+    merged_sha = old_pub.resulting_commit
+    provider = FakeGitHubProvider(
+        pr_payload=valid_pr_payload(merge_commit_sha=merged_sha),
+        run_payload=valid_run_payload(head_sha=merged_sha),
+        jobs_payload=valid_jobs_payload(head_sha=merged_sha),
+    )
+
+    original_git = GitPublisher._git
+
+    def route_public_remote(
+        self_pub: GitPublisher, repo: Any, *args: str, **kwargs: Any
+    ) -> bytes:
+        if (
+            len(args) == 4
+            and args[:3] == ("remote", "add", "origin")
+            and args[3] == "https://github.com/bio-comp/llm-evaluation.git"
+        ):
+            args = ("remote", "add", "origin", str(remote))
+        return original_git(self_pub, repo, *args, **kwargs)
+
+    monkeypatch.setattr(GitPublisher, "_git", route_public_remote)
+    with pytest.raises(RemoteVerificationError):
+        complete_reconciliation_with_github(
+            required=reconciled.disposition,
+            publication_tree=exact_tree,
+            public_contract=contract,
             pr_number=9,
             reviewed_head_sha=REVIEWED_HEAD_SHA,
             github_client=provider,
