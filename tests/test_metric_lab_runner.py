@@ -334,3 +334,163 @@ def test_auxiliary_deterministic_controls_include_prevalence_subgroup_and_aurc_n
     assert controls.aurc_upstream_negative_control == 0.5
     assert controls.aurc_prefix_oracle == 0.75
     assert controls.aurc_defect_detected is True
+
+
+def test_independent_unit_debiased_squared_l2_is_invariant_to_shared_row_duplication() -> (
+    None
+):
+    from llm_evaluation.metric_lab_runner import independent_unit_debiased_squared_l2
+
+    forecasts = (0.2, 0.8, 0.2, 0.8)
+    outcomes = (0.0, 1.0, 1.0, 0.0)
+    item_ids = (0, 1, 2, 3)
+    base = independent_unit_debiased_squared_l2(
+        forecasts=forecasts, outcomes=outcomes, item_ids=item_ids, num_bins=2
+    )
+    duplicated_forecasts = tuple(q for q in forecasts for _ in range(16))
+    duplicated_outcomes = tuple(y for y in outcomes for _ in range(16))
+    duplicated_item_ids = tuple(item for item in item_ids for _ in range(16))
+    duplicated = independent_unit_debiased_squared_l2(
+        forecasts=duplicated_forecasts,
+        outcomes=duplicated_outcomes,
+        item_ids=duplicated_item_ids,
+        num_bins=2,
+    )
+    assert duplicated == base
+
+
+def test_brier_cluster_hoeffding_interval_is_bounded_and_contains_known_mean() -> None:
+    intervals = mean_loss_intervals(
+        values=tuple([0.0] * 25 + [0.0] * 25 + [1.0] * 25 + [1.0] * 25),
+        item_ids=tuple([0] * 25 + [1] * 25 + [2] * 25 + [3] * 25),
+    )
+    assert intervals.cluster_hoeffding.lower == 0.0
+    assert intervals.cluster_hoeffding.upper == 1.0
+    assert intervals.cluster_hoeffding.lower <= 0.5 <= intervals.cluster_hoeffding.upper
+    assert intervals.cluster_hoeffding.se is None
+
+
+def test_replicate_reports_row_and_independent_unit_squared_l2_separately() -> None:
+    design = MetricLabDesign(
+        p_values=("0.5",),
+        forecast_kinds=("constant",),
+        n_base_items=(50,),
+        k_within_item=(16,),
+        shared_within_item=(False, True),
+        reference_flip_etas=("0",),
+        fixed_bin_count=1,
+        equal_mass_bin_count=1,
+    )
+    cell = BaseCellSpec(
+        forecast_kind="constant",
+        n_base_items=50,
+        k_within_item=16,
+        shared_within_item=True,
+        reference_flip_eta=0.0,
+    )
+    rep = evaluate_base_replicate(
+        design=design,
+        cell=cell,
+        phase=MetricLabPhase.DEVELOPMENT,
+        replicate_index=1,
+        sampling_unit=SamplingUnit.FIXED_CASE,
+    )
+    target = rep.targets[TargetKind.CLEAN_TRUTH]
+    assert isinstance(target.debiased_squared_l2_row, float)
+    assert isinstance(target.debiased_squared_l2_independent_unit, float)
+    assert target.debiased_l2_independent_unit >= 0.0
+    assert target.debiased_l2_row >= 0.0
+
+
+def test_cell_summary_evaluates_unbiased_squared_l2_against_squared_truth() -> None:
+    design = MetricLabDesign(
+        p_values=("0.5",),
+        forecast_kinds=("constant",),
+        n_base_items=(50,),
+        k_within_item=(16,),
+        shared_within_item=(False, True),
+        reference_flip_etas=("0",),
+        fixed_bin_count=1,
+        equal_mass_bin_count=1,
+    )
+    cell = BaseCellSpec(
+        forecast_kind="constant",
+        n_base_items=50,
+        k_within_item=16,
+        shared_within_item=True,
+        reference_flip_eta=0.0,
+    )
+    summary = summarize_base_cell(
+        design=design,
+        cell=cell,
+        phase=MetricLabPhase.DEVELOPMENT,
+        sampling_unit=SamplingUnit.FIXED_CASE,
+        num_replicates=100,
+    )
+    metrics = summary.targets[TargetKind.CLEAN_TRUTH].metrics
+    assert metrics["debiased_squared_l2_independent_unit"].true_value == 0.0
+    assert abs(metrics["debiased_squared_l2_independent_unit"].bias) < 0.01
+    assert "brier_cluster_hoeffding_interval" in metrics
+    assert metrics["brier_cluster_hoeffding_interval"].interval_coverage is not None
+
+
+def test_cell_summary_reports_realized_coverage_separately_from_requested_coverage() -> (
+    None
+):
+    design = MetricLabDesign(
+        p_values=("0.5",),
+        forecast_kinds=("constant",),
+        n_base_items=(20,),
+        k_within_item=(1,),
+        shared_within_item=(False, True),
+        reference_flip_etas=("0",),
+        fixed_bin_count=1,
+        equal_mass_bin_count=1,
+        operational_coverages=("0.1", "1"),
+    )
+    cell = BaseCellSpec(
+        forecast_kind="constant",
+        n_base_items=20,
+        k_within_item=1,
+        shared_within_item=False,
+        reference_flip_eta=0.0,
+    )
+    summary = summarize_base_cell(
+        design=design,
+        cell=cell,
+        phase=MetricLabPhase.DEVELOPMENT,
+        sampling_unit=SamplingUnit.FIXED_CASE,
+        num_replicates=10,
+    )
+    metrics = summary.targets[TargetKind.CLEAN_TRUTH].metrics
+    # Constant q=0.5 means one confidence tie block, so requesting 10% coverage
+    # actually selects 100% of rows/items.
+    realized = metrics["realized_coverage_at_request_0.1"]
+    assert realized.true_value == 1.0
+    assert realized.mean_estimate == 1.0
+    assert realized.bias == 0.0
+
+
+def test_ambiguity_summary_reports_raw_squared_l2_and_hoeffding_interval() -> None:
+    from llm_evaluation.metric_lab_design import AmbiguityCellSpec
+    from llm_evaluation.metric_lab_runner import summarize_ambiguity_cell
+
+    design = MetricLabDesign(
+        ambiguity_theta_values=("0.5",),
+        ambiguity_n_items=(50,),
+        ambiguity_raters_per_item=(3,),
+        fixed_bin_count=1,
+        equal_mass_bin_count=1,
+    )
+    cell = AmbiguityCellSpec(forecast_kind="constant", n_items=50, raters_per_item=3)
+    summary = summarize_ambiguity_cell(
+        design=design,
+        cell=cell,
+        phase=MetricLabPhase.DEVELOPMENT,
+        num_replicates=100,
+    )
+    metrics = summary.targets[TargetKind.RATER_DISTRIBUTION].metrics
+    assert metrics["debiased_squared_l2"].true_value == 0.0
+    assert abs(metrics["debiased_squared_l2"].bias) < 0.01
+    assert "brier_cluster_hoeffding_interval" in metrics
+    assert metrics["brier_cluster_hoeffding_interval"].interval_coverage is not None

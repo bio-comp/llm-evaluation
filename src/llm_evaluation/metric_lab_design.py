@@ -83,8 +83,20 @@ class MetricLabDesign(_StrictFrozenRecord):
         "fixed_case",
         "question_population",
     )
-    interval_method: Literal["normal95-row-and-item-cluster-v1"] = (
-        "normal95-row-and-item-cluster-v1"
+    brier_interval_methods: tuple[
+        Literal[
+            "normal95-row-v1",
+            "normal95-item-cluster-v1",
+            "hoeffding95-item-cluster-v1",
+        ],
+        ...,
+    ] = (
+        "normal95-row-v1",
+        "normal95-item-cluster-v1",
+        "hoeffding95-item-cluster-v1",
+    )
+    calibration_independent_unit_policy: Literal["first-row-per-item-v1"] = (
+        "first-row-per-item-v1"
     )
     l2_debias_method: Literal["kumar-unbiased-l2-v1"] = "kumar-unbiased-l2-v1"
     l1_debias_method: Literal["kumar-normal-resampling-l1-v1"] = (

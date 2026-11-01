@@ -161,7 +161,9 @@ def test_design_hash_changes_when_auxiliary_or_operational_policy_changes() -> N
     changed_coverages = design.model_copy(
         update={"operational_coverages": ("0.25", "0.5", "0.9", "1")}
     )
-    changed_interval = design.model_copy(update={"interval_method": "different-method"})
+    changed_interval = design.model_copy(
+        update={"brier_interval_methods": ("normal95-row-v1",)}
+    )
     assert canonical_record_hash(changed_raters) != baseline
     assert canonical_record_hash(changed_coverages) != baseline
     assert canonical_record_hash(changed_interval) != baseline
@@ -171,5 +173,24 @@ def test_candidate_operational_and_sampling_policies_are_explicit() -> None:
     design = MetricLabDesign()
     assert design.operational_coverage_floats == (0.1, 0.5, 0.9, 1.0)
     assert design.sampling_units == ("fixed_case", "question_population")
-    assert design.interval_method == "normal95-row-and-item-cluster-v1"
+    assert design.brier_interval_methods == (
+        "normal95-row-v1",
+        "normal95-item-cluster-v1",
+        "hoeffding95-item-cluster-v1",
+    )
     assert design.aurc_reference_negative_control == "han678-get_AURC-fa445bcd"
+
+
+def test_uncertainty_and_independent_unit_policies_are_identity_bearing() -> None:
+    design = MetricLabDesign()
+    baseline = canonical_record_hash(design)
+    assert design.brier_interval_methods == (
+        "normal95-row-v1",
+        "normal95-item-cluster-v1",
+        "hoeffding95-item-cluster-v1",
+    )
+    assert design.calibration_independent_unit_policy == "first-row-per-item-v1"
+    changed = design.model_copy(
+        update={"calibration_independent_unit_policy": "different-policy"}
+    )
+    assert canonical_record_hash(changed) != baseline

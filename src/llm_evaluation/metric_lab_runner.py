@@ -32,7 +32,7 @@ from llm_evaluation.metric_laboratory import (
     brier_score,
     compute_aurc,
     compute_forecast,
-    debiased_l2_calibration_error,
+    debiased_squared_l2_calibration_error,
     equal_mass_ece,
     expected_brier,
     expected_log_score,
@@ -47,7 +47,7 @@ _NORMAL_95_Z = 1.959963984540054
 @dataclass(frozen=True, slots=True)
 class MeanInterval:
     estimate: float
-    se: float
+    se: float | None
     lower: float
     upper: float
 
@@ -60,6 +60,7 @@ class MeanInterval:
 class MeanLossIntervals:
     naive: MeanInterval
     cluster: MeanInterval
+    cluster_hoeffding: MeanInterval
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,7 +118,10 @@ class BaseTargetReplicateResult:
     log_score: float
     fixed_bin_ece: float
     equal_mass_ece: float
-    debiased_l2: float
+    debiased_squared_l2_row: float
+    debiased_squared_l2_independent_unit: float
+    debiased_l2_row: float
+    debiased_l2_independent_unit: float
     classification_error: float
     aurc: float
     brier_intervals: MeanLossIntervals
@@ -209,7 +213,55 @@ def mean_loss_intervals(
         grouped[item_id].append(float(value))
     item_means = tuple(sum(group) / len(group) for _, group in sorted(grouped.items()))
     cluster = _normal_interval(estimate, _sample_standard_error(item_means))
-    return MeanLossIntervals(naive=naive, cluster=cluster)
+    half_width = math.sqrt(math.log(2.0 / 0.05) / (2.0 * len(item_means)))
+    cluster_hoeffding = MeanInterval(
+        estimate=estimate,
+        se=None,
+        lower=max(0.0, estimate - half_width),
+        upper=min(1.0, estimate + half_width),
+    )
+    return MeanLossIntervals(
+        naive=naive, cluster=cluster, cluster_hoeffding=cluster_hoeffding
+    )
+
+
+def independent_unit_debiased_squared_l2(
+    *,
+    forecasts: Sequence[float],
+    outcomes: Sequence[int | float],
+    item_ids: Sequence[int],
+    num_bins: int,
+) -> float:
+    """Kumar squared-L2 estimator on one Bernoulli observation per item.
+
+    Repeated rows are not independent when an item-level outcome is shared.  The
+    independent-unit diagnostic therefore deterministically keeps the first row
+    for each item and rejects within-item forecast disagreement.  This gives the
+    same answer regardless of how many identical shared rows were duplicated.
+    """
+    if (
+        len(forecasts) != len(outcomes)
+        or len(forecasts) != len(item_ids)
+        or not forecasts
+    ):
+        raise ValueError(
+            "forecasts, outcomes, and item_ids must have equal non-zero length"
+        )
+    first: dict[int, tuple[float, int | float]] = {}
+    for forecast, outcome, item_id in zip(forecasts, outcomes, item_ids, strict=True):
+        existing = first.get(item_id)
+        if existing is None:
+            first[item_id] = (float(forecast), outcome)
+        elif existing[0] != float(forecast):
+            raise ValueError(
+                "within-item forecasts must be identical for independent-unit reduction"
+            )
+    ordered = tuple(first[item_id] for item_id in sorted(first))
+    return debiased_squared_l2_calibration_error(
+        tuple(item[0] for item in ordered),
+        tuple(item[1] for item in ordered),
+        num_bins=num_bins,
+    )
 
 
 def risk_coverage_tie_blocks(
@@ -470,9 +522,17 @@ def _evaluate_target_rows(
     equal, equal_details = equal_mass_ece(
         forecasts, outcomes, num_bins=design.equal_mass_bin_count
     )
-    l2 = debiased_l2_calibration_error(
+    squared_l2_row = debiased_squared_l2_calibration_error(
         forecasts, outcomes, num_bins=design.fixed_bin_count
     )
+    squared_l2_independent = independent_unit_debiased_squared_l2(
+        forecasts=forecasts,
+        outcomes=outcomes,
+        item_ids=item_ids,
+        num_bins=design.fixed_bin_count,
+    )
+    l2_row = math.sqrt(max(squared_l2_row, 0.0))
+    l2_independent = math.sqrt(max(squared_l2_independent, 0.0))
     predictions = tuple(
         binary_decision(
             forecast,
@@ -493,7 +553,10 @@ def _evaluate_target_rows(
         log_score=log,
         fixed_bin_ece=fixed,
         equal_mass_ece=equal,
-        debiased_l2=l2,
+        debiased_squared_l2_row=squared_l2_row,
+        debiased_squared_l2_independent_unit=squared_l2_independent,
+        debiased_l2_row=l2_row,
+        debiased_l2_independent_unit=l2_independent,
         classification_error=sum(errors) / len(errors),
         aurc=compute_aurc(
             confidences,
@@ -624,8 +687,20 @@ def summarize_base_cell(
                 tuple(value.equal_mass_ece for value in values),
                 truth.equal_mass_calibration,
             ),
-            "debiased_l2": (
-                tuple(value.debiased_l2 for value in values),
+            "debiased_squared_l2_row": (
+                tuple(value.debiased_squared_l2_row for value in values),
+                truth.l2_calibration**2,
+            ),
+            "debiased_squared_l2_independent_unit": (
+                tuple(value.debiased_squared_l2_independent_unit for value in values),
+                truth.l2_calibration**2,
+            ),
+            "debiased_l2_row": (
+                tuple(value.debiased_l2_row for value in values),
+                truth.l2_calibration,
+            ),
+            "debiased_l2_independent_unit": (
+                tuple(value.debiased_l2_independent_unit for value in values),
                 truth.l2_calibration,
             ),
             "classification_error": (
@@ -642,6 +717,12 @@ def summarize_base_cell(
                 tuple(value.operational_risk[index].risk for value in values),
                 truth.operational_risk[index].risk,
             )
+            metric_specs[f"realized_coverage_at_request_{requested:g}"] = (
+                tuple(
+                    value.operational_risk[index].realized_coverage for value in values
+                ),
+                truth.operational_risk[index].realized_coverage,
+            )
         summaries = {
             name: summarize_metric_estimates(estimates=estimates, true_value=true_value)
             for name, (estimates, true_value) in metric_specs.items()
@@ -654,6 +735,17 @@ def summarize_base_cell(
                 (
                     value.brier_intervals.cluster.lower,
                     value.brier_intervals.cluster.upper,
+                )
+                for value in values
+            ),
+        )
+        summaries["brier_cluster_hoeffding_interval"] = summarize_metric_estimates(
+            estimates=brier_estimates,
+            true_value=truth.expected_brier,
+            intervals=tuple(
+                (
+                    value.brier_intervals.cluster_hoeffding.lower,
+                    value.brier_intervals.cluster_hoeffding.upper,
                 )
                 for value in values
             ),
@@ -739,6 +831,7 @@ class AmbiguityTargetReplicateResult:
     log_score: float
     fixed_bin_ece: float
     equal_mass_ece: float
+    debiased_squared_l2: float
     debiased_l2: float
     classification_error: float
     aurc: float
@@ -922,6 +1015,9 @@ def _evaluate_ambiguity_target(
     fixed = fixed_bin_ece(forecasts, outcomes, num_bins=design.fixed_bin_count)[0]
     equal = equal_mass_ece(forecasts, outcomes, num_bins=design.equal_mass_bin_count)[0]
     risk_curve = risk_coverage_tie_blocks(confidences=confidences, errors=errors)
+    squared_l2 = debiased_squared_l2_calibration_error(
+        forecasts, outcomes, num_bins=design.fixed_bin_count
+    )
     return AmbiguityTargetReplicateResult(
         target=target,
         evaluation_count=len(outcomes),
@@ -929,9 +1025,8 @@ def _evaluate_ambiguity_target(
         log_score=log_score(forecasts, outcomes),
         fixed_bin_ece=fixed,
         equal_mass_ece=equal,
-        debiased_l2=debiased_l2_calibration_error(
-            forecasts, outcomes, num_bins=design.fixed_bin_count
-        ),
+        debiased_squared_l2=squared_l2,
+        debiased_l2=math.sqrt(max(squared_l2, 0.0)),
         classification_error=sum(errors) / len(errors),
         aurc=compute_aurc(
             confidences, errors, tie_convention=design.aurc_tie_convention
@@ -1049,6 +1144,10 @@ def summarize_ambiguity_cell(
                 tuple(value.equal_mass_ece for value in values),
                 truth.equal_mass_calibration,
             ),
+            "debiased_squared_l2": (
+                tuple(value.debiased_squared_l2 for value in values),
+                truth.l2_calibration**2,
+            ),
             "debiased_l2": (
                 tuple(value.debiased_l2 for value in values),
                 truth.l2_calibration,
@@ -1064,6 +1163,12 @@ def summarize_ambiguity_cell(
                 tuple(value.operational_risk[index].risk for value in values),
                 truth.operational_risk[index].risk,
             )
+            metric_specs[f"realized_coverage_at_request_{requested:g}"] = (
+                tuple(
+                    value.operational_risk[index].realized_coverage for value in values
+                ),
+                truth.operational_risk[index].realized_coverage,
+            )
         metrics = {
             name: summarize_metric_estimates(estimates=estimates, true_value=true_value)
             for name, (estimates, true_value) in metric_specs.items()
@@ -1076,6 +1181,17 @@ def summarize_ambiguity_cell(
                 (
                     value.brier_intervals.cluster.lower,
                     value.brier_intervals.cluster.upper,
+                )
+                for value in values
+            ),
+        )
+        metrics["brier_cluster_hoeffding_interval"] = summarize_metric_estimates(
+            estimates=brier_estimates,
+            true_value=truth.expected_brier,
+            intervals=tuple(
+                (
+                    value.brier_intervals.cluster_hoeffding.lower,
+                    value.brier_intervals.cluster_hoeffding.upper,
                 )
                 for value in values
             ),
