@@ -59,6 +59,7 @@ jobs:
 
           # 2. Isolated fresh venv for llm-evaluation (resolving canonical-sync from built wheel)
           python -m venv "$build_dir/venv-root"
+          "$build_dir/venv-root/bin/pip" wheel --wheel-dir="$build_dir/wheelhouse" --find-links="$build_dir/wheelhouse" "$build_dir"/dist/root/*.whl
           "$build_dir/venv-root/bin/pip" install --no-index --find-links="$build_dir/wheelhouse" "$build_dir"/dist/root/*.whl
           "$build_dir/venv-root/bin/python" - <<'PY_BASE'
           from importlib.metadata import PackageNotFoundError, version

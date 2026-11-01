@@ -108,6 +108,8 @@ Before two conditions are compared scientifically, either restrict both to a dem
 
 The bounded local preflight establishes the following status for the subset E-002 may need. “Blocked for selected artifact” means the installed server may document the API feature in general, but the exact Qwen3.5 artifact does not load, so no scientific capability is asserted for that condition.
 
+**Historical capability snapshot only.** The Ollama rows and probe records below document conditions actually measured on 2026-10-25 and remain immutable provenance. Ollama is now retired from active architecture and cannot be selected for a new backend configuration. They are not current E-002 candidates. Standalone llama.cpp/`llama-server` is the primary/reference local runtime; LM Studio is the explicit alternate runtime, and sharing identical GGUF bytes does not imply behavioral equivalence.
+
 | Capability | Ollama 0.40.8 | LM Studio 0.4.26+4 | llama.cpp 0.7.0 + exact Qwen3.5 blob |
 | --- | --- | --- | --- |
 | model listing | SUPPORTED, observed | SUPPORTED, observed | blocked for selected artifact |
@@ -228,13 +230,9 @@ The archived `openai/grade-school-math` repository at commit `3101c7d5072418e28b
 
 ## Proposed initial local subject conditions
 
-Keep the first real pilot small enough to interpret:
+No local subject condition is selected by this repository. The standardized model set is user-approved and comes from the shared machine-local approved-model registry; the registry is currently **AWAITING USER-SUPPLIED MODEL**. A future E-002 local condition may use standalone llama.cpp only after the exact approved artifact, SHA-256, runtime build, launch profile, prompt/template/reasoning controls and resource isolation are frozen. LM Studio may be added as a distinct alternate-runtime condition only when that same exact artifact is separately qualified there. No missing/incompatible model may be downloaded, converted, requantized or substituted to manufacture parity.
 
-1. **Ollama Qwen3.5 9B Q4_K_M — candidate, not yet execution-ready.** Exact local model blob SHA-256 `dec52a44569a2a25341c4e4d3fee25846eed4f6f0b936278e3a3c900bb99d37c` (6,594,462,816 bytes), qwen35 architecture, 9.7B parameters, 262144 context. Ollama reports boolean thinking with default `true`; this pass did not establish a scientifically equivalent explicit reasoning control on the portable OpenAI-compatible surface, so the runner must not count Qwen3.5 observations until that condition gap is resolved or explicitly excluded by design.
-2. **Ollama GPT-OSS 20B — portable reasoning path capability-probed.** Architecture `gptoss`, 20.9B parameters, MXFP4, 131072 context, exact local model blob SHA-256 `e7b273f9636059a689e3ddcab3716e4f65abe0143ac978e46673ad0e52d09efb` (13,793,422,144 bytes). Compatible Chat transmitted and the backend honored the model's `low/medium/high` reasoning surface in the bounded `low` probe. The 16-token probe still yielded no visible answer, so a real condition also needs an output-budget/truncation rule. No quality ordering versus Qwen3.5 is assumed before task-specific evidence.
-3. **Optional backend-parity control only after demonstrated artifact compatibility.** The attempted Qwen3.5 Ollama↔standalone llama.cpp control currently fails the capability gate and must not be represented as parity.
-
-LM Studio Qwen3 4B Thinking is useful for transport/capability development, but mixing checkpoint and backend simultaneously makes it a poor same-model parity control.
+The historical Ollama and LM Studio probes above remain useful transport/capability evidence, but they do not authorize future subject conditions.
 
 ## Portable E-002 preregistration packet — preflight draft
 
@@ -278,4 +276,44 @@ Abort or reclassify the affected condition if any of the following occurs: model
 
 ## What remains unresolved
 
-The runner and exact finite-state machinery can be tested without choosing the real scientific loss function. A full E-002 run still requires explicit selection of the actual threshold/indifference zone, false-accept/false-reject targets, abstention/cap utility, separate reference wrong-decision and inconclusive tolerances, frozen task/oracle packet and weighting, final model conditions and reasoning semantics, seed schedule, dependence handling, and a bounded local compute envelope. The Ollama Qwen3.5 compatible-surface reasoning control remains unresolved; an LM Studio subject condition would additionally need a frozen artifact digest/template identity if used. Hosted execution additionally requires explicit cost authorization and credentials. Until then E-002 remains **PLANNED**.
+The runner and exact finite-state machinery can be tested without choosing the real scientific loss function. A full E-002 run still requires explicit selection of the actual threshold/indifference zone, false-accept/false-reject targets, abstention/cap utility, separate reference wrong-decision and inconclusive tolerances, frozen task/oracle packet and weighting, final model conditions and reasoning semantics, seed schedule, dependence handling, and a bounded local compute envelope. A future local subject still requires a user-approved registry entry plus exact llama.cpp qualification; an LM Studio condition additionally requires separate qualification of the same artifact and its own runtime/template identity. Hosted execution additionally requires explicit cost authorization and credentials. Until then E-002 remains **PLANNED**.
+
+
+## Runtime migration: versioned identities and intentional hardening
+
+`model_runner.py` preserves its synchronous constructors, aliases, model listing,
+technical/evaluation/sample separation and legacy v1 hashes. Its implementation
+now calls the native async runtime. Calls from an active event loop fail before
+network activity; async callers should use `runtime` directly. Each transport
+operation owns/closes a fresh HTTPX client in its caller's loop; clients are not
+reused across loops. Client/transport injection is deliberately unsupported.
+
+V1 identity includes the full endpoint URL and historical scalar timeout.
+V2 is separately domain-versioned and includes the stable scientific endpoint,
+condition, API/path, exact body and prompt hashes, backend config and explicit
+timeout profile. Operational socket addresses and bearer credentials are absent
+from v2 identity. Historical hashes/records are not rewritten. V2 identity is not
+an assertion that two endpoint deployments are scientifically equivalent.
+
+Intentional hardening changes are stricter than legacy urllib behavior: no
+redirects; no environment proxy/CA configuration; no transport/application retry;
+finite duplicate-key-rejecting JSON; a 2-MiB incrementally enforced evidence cap;
+identity content encoding only; sensitive metadata/credential reflection rejected
+before evidence release; safe failure classifications without provider exception
+chains. Connect/read/write/pool timeouts and a total deadline are distinct.
+Cancellation propagates. Interruption after possible dispatch leaves remote
+completion unknown; closing the client does not prove server cancellation.
+
+Unknown provider fields remain raw evidence and do not become trusted model or
+artifact facts. Artifact hashes are computed locally. Structured output records
+exact schema hashes and uses strict Pydantic validation; semantic correctness is
+still the caller's responsibility. The initial exact llama.cpp adapter accepts a
+small conservative schema subset. References, unions, patterns, unsupported
+keywords and non-integer numeric bounds fail before transmission. This follows
+the [exact-build grammar limitations](https://github.com/ggml-org/llama.cpp/blob/620d2225c/grammars/README.md),
+including silently skipped unsupported features; no weakening transformation is applied.
+
+Transport returns evidence without scientific persistence. Import/AST checks are
+structural guardrails, supplemented with focused behavioral tests; they do not
+prove the absence of arbitrary hidden effects. Resource leases are operational
+state. Nothing in this migration runs or promotes E-002.

@@ -4,21 +4,47 @@ This module deliberately implements only the portable single-turn text subset ne
 for E-002 preflight.  A compatible transport is not evidence that two backends are
 scientifically equivalent; effective requests and raw provider metadata are retained.
 """
+
 from __future__ import annotations
+
+import asyncio
+from dataclasses import fields
+from typing import Callable, Coroutine, TypeVar, Any
+
+from .runtime import contracts as runtime_contracts
+from .runtime.codec import parse_json_unique
+from .runtime.failures import RuntimeFailure, FailureKind
+from .runtime.preparation import prepare_generation
+from .runtime.transport.response_models import ProviderParser
+from .runtime.transport.base import BearerAuthorization
+from .runtime.transport.openai_compatible import AsyncOpenAICompatibleTransport
 
 import hashlib
 import json
 import math
 import os
 import re
-import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Mapping
+
+
+_T = TypeVar("_T")
+
+
+def _require_sync_context() -> None:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    raise RuntimeError("use the native async runtime API from an active event loop")
+
+
+def _run_sync(factory: Callable[[], Coroutine[Any, Any, _T]]) -> _T:
+    _require_sync_context()
+    return asyncio.run(factory())
 
 
 class CapabilityStatus(StrEnum):
@@ -80,9 +106,13 @@ class CredentialError(ValueError):
 class TransportFailure(RuntimeError):
     """The request did not reach a successful provider HTTP response."""
 
+    remote_completion_unknown: bool = False
+
 
 class ProviderRuntimeFailure(RuntimeError):
     """The provider returned an HTTP or response-shape failure."""
+
+    remote_completion_unknown: bool = False
 
 
 def _deep_freeze(value: object) -> object:
@@ -90,7 +120,9 @@ def _deep_freeze(value: object) -> object:
     if isinstance(value, Mapping):
         if any(not isinstance(key, str) for key in value):
             raise ValueError("provenance mapping keys must be strings")
-        return MappingProxyType({key: _deep_freeze(item) for key, item in value.items()})
+        return MappingProxyType(
+            {key: _deep_freeze(item) for key, item in value.items()}
+        )
     if isinstance(value, (list, tuple)):
         return tuple(_deep_freeze(item) for item in value)
     if value is None or isinstance(value, (str, bool, int)):
@@ -123,12 +155,16 @@ def _reject_sensitive_provider_metadata(
         for key, item in value.items():
             normalized = str(key).strip().lower().replace("-", "_")
             if normalized in _SENSITIVE_PROVIDER_METADATA_KEYS:
-                raise ProviderRuntimeFailure("provider response contains sensitive metadata key")
+                raise ProviderRuntimeFailure(
+                    "provider response contains sensitive metadata key"
+                )
             _reject_sensitive_provider_metadata(item, forbidden_strings)
     elif isinstance(value, (list, tuple)):
         for item in value:
             _reject_sensitive_provider_metadata(item, forbidden_strings)
-    elif isinstance(value, str) and any(secret in value for secret in forbidden_strings):
+    elif isinstance(value, str) and any(
+        secret in value for secret in forbidden_strings
+    ):
         raise ProviderRuntimeFailure("provider response contains configured credential")
 
 
@@ -138,7 +174,9 @@ class CapabilityProfile:
 
     def __post_init__(self) -> None:
         statuses = dict(self.statuses)
-        if any(not isinstance(status, CapabilityStatus) for status in statuses.values()):
+        if any(
+            not isinstance(status, CapabilityStatus) for status in statuses.values()
+        ):
             raise ValueError("capability statuses must be CapabilityStatus values")
         object.__setattr__(self, "statuses", MappingProxyType(statuses))
 
@@ -160,24 +198,47 @@ class BackendConfig:
     wire_parameter_names: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.provider_id, str) or not self.provider_id.strip() or not isinstance(self.model_id, str) or not self.model_id.strip():
+        if (
+            not isinstance(self.provider_id, str)
+            or not self.provider_id.strip()
+            or not isinstance(self.model_id, str)
+            or not self.model_id.strip()
+        ):
             raise ValueError("provider_id and model_id are required")
-        if self.config_id is not None and (not isinstance(self.config_id, str) or not self.config_id.strip()):
+        if self.provider_id.strip().lower() == "ollama":
+            raise ValueError("Ollama is retired for new backend configurations")
+        if self.config_id is not None and (
+            not isinstance(self.config_id, str) or not self.config_id.strip()
+        ):
             raise ValueError("config_id must be nonempty when supplied")
         allowed_wire_overrides = {
-            "temperature", "top_p", "top_k", "seed", "stop", "max_output_tokens"
+            "temperature",
+            "top_p",
+            "top_k",
+            "seed",
+            "stop",
+            "max_output_tokens",
         }
         if any(key not in allowed_wire_overrides for key in self.wire_parameter_names):
-            raise ValueError("wire_parameter_names contains an unknown internal parameter")
+            raise ValueError(
+                "wire_parameter_names contains an unknown internal parameter"
+            )
         if self.api_mode not in {"chat_completions", "responses"}:
             raise ValueError("api_mode must be chat_completions or responses")
         supplied_wire_names = tuple(self.wire_parameter_names.values())
-        if any(not isinstance(value, str) or not value for value in supplied_wire_names):
+        if any(
+            not isinstance(value, str) or not value for value in supplied_wire_names
+        ):
             raise ValueError("wire parameter names must be nonempty strings")
-        if any(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value) is None for value in supplied_wire_names):
+        if any(
+            re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value) is None
+            for value in supplied_wire_names
+        ):
             raise ValueError("wire parameter name must be a simple identifier")
         object.__setattr__(
-            self, "wire_parameter_names", MappingProxyType(dict(self.wire_parameter_names))
+            self,
+            "wire_parameter_names",
+            MappingProxyType(dict(self.wire_parameter_names)),
         )
         default_wire_names = {
             "temperature": "temperature",
@@ -186,7 +247,9 @@ class BackendConfig:
             "seed": "seed",
             "stop": "stop",
             "max_output_tokens": (
-                "max_tokens" if self.api_mode == "chat_completions" else "max_output_tokens"
+                "max_tokens"
+                if self.api_mode == "chat_completions"
+                else "max_output_tokens"
             ),
         }
         effective_wire_names = [
@@ -201,7 +264,9 @@ class BackendConfig:
             else {"model", "input", "reasoning"}
         )
         if any(name in reserved_protocol_fields for name in effective_wire_names):
-            raise ValueError("wire parameter name collides with reserved protocol field")
+            raise ValueError(
+                "wire parameter name collides with reserved protocol field"
+            )
         parsed = urllib.parse.urlsplit(self.base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise ValueError("base_url must be an absolute HTTP(S) URL")
@@ -274,26 +339,45 @@ class ModelCondition:
 
     def __post_init__(self) -> None:
         identity_fields = (
-            self.condition_id, self.weights_id, self.provider_id, self.backend_config_id,
-            self.backend_name, self.backend_version, self.api_mode, self.endpoint_model_id,
-            self.prompt_template_id, self.seed_behavior,
+            self.condition_id,
+            self.weights_id,
+            self.provider_id,
+            self.backend_config_id,
+            self.backend_name,
+            self.backend_version,
+            self.api_mode,
+            self.endpoint_model_id,
+            self.prompt_template_id,
+            self.seed_behavior,
         )
-        if any(not isinstance(value, str) or not value.strip() for value in identity_fields):
+        if any(
+            not isinstance(value, str) or not value.strip() for value in identity_fields
+        ):
             raise ValueError("model condition identity fields must be nonempty strings")
         if self.api_mode not in {"chat_completions", "responses"}:
-            raise ValueError("model condition API mode must be chat_completions or responses")
+            raise ValueError(
+                "model condition API mode must be chat_completions or responses"
+            )
         if not isinstance(self.runtime_environment, Mapping):
             raise ValueError("runtime_environment must be a mapping")
-        if self.artifact_metadata is not None and not isinstance(self.artifact_metadata, Mapping):
+        if self.artifact_metadata is not None and not isinstance(
+            self.artifact_metadata, Mapping
+        ):
             raise ValueError("artifact_metadata must be a mapping when supplied")
         if self.artifact_sha256 is not None:
             digest = self.artifact_sha256.lower()
             if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
-                raise ValueError("artifact_sha256 must be a 64-character hexadecimal digest")
+                raise ValueError(
+                    "artifact_sha256 must be a 64-character hexadecimal digest"
+                )
             object.__setattr__(self, "artifact_sha256", digest)
-        object.__setattr__(self, "runtime_environment", _deep_freeze(self.runtime_environment))
+        object.__setattr__(
+            self, "runtime_environment", _deep_freeze(self.runtime_environment)
+        )
         if self.artifact_metadata is not None:
-            object.__setattr__(self, "artifact_metadata", _deep_freeze(self.artifact_metadata))
+            object.__setattr__(
+                self, "artifact_metadata", _deep_freeze(self.artifact_metadata)
+            )
         if self.reasoning_control is not None:
             if not isinstance(self.reasoning_control, ReasoningControl):
                 raise ValueError("reasoning_control must be ReasoningControl")
@@ -303,7 +387,9 @@ class ModelCondition:
                 else ReasoningWireMode.RESPONSES_REASONING_EFFORT
             )
             if self.reasoning_control.wire_mode is not expected_mode:
-                raise ValueError("reasoning wire mode does not match condition API mode")
+                raise ValueError(
+                    "reasoning wire mode does not match condition API mode"
+                )
 
 
 @dataclass(frozen=True)
@@ -324,11 +410,14 @@ class GenerationRequest:
             raise ValueError("messages must be a nonempty tuple")
         for item in self.messages:
             if (
-                not isinstance(item, tuple) or len(item) != 2
+                not isinstance(item, tuple)
+                or len(item) != 2
                 or item[0] not in {"system", "user", "assistant"}
                 or not isinstance(item[1], str)
             ):
-                raise ValueError("messages must contain text system/user/assistant entries")
+                raise ValueError(
+                    "messages must contain text system/user/assistant entries"
+                )
         if self.temperature is not None:
             if (
                 isinstance(self.temperature, bool)
@@ -346,7 +435,9 @@ class GenerationRequest:
             ):
                 raise ValueError("top_p must be finite and in (0, 1]")
         if self.top_k is not None and (
-            isinstance(self.top_k, bool) or not isinstance(self.top_k, int) or self.top_k < 1
+            isinstance(self.top_k, bool)
+            or not isinstance(self.top_k, int)
+            or self.top_k < 1
         ):
             raise ValueError("top_k must be a positive integer")
         if self.max_output_tokens is not None and (
@@ -355,7 +446,9 @@ class GenerationRequest:
             or self.max_output_tokens < 1
         ):
             raise ValueError("max_output_tokens must be a positive integer")
-        if self.seed is not None and (isinstance(self.seed, bool) or not isinstance(self.seed, int)):
+        if self.seed is not None and (
+            isinstance(self.seed, bool) or not isinstance(self.seed, int)
+        ):
             raise ValueError("seed must be an integer")
         if self.stop is not None and (
             not isinstance(self.stop, tuple)
@@ -395,7 +488,9 @@ class GenerationResult:
     termination_reason: str | None = None
 
     def __post_init__(self) -> None:
-        if self.termination_reason is not None and not isinstance(self.termination_reason, str):
+        if self.termination_reason is not None and not isinstance(
+            self.termination_reason, str
+        ):
             raise ValueError("termination_reason must be str or None")
         if self.reported_model_matches_condition is not None and not isinstance(
             self.reported_model_matches_condition, bool
@@ -404,7 +499,9 @@ class GenerationResult:
         try:
             frozen = _deep_freeze(self.raw_provider_metadata)
         except ValueError as exc:
-            raise ProviderRuntimeFailure("provider metadata is not canonical JSON-like data") from exc
+            raise ProviderRuntimeFailure(
+                "provider metadata is not canonical JSON-like data"
+            ) from exc
         object.__setattr__(self, "raw_provider_metadata", frozen)
 
 
@@ -420,8 +517,11 @@ class GenerationAttempt:
     failure_detail: str | None
     evaluation_status: EvaluationStatus = EvaluationStatus.NOT_EVALUATED
     contributes_to_sample: bool = False
+    remote_completion_unknown: bool = False
 
     def __post_init__(self) -> None:
+        if not isinstance(self.remote_completion_unknown, bool):
+            raise ValueError("remote_completion_unknown must be bool")
         if (
             isinstance(self.attempt_index, bool)
             or not isinstance(self.attempt_index, int)
@@ -435,7 +535,8 @@ class GenerationAttempt:
         ):
             raise ValueError("retry_count must be a nonnegative integer")
         if self.retry_of_attempt is not None and (
-            isinstance(self.retry_of_attempt, bool) or not isinstance(self.retry_of_attempt, int)
+            isinstance(self.retry_of_attempt, bool)
+            or not isinstance(self.retry_of_attempt, int)
         ):
             raise ValueError("retry_of_attempt must be an integer when supplied")
         if not isinstance(self.generation_status, GenerationStatus):
@@ -448,7 +549,10 @@ class GenerationAttempt:
             raise ValueError("failure_detail must be a string when supplied")
         if self.result is not None and not isinstance(self.result, GenerationResult):
             raise ValueError("result must be GenerationResult when supplied")
-        if self.retry_of_attempt is not None and not 1 <= self.retry_of_attempt < self.attempt_index:
+        if (
+            self.retry_of_attempt is not None
+            and not 1 <= self.retry_of_attempt < self.attempt_index
+        ):
             raise ValueError("retry_of_attempt must reference an earlier attempt")
         if self.retry_of_attempt is None and self.retry_count != 0:
             raise ValueError("non-retry attempts require retry_count=0")
@@ -459,14 +563,29 @@ class GenerationAttempt:
             raise ValueError("completed generation requires a result")
         if not completed and self.result is not None:
             raise ValueError("failed generation cannot carry a generation result")
-        if not completed and self.evaluation_status is not EvaluationStatus.NOT_EVALUATED:
-            raise ValueError("failed generation cannot have an oracle/evaluation outcome")
+        if (
+            not completed
+            and self.evaluation_status is not EvaluationStatus.NOT_EVALUATED
+        ):
+            raise ValueError(
+                "failed generation cannot have an oracle/evaluation outcome"
+            )
         if not completed and self.contributes_to_sample:
-            raise ValueError("failed generation cannot contribute to the statistical sample")
-        if self.evaluation_status is EvaluationStatus.ORACLE_ERROR and self.contributes_to_sample:
+            raise ValueError(
+                "failed generation cannot contribute to the statistical sample"
+            )
+        if (
+            self.evaluation_status is EvaluationStatus.ORACLE_ERROR
+            and self.contributes_to_sample
+        ):
             raise ValueError("oracle error cannot contribute to the statistical sample")
-        if self.evaluation_status is EvaluationStatus.NOT_EVALUATED and self.contributes_to_sample:
-            raise ValueError("unevaluated generation cannot contribute to the statistical sample")
+        if (
+            self.evaluation_status is EvaluationStatus.NOT_EVALUATED
+            and self.contributes_to_sample
+        ):
+            raise ValueError(
+                "unevaluated generation cannot contribute to the statistical sample"
+            )
 
     @property
     def status(self) -> GenerationStatus:
@@ -475,7 +594,13 @@ class GenerationAttempt:
 
 
 def canonical_json(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
 
 
 def _sha256_text(value: str) -> str:
@@ -511,7 +636,9 @@ def _condition_packet(condition: ModelCondition) -> dict[str, object]:
         "artifact_filename": condition.artifact_filename,
         "tokenizer_id": condition.tokenizer_id,
         "artifact_metadata": _json_ready(condition.artifact_metadata),
-        "reasoning_control": None if reasoning is None else {
+        "reasoning_control": None
+        if reasoning is None
+        else {
             "wire_mode": reasoning.wire_mode.value,
             "effort": reasoning.effort,
         },
@@ -536,7 +663,7 @@ def _prompt_packet(request: GenerationRequest) -> dict[str, object]:
 
 
 class OpenAICompatibleTransport:
-    """Exact-wire stdlib HTTP transport for a capability-gated compatible endpoint."""
+    """Synchronous compatibility facade over the owned async HTTPX runtime."""
 
     def __init__(
         self,
@@ -559,7 +686,9 @@ class OpenAICompatibleTransport:
             if condition.provider_id != config.provider_id:
                 raise ValueError("condition provider does not match backend provider")
             if condition.backend_config_id != config.effective_config_id:
-                raise ValueError("condition backend config does not match selected backend config")
+                raise ValueError(
+                    "condition backend config does not match selected backend config"
+                )
             if condition.endpoint_model_id != config.model_id:
                 raise ValueError("condition model does not match backend model")
             if condition.api_mode != config.api_mode:
@@ -575,7 +704,9 @@ class OpenAICompatibleTransport:
                 is not CapabilityStatus.UNSUPPORTED
                 and condition.reasoning_control is None
             ):
-                raise ValueError("reasoning-capable backend requires explicit reasoning condition control")
+                raise ValueError(
+                    "reasoning-capable backend requires explicit reasoning condition control"
+                )
 
     def _require_bound_request(self, request: GenerationRequest) -> ModelCondition:
         if self.condition is None:
@@ -589,50 +720,79 @@ class OpenAICompatibleTransport:
         if self.config.credential_env is not None:
             secret = os.environ.get(self.config.credential_env)
             if not secret:
-                raise CredentialError(f"missing credential environment variable {self.config.credential_env}")
+                raise CredentialError(
+                    f"missing credential environment variable {self.config.credential_env}"
+                )
             headers["Authorization"] = f"Bearer {secret}"
         return headers
 
-    def _body(self, request: GenerationRequest) -> tuple[str, dict[str, object]]:
-        profile = self.config.capability_profile
-        profile.require(self.config.api_mode)
-        body: dict[str, object] = {"model": self.config.model_id}
-        if self.config.api_mode == "chat_completions":
-            body["messages"] = _messages(request)
-        else:
-            body["input"] = _messages(request)
-        controls = (
-            ("temperature", request.temperature, "temperature"),
-            ("top_p", request.top_p, "top_p"),
-            ("top_k", request.top_k, "top_k"),
-            ("seed", request.seed, "seed"),
-            ("stop", list(request.stop) if request.stop is not None else None, "stop"),
+    def _runtime_binding(self) -> runtime_contracts.RuntimeBinding:
+        if self.condition is None:
+            raise ValueError("generation requires a bound ModelCondition")
+        c = _condition_packet(self.condition)
+        if self.condition.reasoning_control is not None:
+            rc = self.condition.reasoning_control
+            c["reasoning_control"] = runtime_contracts.ReasoningControl(
+                wire_mode=runtime_contracts.ReasoningWireMode(rc.wire_mode.value),
+                effort=rc.effort,
+            )
+        config = runtime_contracts.BackendConfig(
+            provider_id=self.config.provider_id,
+            model_id=self.config.model_id,
+            api_mode="chat_completions"
+            if self.config.api_mode == "chat_completions"
+            else "responses",
+            config_id=self.config.effective_config_id,
+            capability_profile=runtime_contracts.CapabilityProfile(
+                statuses={
+                    k: runtime_contracts.CapabilityStatus(v.value)
+                    for k, v in self.config.capability_profile.statuses.items()
+                }
+            ),
+            wire_parameter_names=self.config.wire_parameter_names,
         )
-        for capability, value, default_wire_name in controls:
-            if value is not None:
-                profile.require(capability)
-                wire_name = self.config.wire_parameter_names.get(capability, default_wire_name)
-                body[wire_name] = value
-        if request.max_output_tokens is not None:
-            profile.require("max_output_tokens")
-            default_wire_name = (
-                "max_tokens" if self.config.api_mode == "chat_completions" else "max_output_tokens"
-            )
-            wire_name = self.config.wire_parameter_names.get(
-                "max_output_tokens", default_wire_name
-            )
-            body[wire_name] = request.max_output_tokens
-        if self.condition is not None and self.condition.reasoning_control is not None:
-            reasoning = self.condition.reasoning_control
-            profile.require(reasoning.capability_name)
-            if reasoning.wire_mode is ReasoningWireMode.CHAT_REASONING_EFFORT:
-                body["reasoning_effort"] = reasoning.effort
-            else:
-                body["reasoning"] = {"effort": reasoning.effort}
-        endpoint = "/chat/completions" if self.config.api_mode == "chat_completions" else "/responses"
-        return endpoint, body
+        return runtime_contracts.RuntimeBinding(
+            backend=config,
+            condition=runtime_contracts.ModelCondition.model_validate(c),
+            scientific_endpoint=runtime_contracts.ScientificEndpointIdentity(
+                value=self.config.effective_config_id
+            ),
+            timeouts=self._timeouts(),
+        )
 
-    def _effective(self, request: GenerationRequest, endpoint: str, body: dict[str, object]) -> EffectiveRequest:
+    def _timeouts(self) -> runtime_contracts.HttpTimeouts:
+        return runtime_contracts.HttpTimeouts(
+            connect=self.timeout_seconds,
+            read=self.timeout_seconds,
+            write=self.timeout_seconds,
+            pool=self.timeout_seconds,
+            total=self.timeout_seconds,
+        )
+
+    def _body(self, request: GenerationRequest) -> tuple[str, dict[str, object]]:
+        try:
+            native = runtime_contracts.GenerationRequest(
+                **{f.name: getattr(request, f.name) for f in fields(request)}
+            )
+            prepared = prepare_generation(self._runtime_binding(), native)
+        except ValueError as exc:
+            raise CapabilityError(str(exc)) from None
+        body = parse_json_unique(prepared.wire_bytes)
+        assert isinstance(body, dict)
+        return prepared.path, body
+
+    def _async_transport(self) -> AsyncOpenAICompatibleTransport:
+        header = self._headers().get("Authorization")
+        auth = BearerAuthorization(header.removeprefix("Bearer ")) if header else None
+        return AsyncOpenAICompatibleTransport(
+            runtime_contracts.OperationalEndpoint(base_url=self.config.base_url),
+            authorization=auth,
+            timeouts=self._timeouts(),
+        )
+
+    def _effective(
+        self, request: GenerationRequest, endpoint: str, body: dict[str, object]
+    ) -> EffectiveRequest:
         if self.condition is None:
             raise ValueError("effective request requires a bound ModelCondition")
         serialized = canonical_json(body)
@@ -642,16 +802,18 @@ class OpenAICompatibleTransport:
         body_sha256 = _sha256_text(serialized)
         prompt_packet_sha256 = _sha256_text(prompt)
         condition_sha256 = _sha256_text(condition_json)
-        identity = canonical_json({
-            "http_method": "POST",
-            "endpoint": endpoint_url,
-            "api_mode": self.config.api_mode,
-            "backend_config_id": self.config.effective_config_id,
-            "condition_sha256": condition_sha256,
-            "body_sha256": body_sha256,
-            "prompt_packet_sha256": prompt_packet_sha256,
-            "timeout_seconds": self.timeout_seconds,
-        })
+        identity = canonical_json(
+            {
+                "http_method": "POST",
+                "endpoint": endpoint_url,
+                "api_mode": self.config.api_mode,
+                "backend_config_id": self.config.effective_config_id,
+                "condition_sha256": condition_sha256,
+                "body_sha256": body_sha256,
+                "prompt_packet_sha256": prompt_packet_sha256,
+                "timeout_seconds": self.timeout_seconds,
+            }
+        )
         return EffectiveRequest(
             endpoint=endpoint_url,
             api_mode=self.config.api_mode,
@@ -666,194 +828,90 @@ class OpenAICompatibleTransport:
         )
 
     def generate(self, request: GenerationRequest) -> GenerationResult:
-        condition = self._require_bound_request(request)
+        _require_sync_context()
+        self._require_bound_request(request)
         endpoint, body = self._body(request)
         effective = self._effective(request, endpoint, body)
-        wire = effective.serialized_body.encode("utf-8")
-        headers = self._headers()
-        authorization = headers.get("Authorization")
-        forbidden_response_strings: tuple[str, ...] = ()
-        if authorization is not None:
-            forbidden_response_strings = (authorization, authorization.removeprefix("Bearer "))
-        http_request = urllib.request.Request(
-            effective.endpoint, data=wire, headers=headers, method="POST"
+        native = runtime_contracts.GenerationRequest(
+            **{f.name: getattr(request, f.name) for f in fields(request)}
         )
-        started = time.perf_counter()
+        prepared = prepare_generation(self._runtime_binding(), native)
+        failed: RuntimeFailure | None = None
+        execution = None
         try:
-            with urllib.request.urlopen(http_request, timeout=self.timeout_seconds) as response:
-                raw = response.read()
-                header_request_id = response.headers.get("X-Request-ID")
-        except urllib.error.HTTPError as exc:
-            # Do not surface provider-controlled error text or bodies here: a hostile
-            # or buggy endpoint can echo an Authorization value or other credential.
-            raise ProviderRuntimeFailure(f"HTTP {exc.code}") from exc
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise TransportFailure(str(exc)) from exc
-        elapsed = time.perf_counter() - started
-        try:
-            payload = json.loads(raw)
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            raise ProviderRuntimeFailure("provider returned invalid JSON") from exc
-        if not isinstance(payload, dict):
-            raise ProviderRuntimeFailure("provider response must be a JSON object")
-        _reject_sensitive_provider_metadata(header_request_id, forbidden_response_strings)
-        _reject_sensitive_provider_metadata(payload, forbidden_response_strings)
-        if self.config.api_mode == "chat_completions":
-            parsed = self._parse_chat(payload)
-        else:
-            parsed = self._parse_responses(payload)
-        body_request_id = payload.get("request_id")
-        if not isinstance(body_request_id, str):
-            body_request_id = None
-        reported_model = parsed["backend_model_id"]
-        model_matches = (
-            None if reported_model is None else reported_model == condition.endpoint_model_id
-        )
+            execution = _run_sync(lambda: self._async_transport().generate(prepared))
+        except RuntimeFailure as exc:
+            failed = exc
+        if failed is not None:
+            transport_kinds = {
+                FailureKind.CONNECT_TIMEOUT,
+                FailureKind.READ_TIMEOUT,
+                FailureKind.WRITE_TIMEOUT,
+                FailureKind.POOL_TIMEOUT,
+                FailureKind.TOTAL_TIMEOUT,
+                FailureKind.NETWORK_ERROR,
+            }
+            detail = (
+                "provider response contains sensitive metadata key or configured credential"
+                if failed.kind is FailureKind.CREDENTIAL_REFLECTION
+                else str(failed)
+            )
+            error = (
+                TransportFailure(detail)
+                if failed.kind in transport_kinds
+                else ProviderRuntimeFailure(detail)
+            )
+            error.remote_completion_unknown = failed.remote_completion_unknown
+            raise error
+        assert execution is not None
+        metadata = parse_json_unique(execution.evidence.body)
+        assert isinstance(metadata, dict)
         return GenerationResult(
-            **parsed,
-            # OpenAI-style response-body `id` identifies the response object, not
-            # the HTTP request. Preserve it in raw_provider_metadata. Normalize an
-            # explicitly labeled body request_id first, then the request-ID header.
-            provider_request_id=body_request_id or header_request_id,
-            raw_provider_metadata=payload,
-            reported_model_matches_condition=model_matches,
-            elapsed_seconds=elapsed,
+            **execution.observation.model_dump(),
+            raw_provider_metadata=metadata,
+            elapsed_seconds=execution.timing.total_request_wall_seconds,
             effective_request=effective,
         )
 
     @staticmethod
-    def _validated_usage(
-        payload: dict[str, Any], input_key: str, output_key: str
-    ) -> tuple[int | None, int | None, int | None]:
-        raw_usage = payload.get("usage")
-        if raw_usage is None:
-            return None, None, None
-        if not isinstance(raw_usage, dict):
-            raise ProviderRuntimeFailure("provider usage must be a JSON object")
-
-        def value(key: str) -> int | None:
-            raw = raw_usage.get(key)
-            if raw is None:
-                return None
-            if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
-                raise ProviderRuntimeFailure("provider token usage must be nonnegative integers")
-            return raw
-
-        prompt_tokens = value(input_key)
-        completion_tokens = value(output_key)
-        total_tokens = value("total_tokens")
-        components = [v for v in (prompt_tokens, completion_tokens) if v is not None]
-        minimum_total = sum(components)
-        if total_tokens is not None and components and total_tokens < minimum_total:
-            raise ProviderRuntimeFailure("provider total token usage is inconsistent")
-        return prompt_tokens, completion_tokens, total_tokens
-
-    @staticmethod
     def _parse_chat(payload: dict[str, Any]) -> dict[str, Any]:
-        choices = payload.get("choices")
-        if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
-            raise ProviderRuntimeFailure("Chat Completions requires exactly one choice")
-        choice = choices[0]
-        message = choice.get("message")
-        if not isinstance(message, dict) or not isinstance(message.get("content"), str):
-            raise ProviderRuntimeFailure("invalid Chat Completions response shape")
-        finish_reason = choice.get("finish_reason")
-        if finish_reason is not None and not isinstance(finish_reason, str):
-            raise ProviderRuntimeFailure("Chat Completions finish_reason is not a string")
-        model = payload.get("model")
-        if model is not None and not isinstance(model, str):
-            raise ProviderRuntimeFailure("Chat Completions model id is not a string")
-        prompt_tokens, completion_tokens, total_tokens = OpenAICompatibleTransport._validated_usage(
-            payload, "prompt_tokens", "completion_tokens"
-        )
-        return {
-            "raw_output": message["content"],
-            "backend_model_id": model,
-            "finish_reason": finish_reason,
-            "termination_reason": finish_reason,
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": total_tokens,
-        }
+        try:
+            return ProviderParser._parse_chat(payload)
+        except ValueError as exc:
+            raise ProviderRuntimeFailure(str(exc)) from None
 
     @staticmethod
     def _parse_responses(payload: dict[str, Any]) -> dict[str, Any]:
-        output = payload.get("output")
-        if not isinstance(output, list):
-            raise ProviderRuntimeFailure("Responses payload has no output list")
-        texts: list[str] = []
-        message_count = 0
-        for item in output:
-            if not isinstance(item, dict):
-                raise ProviderRuntimeFailure("Responses output items must be JSON objects")
-            item_type = item.get("type")
-            if item_type == "reasoning":
-                continue
-            if item_type != "message":
-                raise ProviderRuntimeFailure("Responses output contains an unsupported item type")
-            message_count += 1
-            if message_count > 1:
-                raise ProviderRuntimeFailure("Responses payload contains multiple message outputs")
-            content = item.get("content")
-            if not isinstance(content, list):
-                raise ProviderRuntimeFailure("Responses message content is not a list")
-            for part in content:
-                if not isinstance(part, dict) or part.get("type") != "output_text":
-                    raise ProviderRuntimeFailure("Responses message contains unsupported content")
-                if not isinstance(part.get("text"), str):
-                    raise ProviderRuntimeFailure("Responses output_text is not a string")
-                texts.append(part["text"])
-        status = payload.get("status")
-        if status is not None and not isinstance(status, str):
-            raise ProviderRuntimeFailure("Responses status is not a string")
-        incomplete_details = payload.get("incomplete_details")
-        termination_reason: str | None = None
-        if incomplete_details is not None:
-            if not isinstance(incomplete_details, dict):
-                raise ProviderRuntimeFailure("Responses incomplete_details is not a JSON object")
-            reason = incomplete_details.get("reason")
-            if not isinstance(reason, str) or not reason:
-                raise ProviderRuntimeFailure("Responses incomplete_details.reason is not a string")
-            if status != "incomplete":
-                raise ProviderRuntimeFailure(
-                    "Responses incomplete_details is inconsistent with response status"
-                )
-            termination_reason = reason
-        model = payload.get("model")
-        if model is not None and not isinstance(model, str):
-            raise ProviderRuntimeFailure("Responses model id is not a string")
-        prompt_tokens, completion_tokens, total_tokens = OpenAICompatibleTransport._validated_usage(
-            payload, "input_tokens", "output_tokens"
-        )
-        return {
-            "raw_output": "".join(texts),
-            "backend_model_id": model,
-            "finish_reason": status,
-            "termination_reason": termination_reason,
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": total_tokens,
-        }
+        try:
+            return ProviderParser._parse_responses(payload)
+        except ValueError as exc:
+            raise ProviderRuntimeFailure(str(exc)) from None
 
     def list_models(self) -> tuple[str, ...]:
+        _require_sync_context()
         self.config.capability_profile.require("models")
-        request = urllib.request.Request(
-            f"{self.config.base_url}/models", headers=self._headers(), method="GET"
-        )
+        failed: RuntimeFailure | None = None
+        payload = None
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                raw = response.read()
-        except urllib.error.HTTPError as exc:
-            raise ProviderRuntimeFailure(f"HTTP {exc.code}") from exc
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise TransportFailure(str(exc)) from exc
-        try:
-            payload = json.loads(raw)
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            raise ProviderRuntimeFailure("provider returned invalid JSON") from exc
+            payload, _, _ = _run_sync(
+                lambda: self._async_transport().request_json("GET", "/models")
+            )
+        except RuntimeFailure as exc:
+            failed = exc
+        if failed is not None:
+            if failed.kind in {
+                FailureKind.NETWORK_ERROR,
+                FailureKind.CONNECT_TIMEOUT,
+                FailureKind.READ_TIMEOUT,
+                FailureKind.WRITE_TIMEOUT,
+                FailureKind.POOL_TIMEOUT,
+                FailureKind.TOTAL_TIMEOUT,
+            }:
+                raise TransportFailure(str(failed))
+            raise ProviderRuntimeFailure(str(failed))
         if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
             raise ProviderRuntimeFailure("invalid model-list response")
-        values: list[str] = []
+        values = []
         for item in payload["data"]:
             if not isinstance(item, dict) or not isinstance(item.get("id"), str):
                 raise ProviderRuntimeFailure("invalid model-list response")
@@ -878,7 +936,9 @@ def attempt_generation(
     if transport.config.config_id is None:
         raise ValueError("scientific attempt requires explicit backend config_id")
     if contributes_to_sample:
-        raise ValueError("statistical sample inclusion is decided only after evaluation")
+        raise ValueError(
+            "statistical sample inclusion is decided only after evaluation"
+        )
     try:
         result = transport.generate(request)
     except TransportFailure as exc:
@@ -889,6 +949,7 @@ def attempt_generation(
             generation_status=GenerationStatus.TRANSPORT_FAILURE,
             result=None,
             failure_detail=str(exc),
+            remote_completion_unknown=exc.remote_completion_unknown,
         )
     except ProviderRuntimeFailure as exc:
         return GenerationAttempt(
@@ -898,6 +959,7 @@ def attempt_generation(
             generation_status=GenerationStatus.PROVIDER_RUNTIME_FAILURE,
             result=None,
             failure_detail=str(exc),
+            remote_completion_unknown=exc.remote_completion_unknown,
         )
     return GenerationAttempt(
         attempt_index=attempt_index,
@@ -923,9 +985,12 @@ def record_evaluation(
     if evaluation_status is EvaluationStatus.NOT_EVALUATED:
         raise ValueError("record_evaluation requires a completed evaluation status")
     if contributes_to_sample and (
-        attempt.result is None or attempt.result.reported_model_matches_condition is not True
+        attempt.result is None
+        or attempt.result.reported_model_matches_condition is not True
     ):
-        raise ValueError("statistical sample requires a matching provider-reported model id")
+        raise ValueError(
+            "statistical sample requires a matching provider-reported model id"
+        )
     return replace(
         attempt,
         evaluation_status=evaluation_status,
