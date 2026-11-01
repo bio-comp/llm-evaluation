@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import urllib.request
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Final, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -405,24 +404,13 @@ def _resolve_verified_projection_tree(
     )
 
 
-def _resolve_closure_git_remote(git_remote: str | Path) -> tuple[str, bool]:
-    if isinstance(git_remote, Path):
-        if not git_remote.is_dir():
-            raise ValueError(
-                "git_remote must identify the authorized bio-comp/llm-evaluation repository"
-            )
-        return str(git_remote), True
+def _resolve_closure_git_remote(git_remote: str) -> str:
     if not isinstance(git_remote, str) or not git_remote or git_remote != git_remote.strip():
-        raise ValueError("git_remote must be a non-empty, trimmed string or Path")
+        raise ValueError(
+            "git_remote must identify the authorized bio-comp/llm-evaluation repository"
+        )
     if git_remote in _PUBLIC_GIT_REMOTES or safe_remote_identity(git_remote) in _PUBLIC_GIT_REMOTES:
-        return git_remote, False
-    local_candidate = Path(git_remote)
-    if (
-        "://" not in git_remote
-        and not git_remote.startswith(("git@", "opaque-sha256:"))
-        and local_candidate.is_dir()
-    ):
-        return str(local_candidate), True
+        return git_remote
     raise ValueError(
         "git_remote must identify the authorized bio-comp/llm-evaluation repository"
     )
@@ -437,7 +425,7 @@ def complete_reconciliation_with_github(
     reviewed_head_sha: str,
     github_client: GitHubClosureProvider,
     run_id: int,
-    git_remote: str | Path = _DEFAULT_PUBLIC_GIT_REMOTE,
+    git_remote: str = _DEFAULT_PUBLIC_GIT_REMOTE,
     git_command_timeout: int = DEFAULT_GIT_COMMAND_TIMEOUT,
 ) -> ReconciliationDispositionRecord:
     verified_tree, contract_sha256, tree_sha256 = _resolve_verified_projection_tree(
@@ -445,7 +433,7 @@ def complete_reconciliation_with_github(
         publication_tree=publication_tree,
         public_contract=public_contract,
     )
-    remote_locator, is_local_remote = _resolve_closure_git_remote(git_remote)
+    remote_locator = _resolve_closure_git_remote(git_remote)
 
     pr_raw = github_client.get_pull_request(_EXPECTED_REPO, pr_number)
     run_raw = github_client.get_workflow_run(_EXPECTED_REPO, run_id)
@@ -473,10 +461,6 @@ def complete_reconciliation_with_github(
         verified_tree,
         expected_commit=facts.pull_request.merged_commit_sha,
     )
-    if is_local_remote:
-        git_readback = git_readback.model_copy(
-            update={"remote": _DEFAULT_PUBLIC_GIT_REMOTE}
-        )
 
     receipt = VerifiedPublicationReceiptRecord(
         snapshot_state_sha256=required.current_snapshot_sha256,

@@ -529,3 +529,15 @@ def test_records_reject_lexical_interloper_hierarchy_and_directory_prefix_aliase
             ),
         )
 
+
+@pytest.mark.parametrize("bad_version", [True, 1.0, "1"])
+def test_strict_schema_version_rejects_bool_float_and_str_on_direct_construction(
+    bad_version: object,
+) -> None:
+    with pytest.raises(ValidationError):
+        AuthorityProfileRecord(
+            schema_version=bad_version,  # type: ignore[arg-type]
+            profile_name="strict-schema-version",
+            objects=(object_spec(),),
+        )
+

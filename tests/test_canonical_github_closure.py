@@ -313,13 +313,21 @@ def test_complete_reconciliation_with_github_operational_path(
         jobs_payload=valid_jobs_payload(head_sha=merged_sha),
     )
 
-    # Track git commands during closure to prove it is strictly read-only
+    # Track git commands during closure to prove it is strictly read-only,
+    # while routing the public GitHub remote to our disposable bare repository in tests.
     git_commands: list[str] = []
     original_git = GitPublisher._git
+    active_authoritative_remote = remote
 
     def track_git(self_pub: GitPublisher, repo: Any, *args: str, **kwargs: Any) -> bytes:
         if args:
             git_commands.append(args[0])
+        if (
+            len(args) == 4
+            and args[:3] == ("remote", "add", "origin")
+            and args[3] == "https://github.com/bio-comp/llm-evaluation.git"
+        ):
+            args = ("remote", "add", "origin", str(active_authoritative_remote))
         return original_git(self_pub, repo, *args, **kwargs)
 
     monkeypatch.setattr(GitPublisher, "_git", track_git)
@@ -331,7 +339,6 @@ def test_complete_reconciliation_with_github_operational_path(
         reviewed_head_sha=REVIEWED_HEAD_SHA,
         github_client=provider,
         run_id=99999,
-        git_remote=remote,
     )
 
     assert not {"push", "commit-tree", "hash-object", "mktree"} & set(git_commands)
@@ -380,6 +387,7 @@ def test_complete_reconciliation_with_github_operational_path(
         run_payload=valid_run_payload(id=40183314427, head_sha=pr8_merge_sha),
         jobs_payload=valid_jobs_payload(run_id=40183314427, head_sha=pr8_merge_sha),
     )
+    active_authoritative_remote = pr8_remote
     with pytest.raises(RemoteVerificationError, match="remote projection differs"):
         complete_reconciliation_with_github(
             required=required,
@@ -388,7 +396,6 @@ def test_complete_reconciliation_with_github_operational_path(
             reviewed_head_sha=pr8_head_sha,
             github_client=pr8_provider,
             run_id=40183314427,
-            git_remote=pr8_remote,
         )
 
     # Wrong bytes in fixtures/reconciliation_policy_contract.json on main must also fail
@@ -418,7 +425,6 @@ def test_complete_reconciliation_with_github_operational_path(
             reviewed_head_sha=REVIEWED_HEAD_SHA,
             github_client=wrong_bytes_provider,
             run_id=99999,
-            git_remote=pr8_remote,
         )
 
     # If remote main tip moved away from merged_sha, verification must reject
@@ -430,8 +436,21 @@ def test_complete_reconciliation_with_github_operational_path(
             reviewed_head_sha=REVIEWED_HEAD_SHA,
             github_client=provider,  # expects merged_sha, but pr8_remote is at wrong_bytes_sha
             run_id=99999,
-            git_remote=pr8_remote,
         )
+
+    # Two-repository counterfactual: a local mirror at M must never be accepted or relabeled
+    # as authoritative public-repository evidence when public main has advanced to N.
+    for local_input in (remote, str(remote)):
+        with pytest.raises(ValueError, match="authorized"):
+            complete_reconciliation_with_github(
+                required=required,
+                publication_tree=reconciled.publication_tree,
+                pr_number=9,
+                reviewed_head_sha=REVIEWED_HEAD_SHA,
+                github_client=provider,
+                run_id=99999,
+                git_remote=local_input,  # type: ignore[arg-type]
+            )
 
     # Mismatched publication_tree vs required obligation must fail before completion
     tampered_tree = PublicationTree(
@@ -450,7 +469,6 @@ def test_complete_reconciliation_with_github_operational_path(
             reviewed_head_sha=REVIEWED_HEAD_SHA,
             github_client=provider,
             run_id=99999,
-            git_remote=remote,
         )
 
     # Unauthorized remote URL must fail closed
@@ -1021,6 +1039,21 @@ def test_complete_reconciliation_with_github_projection_and_remote_binding_edges
         jobs_payload=valid_jobs_payload(head_sha=merged_sha),
     )
 
+    original_git = GitPublisher._git
+
+    def route_public_remote(
+        self_pub: GitPublisher, repo: Any, *args: str, **kwargs: Any
+    ) -> bytes:
+        if (
+            len(args) == 4
+            and args[:3] == ("remote", "add", "origin")
+            and args[3] == "https://github.com/bio-comp/llm-evaluation.git"
+        ):
+            args = ("remote", "add", "origin", str(remote))
+        return original_git(self_pub, repo, *args, **kwargs)
+
+    monkeypatch.setattr(GitPublisher, "_git", route_public_remote)
+
     # 1. Supplying public_contract alone derives and verifies the approved PublicationTree
     completed_by_contract = complete_reconciliation_with_github(
         required=required,
@@ -1029,7 +1062,6 @@ def test_complete_reconciliation_with_github_projection_and_remote_binding_edges
         reviewed_head_sha=REVIEWED_HEAD_SHA,
         github_client=provider,
         run_id=99999,
-        git_remote=str(remote),
     )
     assert completed_by_contract.disposition is ReconciliationDisposition.COMPLETE
 
@@ -1042,7 +1074,6 @@ def test_complete_reconciliation_with_github_projection_and_remote_binding_edges
         reviewed_head_sha=REVIEWED_HEAD_SHA,
         github_client=provider,
         run_id=99999,
-        git_remote=remote,
     )
     assert completed_both.disposition is ReconciliationDisposition.COMPLETE
 
@@ -1060,7 +1091,6 @@ def test_complete_reconciliation_with_github_projection_and_remote_binding_edges
             reviewed_head_sha=REVIEWED_HEAD_SHA,
             github_client=provider,
             run_id=99999,
-            git_remote=remote,
         )
 
     # 4. Missing both publication_tree and public_contract is rejected
@@ -1071,7 +1101,6 @@ def test_complete_reconciliation_with_github_projection_and_remote_binding_edges
             reviewed_head_sha=REVIEWED_HEAD_SHA,
             github_client=provider,
             run_id=99999,
-            git_remote=remote,
         )
 
     # 5. Stale/mismatched public_contract vs REQUIRED is rejected
@@ -1084,7 +1113,6 @@ def test_complete_reconciliation_with_github_projection_and_remote_binding_edges
             reviewed_head_sha=REVIEWED_HEAD_SHA,
             github_client=provider,
             run_id=99999,
-            git_remote=remote,
         )
 
     # 6. Disagreement between supplied public_contract and supplied publication_tree is rejected
@@ -1100,7 +1128,6 @@ def test_complete_reconciliation_with_github_projection_and_remote_binding_edges
             reviewed_head_sha=REVIEWED_HEAD_SHA,
             github_client=provider,
             run_id=99999,
-            git_remote=remote,
         )
 
     # 7. publication_tree without fixtures/reconciliation_policy_contract.json is rejected
@@ -1112,10 +1139,9 @@ def test_complete_reconciliation_with_github_projection_and_remote_binding_edges
             reviewed_head_sha=REVIEWED_HEAD_SHA,
             github_client=provider,
             run_id=99999,
-            git_remote=remote,
         )
 
-    # 8. Invalid git_remote values (non-existent Path, untrimmed string) are rejected
+    # 8. Invalid git_remote values (local Path, local directory string, untrimmed string) are rejected
     with pytest.raises(ValueError, match="authorized"):
         complete_reconciliation_with_github(
             required=required,
@@ -1124,9 +1150,9 @@ def test_complete_reconciliation_with_github_projection_and_remote_binding_edges
             reviewed_head_sha=REVIEWED_HEAD_SHA,
             github_client=provider,
             run_id=99999,
-            git_remote=tmp_path / "does-not-exist.git",
+            git_remote=tmp_path / "does-not-exist.git",  # type: ignore[arg-type]
         )
-    with pytest.raises(ValueError, match="git_remote"):
+    with pytest.raises(ValueError, match="authorized"):
         complete_reconciliation_with_github(
             required=required,
             publication_tree=reconciled.publication_tree,
@@ -1155,12 +1181,10 @@ def test_complete_reconciliation_with_github_projection_and_remote_binding_edges
         capture_output=True,
     )
 
-    original_git = GitPublisher._git
-
     def move_remote_after_fetch(
         self_pub: GitPublisher, repo: Any, *args: str, **kwargs: Any
     ) -> bytes:
-        res = original_git(self_pub, repo, *args, **kwargs)
+        res = route_public_remote(self_pub, repo, *args, **kwargs)
         if args and args[0] == "fetch":
             subprocess.run(
                 ["git", "-C", str(remote), "update-ref", "refs/heads/main", advanced_sha],
@@ -1178,5 +1202,4 @@ def test_complete_reconciliation_with_github_projection_and_remote_binding_edges
             reviewed_head_sha=REVIEWED_HEAD_SHA,
             github_client=provider,
             run_id=99999,
-            git_remote=remote,
         )

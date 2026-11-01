@@ -31,6 +31,13 @@ _PUBLIC_GIT_REMOTES = frozenset(
 class _StrictFrozenProjectRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
+    @field_validator("schema_version", mode="before", check_fields=False)
+    @classmethod
+    def _reject_non_exact_int_schema_version(cls, value: object) -> object:
+        if type(value) is not int:
+            raise ValueError("schema_version must be an exact integer")
+        return value
+
 
 class ProjectImpact(StrEnum):
     NO_PUBLIC_IMPACT = "no_public_impact"

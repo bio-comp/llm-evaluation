@@ -32,6 +32,13 @@ _GIT_METADATA_NAMES = frozenset({".git", "git~1"})
 class StrictFrozenRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
+    @field_validator("schema_version", mode="before", check_fields=False)
+    @classmethod
+    def _reject_non_exact_int_schema_version(cls, value: object) -> object:
+        if type(value) is not int:
+            raise ValueError("schema_version must be an exact integer")
+        return value
+
 
 def _nonempty_trimmed(value: str, *, label: str) -> str:
     if not value or value != value.strip() or any(ord(char) < 32 for char in value):

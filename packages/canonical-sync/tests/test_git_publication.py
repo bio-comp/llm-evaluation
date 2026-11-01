@@ -943,3 +943,89 @@ def test_empty_subtree_in_base_rejected_before_mutation_and_on_noop_and_verify(
 
     assert git(remote, "rev-parse", "refs/heads/main") == base_commit
     assert git_bytes(remote, "ls-tree", "-r", "-t", "-z", base_commit) == before_entries
+
+
+def test_publish_first_fixture_onto_allow_empty_root_commit_succeeds(
+    tmp_path: Path,
+) -> None:
+    from canonical_sync.errors import RemoteVerificationError
+
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    publisher = GitPublisher(str(remote), ref="refs/heads/main")
+
+    # Ordinary initialized repository with an --allow-empty commit on main
+    worktree = tmp_path / "work"
+    subprocess.run(["git", "init", str(worktree)], check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(worktree),
+            "-c",
+            "user.name=Init",
+            "-c",
+            "user.email=init@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "initial empty commit",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(worktree), "push", str(remote), "HEAD:refs/heads/main"],
+        check=True,
+        capture_output=True,
+    )
+    empty_root_commit = git(remote, "rev-parse", "refs/heads/main")
+
+    # Verifying a nonempty projection against the empty root commit fails on missing content
+    with pytest.raises(
+        RemoteVerificationError, match="remote projection differs from expected readback"
+    ):
+        publisher.verify(tree(), expected_commit=empty_root_commit)
+
+    # Publishing the first fixture on top of the --allow-empty commit succeeds
+    published = publisher.publish(
+        tree(),
+        expected_base=empty_root_commit,
+        commit_message="publish first fixture onto allow-empty root",
+    )
+    assert published.status == "published"
+    assert published.expected_base_commit == empty_root_commit
+    assert published.readback_verified is True
+    assert git(remote, "rev-parse", f"{published.resulting_commit}^") == empty_root_commit
+
+    # An explicit empty descendant 040000 subtree with zero blobs in the commit is still rejected
+    empty_tree_oid = subprocess.run(
+        ["git", "-C", str(remote), "mktree", "-z"],
+        input=b"",
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    only_empty_subtree_root = subprocess.run(
+        ["git", "-C", str(remote), "mktree", "-z"],
+        input=b"040000 tree " + empty_tree_oid + b"\tempty\0",
+        capture_output=True,
+        check=True,
+    ).stdout.strip().decode()
+    only_empty_subtree_commit = git(
+        remote,
+        "-c",
+        "user.name=Seed",
+        "-c",
+        "user.email=seed@example.invalid",
+        "commit-tree",
+        only_empty_subtree_root,
+        "-m",
+        "commit with only an empty descendant subtree",
+    )
+    git(remote, "update-ref", "refs/heads/main", only_empty_subtree_commit)
+    with pytest.raises(RemoteVerificationError, match="empty subtree"):
+        publisher.publish(
+            tree(),
+            expected_base=only_empty_subtree_commit,
+            commit_message="must reject descendant empty subtree",
+        )

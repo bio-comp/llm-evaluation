@@ -205,7 +205,7 @@ class GitPublisher:
             for parts in (path.split("/"),)
             for depth in range(1, len(parts))
         }
-        if not files or tree_paths != expected_tree_paths:
+        if tree_paths != expected_tree_paths:
             raise RemoteVerificationError("remote tree contains an unsupported empty subtree")
         try:
             _validate_path_inventory(
