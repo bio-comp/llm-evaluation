@@ -11,6 +11,7 @@ import stat
 import sys
 import tempfile
 from collections.abc import Mapping
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -23,6 +24,7 @@ ADC_FILENAME = "application_default_credentials.json"
 _AUTHORIZED_USER_TYPE = "authorized_user"
 _REQUIRED_AUTHORIZED_USER_FIELDS = ("client_id", "client_secret", "refresh_token", "token_uri")
 _REQUIRED_CLIENT_FIELDS = ("client_id", "client_secret", "auth_uri", "token_uri")
+_JSON_READ_ERRORS = (OSError, UnicodeError, json.JSONDecodeError)
 
 
 class AdcRefreshError(RuntimeError):
@@ -106,7 +108,7 @@ def _read_json(path: Path, *, label: str) -> dict[str, Any]:
     try:
         with path.open("r", encoding="utf-8") as handle:
             value = json.load(handle)
-    except (OSError, UnicodeError, json.JSONDecodeError):
+    except _JSON_READ_ERRORS:
         raise AdcRefreshError(f"{label} is not readable valid JSON") from None
     if not isinstance(value, dict):
         raise AdcRefreshError(f"{label} must contain a JSON object")
@@ -117,11 +119,15 @@ def _validate_oauth_client_file(path: Path) -> None:
     payload = _read_json(path, label="OAuth client file")
     installed = payload.get("installed")
     if not isinstance(installed, dict):
-        raise AdcRefreshError("OAuth client file must be an installed/Desktop application configuration")
+        raise AdcRefreshError(
+            "OAuth client file must be an installed/Desktop application configuration"
+        )
     for field in _REQUIRED_CLIENT_FIELDS:
         value = installed.get(field)
         if not isinstance(value, str) or not value.strip():
-            raise AdcRefreshError("OAuth client file is missing required installed-application fields")
+            raise AdcRefreshError(
+                "OAuth client file is missing required installed-application fields"
+            )
 
 
 def _scope_set(credentials: object) -> frozenset[str]:
@@ -149,14 +155,18 @@ def _build_authorized_user_payload(credentials: object) -> dict[str, object]:
     _require_exact_scope(credentials)
     return {
         "type": _AUTHORIZED_USER_TYPE,
-        "client_id": _require_nonempty_string(getattr(credentials, "client_id", None), label="client_id"),
+        "client_id": _require_nonempty_string(
+            getattr(credentials, "client_id", None), label="client_id"
+        ),
         "client_secret": _require_nonempty_string(
             getattr(credentials, "client_secret", None), label="client_secret"
         ),
         "refresh_token": _require_nonempty_string(
             getattr(credentials, "refresh_token", None), label="refresh_token"
         ),
-        "token_uri": _require_nonempty_string(getattr(credentials, "token_uri", None), label="token_uri"),
+        "token_uri": _require_nonempty_string(
+            getattr(credentials, "token_uri", None), label="token_uri"
+        ),
         "scopes": [DRIVE_READONLY_SCOPE],
     }
 
@@ -213,7 +223,9 @@ def _verify_adc_file(
         try:
             credentials.refresh(request if request is not None else _default_refresh_request())  # type: ignore[attr-defined]
         except Exception:
-            raise AdcRefreshError("Authorized-user credential refresh/readiness validation failed") from None
+            raise AdcRefreshError(
+                "Authorized-user credential refresh/readiness validation failed"
+            ) from None
         if not bool(getattr(credentials, "valid", False)):
             raise AdcRefreshError("Authorized-user credential is not refresh-ready")
         _require_exact_scope(credentials)
@@ -246,7 +258,9 @@ def _authorize(client_secrets: Path, *, open_browser: bool, port: int) -> object
     return credentials
 
 
-def _write_candidate(path: Path, payload: Mapping[str, object], *, os_name: str | None = None) -> Path:
+def _write_candidate(
+    path: Path, payload: Mapping[str, object], *, os_name: str | None = None
+) -> Path:
     _ensure_parent(path, os_name=os_name)
     try:
         descriptor, temp_name = tempfile.mkstemp(
@@ -263,10 +277,8 @@ def _write_candidate(path: Path, payload: Mapping[str, object], *, os_name: str 
             os.fsync(handle.fileno())
         _restrict_file_permissions(temp_path, os_name=os_name)
     except Exception as exc:
-        try:
+        with suppress(OSError):
             temp_path.unlink(missing_ok=True)
-        except OSError:
-            pass
         if isinstance(exc, AdcRefreshError):
             raise
         raise AdcRefreshError("Unable to serialize the temporary ADC candidate") from None
@@ -322,10 +334,8 @@ def refresh_adc(
         _verify_adc_file(destination, refresh=False, os_name=os_name)
     finally:
         if candidate is not None:
-            try:
+            with suppress(OSError):
                 candidate.unlink(missing_ok=True)
-            except OSError:
-                pass
 
 
 def _status_lines(destination: Path, *, os_name: str | None = None) -> tuple[str, ...]:
@@ -341,7 +351,9 @@ def _status_lines(destination: Path, *, os_name: str | None = None) -> tuple[str
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Provision or validate an exact-scope Google Drive read-only authorized-user ADC."
+        description=(
+            "Provision or validate an exact-scope Google Drive read-only authorized-user ADC."
+        )
     )
     parser.add_argument("--client-secrets", type=Path, help="Installed/Desktop OAuth client JSON")
     parser.add_argument("--adc-path", type=Path, help="Explicit ADC destination path")
@@ -355,13 +367,17 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not automatically launch a browser; localhost callback is still required",
     )
-    parser.add_argument("--port", type=int, default=0, help="Local OAuth callback port (default: 0)")
+    parser.add_argument(
+        "--port", type=int, default=0, help="Local OAuth callback port (default: 0)"
+    )
     parser.add_argument(
         "--force",
         action="store_true",
         help="Authorize replacement of an existing ADC; validation is never bypassed",
     )
-    parser.add_argument("--check", action="store_true", help="Validate the existing ADC noninteractively")
+    parser.add_argument(
+        "--check", action="store_true", help="Validate the existing ADC noninteractively"
+    )
     return parser
 
 

@@ -52,7 +52,9 @@ class _FailureRequest:
 
 
 class _FakeFlow:
-    def __init__(self, *, credentials: object | None = None, failure: Exception | None = None) -> None:
+    def __init__(
+        self, *, credentials: object | None = None, failure: Exception | None = None
+    ) -> None:
         self.credentials = credentials
         self.failure = failure
         self.calls: list[dict[str, object]] = []
@@ -308,7 +310,9 @@ def test_atomic_replace_occurs_only_after_candidate_validation(
             validated = True
         return result
 
-    def replace_wrapper(source: str | bytes | os.PathLike[str] | os.PathLike[bytes], dest: Any) -> None:
+    def replace_wrapper(
+        source: str | bytes | os.PathLike[str] | os.PathLike[bytes], dest: Any
+    ) -> None:
         assert validated
         original_replace(source, dest)
 
@@ -365,9 +369,7 @@ def test_windows_permission_path_does_not_call_posix_chmod(
 
 def test_cli_does_not_expose_scope_override() -> None:
     option_strings = {
-        option
-        for action in adc._build_parser()._actions
-        for option in action.option_strings
+        option for action in adc._build_parser()._actions for option in action.option_strings
     }
     assert "--scope" not in option_strings
     assert "--scopes" not in option_strings
