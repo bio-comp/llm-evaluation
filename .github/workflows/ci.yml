@@ -27,7 +27,7 @@ jobs:
       - name: Static checks and branch coverage
         run: |
           uv run --frozen --all-packages --extra drive --extra local-auth ruff check src tests scripts packages/canonical-sync/src packages/canonical-sync/tests
-          uv run --frozen --all-packages --extra drive --extra local-auth mypy --python-version 3.11 src packages/canonical-sync/src
+          uv run --frozen --all-packages --extra drive --extra local-auth mypy --python-version 3.11 src packages/canonical-sync/src scripts/refresh_google_drive_adc.py
           uv run --frozen --all-packages --extra drive --extra local-auth coverage erase
           uv run --frozen --all-packages --extra drive --extra local-auth coverage run --branch -m pytest -m 'not live_drive' -q
           uv run --frozen --all-packages --extra drive --extra local-auth coverage report --include='src/*,packages/canonical-sync/src/*' --fail-under=80

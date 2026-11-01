@@ -162,7 +162,9 @@ def nt_expected(appdata: str) -> str:
     return appdata + r"\gcloud\application_default_credentials.json"
 
 
-def test_google_application_credentials_is_not_a_writable_default(tmp_path: Path) -> None:
+def test_google_application_credentials_is_not_a_writable_default(
+    tmp_path: Path,
+) -> None:
     resolved = adc.resolve_adc_path(
         environ={"GOOGLE_APPLICATION_CREDENTIALS": str(tmp_path / "do-not-touch.json")},
         os_name="posix",
@@ -216,7 +218,10 @@ def test_unexpected_broader_oauth_scope_fails_closed(
 ) -> None:
     flow = _FakeFlow(
         credentials=_credentials(
-            scopes=[adc.DRIVE_READONLY_SCOPE, "https://www.googleapis.com/auth/cloud-platform"]
+            scopes=[
+                adc.DRIVE_READONLY_SCOPE,
+                "https://www.googleapis.com/auth/cloud-platform",
+            ]
         )
     )
     _install_flow(monkeypatch, flow)
@@ -229,7 +234,9 @@ def test_unexpected_broader_oauth_scope_fails_closed(
     assert not (tmp_path / "adc.json").exists()
 
 
-def test_plain_credentials_to_json_is_not_a_completed_adc_artifact(tmp_path: Path) -> None:
+def test_plain_credentials_to_json_is_not_a_completed_adc_artifact(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "adc.json"
     path.write_text(_credentials().to_json(), encoding="utf-8")  # type: ignore[no-untyped-call]
     if os.name != "nt":

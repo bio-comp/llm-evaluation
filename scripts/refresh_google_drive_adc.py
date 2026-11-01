@@ -10,10 +10,11 @@ import os
 import stat
 import sys
 import tempfile
+import warnings
 from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 # Temporary duplicated operator helper pending standalone canonical-sync extraction.
 # Keep behavior synchronized across consumers.
@@ -22,7 +23,12 @@ from typing import Any, Protocol
 DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 ADC_FILENAME = "application_default_credentials.json"
 _AUTHORIZED_USER_TYPE = "authorized_user"
-_REQUIRED_AUTHORIZED_USER_FIELDS = ("client_id", "client_secret", "refresh_token", "token_uri")
+_REQUIRED_AUTHORIZED_USER_FIELDS = (
+    "client_id",
+    "client_secret",
+    "refresh_token",
+    "token_uri",
+)
 _REQUIRED_CLIENT_FIELDS = ("client_id", "client_secret", "auth_uri", "token_uri")
 _JSON_READ_ERRORS = (OSError, UnicodeError, json.JSONDecodeError)
 
@@ -32,7 +38,19 @@ class AdcRefreshError(RuntimeError):
 
 
 class _RefreshRequest(Protocol):
-    def __call__(self, *args: object, **kwargs: object) -> object: ...
+    def __call__(
+        self,
+        url: Any,
+        method: Any = ...,
+        body: Any = ...,
+        headers: Any = ...,
+        timeout: Any = ...,
+        **kwargs: Any,
+    ) -> Any: ...
+
+
+class _AuthorizedUserCredential(Protocol):
+    def refresh(self, request: _RefreshRequest) -> None: ...
 
 
 def _is_windows(os_name: str | None = None) -> bool:
@@ -180,16 +198,23 @@ def _validate_authorized_user_payload(payload: Mapping[str, object]) -> None:
         raise AdcRefreshError("ADC scope list must contain exactly Drive read-only")
 
 
-def _load_authorized_user_adc(path: Path) -> object:
+def _load_authorized_user_adc(path: Path) -> _AuthorizedUserCredential:
     payload = _read_json(path, label="ADC file")
     _validate_authorized_user_payload(payload)
     try:
         import google.auth
         from google.oauth2.credentials import Credentials
 
-        credentials, _ = google.auth.load_credentials_from_file(
-            str(path), scopes=[DRIVE_READONLY_SCOPE]
-        )
+        # Keep the generic ADC loader as a compatibility assertion: this is the
+        # path that rejected the original missing-`type` artifact. The payload
+        # has already been restricted to authorized_user + exact scope above, so
+        # suppress google-auth's generic externally-sourced-credential warning
+        # only around this prevalidated compatibility check.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            credentials, _ = google.auth.load_credentials_from_file(  # type: ignore[no-untyped-call]
+                str(path), scopes=[DRIVE_READONLY_SCOPE]
+            )
     except Exception:
         raise AdcRefreshError("ADC loader rejected the authorized-user credential") from None
     if not isinstance(credentials, Credentials):
@@ -199,7 +224,7 @@ def _load_authorized_user_adc(path: Path) -> object:
     _require_nonempty_string(credentials.refresh_token, label="refresh_token")
     _require_nonempty_string(credentials.token_uri, label="token_uri")
     _require_exact_scope(credentials)
-    return credentials
+    return cast(_AuthorizedUserCredential, credentials)
 
 
 def _default_refresh_request() -> _RefreshRequest:
@@ -221,7 +246,7 @@ def _verify_adc_file(
     credentials = _load_authorized_user_adc(path)
     if refresh:
         try:
-            credentials.refresh(request if request is not None else _default_refresh_request())  # type: ignore[attr-defined]
+            credentials.refresh(request if request is not None else _default_refresh_request())
         except Exception:
             raise AdcRefreshError(
                 "Authorized-user credential refresh/readiness validation failed"
@@ -234,7 +259,7 @@ def _verify_adc_file(
 
 def _create_installed_app_flow(client_secrets: Path) -> object:
     try:
-        from google_auth_oauthlib.flow import InstalledAppFlow
+        from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore[import-untyped]
     except ImportError:
         raise AdcRefreshError(
             "google-auth-oauthlib is required for interactive ADC provisioning"
@@ -376,7 +401,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Authorize replacement of an existing ADC; validation is never bypassed",
     )
     parser.add_argument(
-        "--check", action="store_true", help="Validate the existing ADC noninteractively"
+        "--check",
+        action="store_true",
+        help="Validate the existing ADC noninteractively",
     )
     return parser
 
