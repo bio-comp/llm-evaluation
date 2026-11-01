@@ -11,7 +11,7 @@ from .errors import GitPublicationError, RemoteRaceError, RemoteVerificationErro
 from .records import (
     GitPublicationReceiptRecord,
     _portable_path_key,
-    _validate_no_path_hierarchy_collisions,
+    _validate_path_inventory,
 )
 
 GIT_MODE_BLOB = b"100644"
@@ -50,10 +50,10 @@ class PublicationTree:
         if not self.files:
             raise ValueError("publication tree requires at least one file")
         ordered = tuple(sorted(self.files, key=lambda item: item.path))
-        folded = tuple(_portable_path_key(item.path) for item in ordered)
-        if len(folded) != len(set(folded)):
-            raise ValueError("publication tree paths must be unique")
-        _validate_no_path_hierarchy_collisions(folded)
+        _validate_path_inventory(
+            (item.path for item in ordered),
+            collision_message="publication tree paths must be unique",
+        )
         object.__setattr__(self, "files", ordered)
 
     @property
@@ -174,23 +174,48 @@ class GitPublisher:
 
     def _read_tree(self, repo: Path, commit: str) -> dict[str, bytes]:
         files: dict[str, bytes] = {}
-        portable_keys: set[str] = set()
-        for raw in self._git(repo, "ls-tree", "-r", "-z", commit).split(b"\0"):
+        tree_paths: set[str] = set()
+        for raw in self._git(repo, "ls-tree", "-r", "-t", "-z", commit).split(b"\0"):
             if not raw:
                 continue
             metadata, name = raw.split(b"\t", 1)
             mode, kind, oid = metadata.split(b" ")
             path = name.decode("utf-8")
-            _safe_git_path(path)
-            key = _portable_path_key(path)
-            if mode != GIT_MODE_BLOB or kind != b"blob" or path in files or key in portable_keys:
-                raise RemoteVerificationError("remote tree contains an unsupported Git entry or colliding path")
+            try:
+                _safe_git_path(path)
+            except ValueError as exc:
+                raise RemoteVerificationError(
+                    "remote tree contains an unsafe or non-portable path"
+                ) from exc
+            if mode == GIT_MODE_TREE and kind == b"tree":
+                if path in tree_paths or path in files:
+                    raise RemoteVerificationError(
+                        "remote tree contains an unsupported Git entry or colliding path"
+                    )
+                tree_paths.add(path)
+                continue
+            if mode != GIT_MODE_BLOB or kind != b"blob" or path in files or path in tree_paths:
+                raise RemoteVerificationError(
+                    "remote tree contains an unsupported Git entry or colliding path"
+                )
             files[path] = self._git(repo, "cat-file", "blob", oid.decode("ascii"))
-            portable_keys.add(key)
+        expected_tree_paths = {
+            "/".join(parts[:depth])
+            for path in files
+            for parts in (path.split("/"),)
+            for depth in range(1, len(parts))
+        }
+        if not files or tree_paths != expected_tree_paths:
+            raise RemoteVerificationError("remote tree contains an unsupported empty subtree")
         try:
-            _validate_no_path_hierarchy_collisions(tuple(portable_keys))
+            _validate_path_inventory(
+                files.keys(),
+                collision_message="remote tree contains colliding portable paths",
+            )
         except ValueError as exc:
-            raise RemoteVerificationError("remote tree contains path hierarchy collisions") from exc
+            raise RemoteVerificationError(
+                "remote tree contains colliding paths or directory prefixes"
+            ) from exc
         return files
 
     def verify(
@@ -279,10 +304,10 @@ class GitPublisher:
                     )
 
             try:
-                folded_desired = tuple(_portable_path_key(path) for path in desired_tree)
-                if len(folded_desired) != len(set(folded_desired)):
-                    raise GitPublicationError("combined tree contains colliding portable paths")
-                _validate_no_path_hierarchy_collisions(folded_desired)
+                _validate_path_inventory(
+                    desired_tree.keys(),
+                    collision_message="combined tree contains colliding portable paths",
+                )
             except ValueError as exc:
                 raise GitPublicationError("projection would retype a base path or directory") from exc
             git_tree = self._write_tree(repo, desired_tree)

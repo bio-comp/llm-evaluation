@@ -231,6 +231,9 @@ def acquire_stable_candidate(
 ) -> AcquisitionCandidate:
     if type(max_movement_attempts) is not int or max_movement_attempts < 1:
         raise ValueError("max_movement_attempts must be a positive integer")
+    if not isinstance(profile, AuthorityProfile):
+        raise TypeError("acquire_stable_candidate requires an AuthorityProfile")
+    _ = profile.spec_sha256
     actual_clock = clock or (lambda: datetime.now(UTC))
     actual_provenance = provenance or acquisition_provenance(transport)
     last_movement: SourceMovementError | None = None

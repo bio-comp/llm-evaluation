@@ -16,6 +16,17 @@ _WINDOWS_ILLEGAL_CHARS = frozenset('<>:"|?*')
 _WINDOWS_RESERVED_STEM_RE = re.compile(
     r"^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$", re.IGNORECASE
 )
+# Code points stripped by Git's next_hfs_char() under core.protectHFS
+_HFS_IGNORABLE_CHARS = frozenset(
+    {
+        *(chr(cp) for cp in range(0x200C, 0x2010)),  # U+200C..U+200F
+        *(chr(cp) for cp in range(0x202A, 0x202F)),  # U+202A..U+202E
+        *(chr(cp) for cp in range(0x206A, 0x2070)),  # U+206A..U+206F
+        "\ufeff",  # U+FEFF ZERO WIDTH NO-BREAK SPACE
+    }
+)
+# Reserved Git metadata directory/file names under core.protectHFS and core.protectNTFS
+_GIT_METADATA_NAMES = frozenset({".git", "git~1"})
 
 
 class StrictFrozenRecord(BaseModel):
@@ -28,28 +39,50 @@ def _nonempty_trimmed(value: str, *, label: str) -> str:
     return value
 
 
-def _portable_path_key(value: str) -> str:
+def _portable_component_key(part: str) -> str:
+    if part in {"", ".", ".."}:
+        raise ValueError("logical path contains an unsafe component")
+    if any(ord(character) <= 0x1F or ord(character) == 0x7F for character in part):
+        raise ValueError("logical path contains an ASCII control character")
+    if any(character in _WINDOWS_ILLEGAL_CHARS for character in part):
+        raise ValueError("logical path contains a portable-illegal character")
+    hfs_stripped = "".join(ch for ch in part if ch not in _HFS_IGNORABLE_CHARS)
+    nfc_stripped = "".join(
+        ch for ch in unicodedata.normalize("NFC", part) if ch not in _HFS_IGNORABLE_CHARS
+    )
+    for candidate in (part, hfs_stripped, nfc_stripped):
+        if candidate in {"", ".", ".."}:
+            raise ValueError("logical path contains an unsafe component")
+        if candidate.endswith((" ", ".")):
+            raise ValueError("logical path component has an unsafe trailing character")
+        if candidate.rstrip(" .").casefold() in _GIT_METADATA_NAMES:
+            raise ValueError("logical path contains a protected Git metadata component")
+        stem = candidate.split(".", 1)[0].rstrip(" ")
+        if _WINDOWS_RESERVED_STEM_RE.fullmatch(stem):
+            raise ValueError("logical path uses a reserved portable filename")
+    return nfc_stripped.casefold()
+
+
+def _portable_path_parts(value: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     _nonempty_trimmed(value, label="logical path")
     if "\\" in value:
         raise ValueError("logical path must use POSIX separators")
+    raw_parts = tuple(value.split("/"))
     path = PurePosixPath(value)
-    if path.is_absolute() or path.as_posix() != value:
+    if (
+        path.is_absolute()
+        or not path.parts
+        or path.parts != raw_parts
+        or path.as_posix() != value
+    ):
         raise ValueError("logical path must be a canonical relative POSIX path")
-    normalized: list[str] = []
-    for part in path.parts:
-        if part in {"", ".", ".."} or part.casefold() == ".git":
-            raise ValueError("logical path contains an unsafe component")
-        if any(character in _WINDOWS_ILLEGAL_CHARS for character in part):
-            raise ValueError("logical path contains a portable-illegal character")
-        stem = part.split(".", 1)[0]
-        if _WINDOWS_RESERVED_STEM_RE.fullmatch(stem):
-            raise ValueError("logical path uses a reserved portable filename")
-        if part.endswith((" ", ".")):
-            raise ValueError("logical path component has an unsafe trailing character")
-        if any(ord(character) <= 0x1F or ord(character) == 0x7F for character in part):
-            raise ValueError("logical path contains an ASCII control character")
-        normalized.append(unicodedata.normalize("NFC", part).casefold())
-    return "/".join(normalized)
+    key_parts = tuple(_portable_component_key(part) for part in raw_parts)
+    return raw_parts, key_parts
+
+
+def _portable_path_key(value: str) -> str:
+    _, key_parts = _portable_path_parts(value)
+    return "/".join(key_parts)
 
 
 def _safe_logical_path(value: str) -> str:
@@ -123,13 +156,52 @@ class ExactMembershipSpecRecord(StrictFrozenRecord):
 
 
 def _validate_no_path_hierarchy_collisions(paths: Iterable[str]) -> None:
-    sorted_paths = sorted(paths)
-    for index in range(len(sorted_paths) - 1):
-        prefix = sorted_paths[index] + "/"
-        if sorted_paths[index + 1].startswith(prefix):
-            raise ValueError(
-                f"path hierarchy collision between '{sorted_paths[index]}' and '{sorted_paths[index + 1]}'"
-            )
+    seen_files: dict[tuple[str, ...], str] = {}
+    for raw_path in sorted(paths):
+        _, key_parts = _portable_path_parts(raw_path)
+        seen_files.setdefault(key_parts, raw_path)
+    for key_parts, raw_path in seen_files.items():
+        for depth in range(1, len(key_parts)):
+            ancestor_key = key_parts[:depth]
+            if ancestor_key in seen_files:
+                ancestor_path = seen_files[ancestor_key]
+                raise ValueError(
+                    f"path hierarchy collision between '{ancestor_path}' and '{raw_path}'"
+                )
+
+
+def _validate_path_inventory(
+    paths: Iterable[str],
+    *,
+    collision_message: str = "paths collide portably",
+) -> None:
+    seen_files: dict[tuple[str, ...], str] = {}
+    seen_dirs: dict[tuple[str, ...], tuple[tuple[str, ...], str]] = {}
+    for raw_path in paths:
+        raw_parts, key_parts = _portable_path_parts(raw_path)
+        if key_parts in seen_files:
+            raise ValueError(collision_message)
+        seen_files[key_parts] = raw_path
+        for depth in range(1, len(raw_parts)):
+            dir_key = key_parts[:depth]
+            dir_raw = raw_parts[:depth]
+            if dir_key in seen_dirs:
+                existing_raw, existing_path = seen_dirs[dir_key]
+                if existing_raw != dir_raw:
+                    raise ValueError(
+                        f"directory prefix alias collision between '{'/'.join(existing_raw)}' "
+                        f"in '{existing_path}' and '{'/'.join(dir_raw)}' in '{raw_path}'"
+                    )
+            else:
+                seen_dirs[dir_key] = (dir_raw, raw_path)
+    for key_parts, raw_path in seen_files.items():
+        for depth in range(1, len(key_parts)):
+            ancestor_key = key_parts[:depth]
+            if ancestor_key in seen_files:
+                ancestor_path = seen_files[ancestor_key]
+                raise ValueError(
+                    f"path hierarchy collision between '{ancestor_path}' and '{raw_path}'"
+                )
 
 
 class _BaseAuthoritySpecRecord(StrictFrozenRecord):
@@ -145,10 +217,10 @@ class _BaseAuthoritySpecRecord(StrictFrozenRecord):
             label = "authority profile" if "Profile" in cls.__name__ else "authority specification"
             raise ValueError(f"{label} requires at least one object")
         ordered = tuple(sorted(value, key=lambda item: item.logical_path))
-        folded_paths = tuple(_portable_path_key(item.logical_path) for item in ordered)
-        if len(folded_paths) != len(set(folded_paths)):
-            raise ValueError("authority logical paths collide portably")
-        _validate_no_path_hierarchy_collisions(folded_paths)
+        _validate_path_inventory(
+            (item.logical_path for item in ordered),
+            collision_message="authority logical paths collide portably",
+        )
         object_ids = tuple(item.object_id for item in ordered)
         if len(object_ids) != len(set(object_ids)):
             raise ValueError("authority object IDs must be unique")
@@ -240,10 +312,10 @@ class SnapshotStateRecord(StrictFrozenRecord):
         if not value:
             raise ValueError("snapshot state requires at least one semantic entry")
         ordered = tuple(sorted(value, key=lambda item: item.logical_path))
-        folded = tuple(_portable_path_key(item.logical_path) for item in ordered)
-        if len(folded) != len(set(folded)):
-            raise ValueError("snapshot logical paths collide portably")
-        _validate_no_path_hierarchy_collisions(folded)
+        _validate_path_inventory(
+            (item.logical_path for item in ordered),
+            collision_message="snapshot logical paths collide portably",
+        )
         return ordered
 
 
@@ -356,9 +428,10 @@ class SnapshotObservationRecord(StrictFrozenRecord):
         if not value:
             raise ValueError("snapshot observation requires at least one source")
         ordered = tuple(sorted(value, key=lambda item: item.logical_path))
-        paths = tuple(_portable_path_key(item.logical_path) for item in ordered)
-        if len(paths) != len(set(paths)):
-            raise ValueError("source observations must have unique logical paths")
+        _validate_path_inventory(
+            (item.logical_path for item in ordered),
+            collision_message="source observations must have unique logical paths",
+        )
         return ordered
 
     @model_validator(mode="after")

@@ -47,7 +47,9 @@ llm-evaluation/
 │       └── tests/
 ├── src/llm_evaluation/
 │   ├── canonical_authority.py
-│   └── canonical_reconciliation.py
+│   ├── canonical_reconciliation.py
+│   ├── canonical_github.py
+│   └── canonical_live.py
 ├── tests/
 │   └── test_canonical_reconciliation.py
 ├── pyproject.toml
@@ -327,20 +329,23 @@ Only then should a standalone `canonical-sync` repository be proposed. prlab mig
 
 No Drive canonical change is required merely to record this design: it implements the architecture already authorized by D-016 rather than changing that authority.
 
-## 17. 2026-10-28 Design amendment: authoritative GitHub closure and pre-merge hardening
+## 17. Operational closure, path-inventory invariants, and current gate status
 
-Following the 2026-10-28 D-016 clarification in Google Drive and pre-merge review of PR #9, the following hardening and boundary amendments are incorporated:
+### 17.1 Structural record validation vs operational closure acquisition and Git readback
 
-### 17.1 Authoritative external evidence vs internal record validity
+Syntactically valid or internally consistent Pydantic records validate durable data structure only; they do not prove external real-world events. In particular:
+- An open PR can expose a synthetic test merge SHA, so `merge_commit_sha` alone is not evidence of actual merge; `merged == True` and explicit ISO-8601 UTC `merged_at` are required. Reviewed head `H` (`head.sha`) and merge commit `M` (`merge_commit_sha`) are both bound, and `H != M` is supported.
+- PR-triggered CI runs execute branch code and cannot attest post-merge `main` state; evidence must bind an authoritative `push` event on `refs/heads/main` at `head_sha == M`.
+- Required job identity must bind exact workflow path (`.github/workflows/ci.yml`), workflow name `Public CI`, and unique job name `verify` with `conclusion == "success"`.
+- A caller-supplied or deserialized `GitPublicationReceiptRecord` cannot substitute for Git verification during operational closure.
 
-Syntactically valid or internally consistent Pydantic records do not prove external real-world events. In particular:
-- An open PR can expose a synthetic test merge SHA, so `merge_commit_sha` is not evidence of actual merge; `merged == True` and explicit `merged_at` are required.
-- PR-triggered CI runs execute untrusted branch code and cannot attest post-merge `main` state; evidence must bind an authoritative `push` event on `refs/heads/main` at `head_sha == merge_commit_sha`.
-- Required job identity must bind exact workflow path (`.github/workflows/ci.yml`), workflow name `Public CI`, and job name `verify` with `conclusion == success`.
+Project-owned closure in `llm_evaluation.canonical_github.complete_reconciliation_with_github` executes the complete read-only verification sequence:
+1. Recomputes and binds the supplied `PublicationTree` / `ReconciliationPolicyContract` to `required.public_contract_sha256` and `required.publication_tree_sha256`;
+2. Fetches PR, workflow run, and workflow jobs from the GitHub REST API, validates them with strict Pydantic wire models (no network I/O in validators), and verifies repository/PR/merge/branch/workflow/job invariants to produce `VerifiedGitHubClosureFacts`;
+3. Runs `GitPublisher(remote, ref="refs/heads/main").verify(publication_tree, expected_commit=M)` to read back `refs/heads/main` at `M` and verify the exact approved `PublicationTree` bytes;
+4. Assembles `VerifiedPublicationReceiptRecord` v4 and transitions the matching `REQUIRED` disposition to `COMPLETE` (`ReconciliationDispositionRecord` v3).
 
-Project-owned closure acquisition in `llm_evaluation.canonical_github` implements this boundary:
-`GitHub REST API` -> `strict Pydantic wire models` -> `project verification against expected state` -> `frozen trusted runtime facts` -> `durable Pydantic evidence records` (`GitHubPullRequestMergeRecord` v2, `GitHubCIVerificationRecord` v3) -> `VerifiedPublicationReceiptRecord` v4 -> `COMPLETE`.
-Network operations remain in project transport adapters, not inside Pydantic validators.
+Pure structural validation remains available in `complete_reconciliation(required, receipt)` for persisted record checks and is explicitly distinct from operational closure.
 
 ### 17.2 Server-enforced atomic CAS Git publication lease
 
@@ -353,10 +358,15 @@ In addition, the candidate publication commit must mechanically declare the exac
 
 Low-level filesystem `OSError` exceptions during store operations (directory creation, file read/write, fsync, rename, symlink checks) are sanitized into `SnapshotIntegrityError` without leaking private local filesystem paths, store root paths, or internal diagnostics in `str(exc)` or `__cause__` (`raise ... from None`). Path traversal defenses reject symlinks across store operations while safely accommodating standard platform root directory aliases (such as macOS `/tmp` and `/var` owned by root).
 
-### 17.4 Base-tree path and portable filesystem parity
+### 17.4 Full-inventory path/directory hygiene and fail-closed base-tree inspection
 
-`GitPublisher._read_tree()` enforces portable path hygiene across the remote base tree and candidate publication tree by rejecting case-folding collisions and Unicode normalization collisions (NFC vs NFD forms), guaranteeing deterministic cross-platform compatibility on case-insensitive and Unicode-normalizing filesystems.
+Path and inventory validation is enforced consistently across authority configuration (`AuthorityProfile`, `AuthorityProfileRecord`, `AuthoritySpecificationRecord`, failing before any provider `observe`/`read` calls), snapshot records (`SnapshotStateRecord`, `SnapshotObservationRecord`), publication projections (`PublicationFile`, `PublicationTree`), remote-base inspection (`GitPublisher._read_tree()`), and combined base-plus-projection trees (`GitPublisher.publish()` before commit creation or push):
+- Single-path validation rejects empty component inventories (including literal `.`), `..`, backslashes, control characters, Windows illegal characters/reserved stems, trailing spaces/dots, and Git metadata aliases protected by `core.protectHFS` and `core.protectNTFS` (`.git`, `git~1`, and components containing HFS-ignorable code points `U+200C..U+200F`, `U+202A..U+202E`, `U+206A..U+206F`, `U+FEFF` in any directory or leaf position).
+- Full-inventory validation checks portable file-key uniqueness, requires consistent exact spelling for every shared directory prefix across the inventory (rejecting case or NFC/NFD directory-prefix aliases such as `Foo/a.txt` + `foo/b.txt`), and checks every file's ancestor prefixes against the entire file inventory so lexical interlopers (such as `a`, `a-b`, `a/c`) cannot bypass hierarchy collision checks.
+- `GitPublisher._read_tree()` inspects `git ls-tree -r -t -z` and fails closed with `RemoteVerificationError` on non-`100644` blobs, empty subtrees (`040000 tree` entries with no descendant blobs), or colliding paths/prefixes during both `publish()` (including no-op projections) and read-only `verify()`. Omitted base entries in a valid `100644` blob inventory are preserved byte-for-byte.
 
-### 17.5 Narrow D-016 authority-profile parent invariant
+### 17.5 Narrow D-016 authority-profile parent invariant and vertical-slice scope
 
 The D-016 authority profile validator enforces that all four required root authority roles (`README.md`, `DECISIONS.md`, `EXPERIMENTS.md`, `REVIEW_LEDGER.md`) share the exact same non-null Drive parent ID, guaranteeing that root governance canonicals originate from the single authorized project folder without generalizing this invariant to secondary canonical objects.
+
+The current `llm_evaluation` vertical slice acquires only those four root roles and projects only the single public-safe fixture `fixtures/reconciliation_policy_contract.json`. Stage-A local OAuth read-only acquisition was historically live-verified, while D-016 still has an unresolved `REQUIRED` obligation (later `NONE` watch receipts do not clear an unresolved `REQUIRED` obligation) and awaits a designated storage home for `LastReconciledStateRecord` plus post-merge operational closure. E-002 remains `PLANNED`.

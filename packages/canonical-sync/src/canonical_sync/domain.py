@@ -22,11 +22,29 @@ class AuthorityObjectSpec:
     expected_parent_id: str | None
     representation_schema: str
 
+    def __post_init__(self) -> None:
+        AuthorityObjectSpecRecord(
+            logical_path=self.logical_path,
+            provider=self.provider,
+            object_id=self.object_id,
+            expected_name=self.expected_name,
+            expected_mime_type=self.expected_mime_type,
+            expected_parent_id=self.expected_parent_id,
+            representation_schema=self.representation_schema,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class ExactMembershipSpec:
     parent_id: str
     expected_child_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        record = ExactMembershipSpecRecord(
+            parent_id=self.parent_id,
+            expected_child_ids=self.expected_child_ids,
+        )
+        object.__setattr__(self, "expected_child_ids", record.expected_child_ids)
 
 
 def compute_authority_spec_sha256(
@@ -62,6 +80,42 @@ class AuthorityProfile:
     profile_name: str
     objects: tuple[AuthorityObjectSpec, ...]
     memberships: tuple[ExactMembershipSpec, ...] = ()
+
+    def __post_init__(self) -> None:
+        record = AuthorityProfileRecord(
+            profile_name=self.profile_name,
+            objects=tuple(
+                AuthorityObjectSpecRecord(
+                    logical_path=item.logical_path,
+                    provider=item.provider,
+                    object_id=item.object_id,
+                    expected_name=item.expected_name,
+                    expected_mime_type=item.expected_mime_type,
+                    expected_parent_id=item.expected_parent_id,
+                    representation_schema=item.representation_schema,
+                )
+                for item in self.objects
+            ),
+            memberships=tuple(
+                ExactMembershipSpecRecord(
+                    parent_id=item.parent_id,
+                    expected_child_ids=item.expected_child_ids,
+                )
+                for item in self.memberships
+            ),
+        )
+        by_path = {item.logical_path: item for item in self.objects}
+        object.__setattr__(
+            self,
+            "objects",
+            tuple(by_path[item.logical_path] for item in record.objects),
+        )
+        by_parent = {item.parent_id: item for item in self.memberships}
+        object.__setattr__(
+            self,
+            "memberships",
+            tuple(by_parent[item.parent_id] for item in record.memberships),
+        )
 
     @property
     def spec_sha256(self) -> str:

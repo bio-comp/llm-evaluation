@@ -5,7 +5,6 @@ import pytest
 from pydantic import ValidationError
 
 from canonical_sync.codec import parse_canonical_record
-from canonical_sync.records import GitPublicationReceiptRecord
 from llm_evaluation.canonical_reconciliation import (
     GitHubPullRequestMergeRecord,
     LastReconciledStateRecord,
@@ -270,7 +269,13 @@ def test_authoritative_closure_rejects_commit_disagreement() -> None:
         )
 
 
-def test_complete_reconciliation_with_github_operational_path() -> None:
+def test_complete_reconciliation_with_github_operational_path(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+    from canonical_sync.errors import RemoteVerificationError
+    from canonical_sync.git_publication import GitPublisher, PublicationFile, PublicationTree
+
     reconciled = reconcile_reviewed_snapshot(
         current_snapshot_sha256=H2,
         previous=LastReconciledStateRecord(snapshot_state_sha256=H1),
@@ -283,39 +288,183 @@ def test_complete_reconciliation_with_github_operational_path() -> None:
     assert required.disposition is ReconciliationDisposition.REQUIRED
     assert required.publication_tree_sha256 is not None
     assert required.public_contract_sha256 is not None
+    assert reconciled.publication_tree is not None
 
-    git_receipt = GitPublicationReceiptRecord(
-        status="unchanged",
-        remote="https://github.com/bio-comp/llm-evaluation.git",
-        remote_ref="refs/heads/main",
-        expected_base_commit=MERGED_SHA,
-        resulting_commit=MERGED_SHA,
-        git_tree_oid="b" * 40,
-        publication_tree_sha256=required.publication_tree_sha256,
-        verified_remote_commit=MERGED_SHA,
-        readback_verified=True,
-        fast_forward_only=True,
+    # Seed a disposable bare Git remote with the approved projection merged on refs/heads/main
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    publisher = GitPublisher(str(remote), ref="refs/heads/main")
+    base_pub = publisher.publish(
+        PublicationTree(
+            files=(
+                PublicationFile("README.md", b"# llm-evaluation\n"),
+                *reconciled.publication_tree.files,
+            )
+        ),
+        expected_base=None,
+        commit_message="Merge pull request #9",
     )
+    merged_sha = base_pub.resulting_commit
+    assert merged_sha != REVIEWED_HEAD_SHA  # Reviewed head H != Merge commit M
 
     provider = FakeGitHubProvider(
-        pr_payload=valid_pr_payload(),
-        run_payload=valid_run_payload(),
-        jobs_payload=valid_jobs_payload(),
+        pr_payload=valid_pr_payload(merge_commit_sha=merged_sha),
+        run_payload=valid_run_payload(head_sha=merged_sha),
+        jobs_payload=valid_jobs_payload(head_sha=merged_sha),
     )
+
+    # Track git commands during closure to prove it is strictly read-only
+    git_commands: list[str] = []
+    original_git = GitPublisher._git
+
+    def track_git(self_pub: GitPublisher, repo: Any, *args: str, **kwargs: Any) -> bytes:
+        if args:
+            git_commands.append(args[0])
+        return original_git(self_pub, repo, *args, **kwargs)
+
+    monkeypatch.setattr(GitPublisher, "_git", track_git)
 
     completed = complete_reconciliation_with_github(
         required=required,
-        git_readback=git_receipt,
+        publication_tree=reconciled.publication_tree,
         pr_number=9,
         reviewed_head_sha=REVIEWED_HEAD_SHA,
         github_client=provider,
         run_id=99999,
+        git_remote=remote,
     )
 
+    assert not {"push", "commit-tree", "hash-object", "mktree"} & set(git_commands)
+    assert "fetch" in git_commands
     assert completed.disposition is ReconciliationDisposition.COMPLETE
     assert completed.verified_publication is not None
     assert completed.verified_publication.pull_request.pull_request_number == 9
+    assert completed.verified_publication.pull_request.head_commit_sha == REVIEWED_HEAD_SHA
+    assert completed.verified_publication.pull_request.merged_commit_sha == merged_sha
+    assert completed.verified_publication.git.resulting_commit == merged_sha
+    assert completed.verified_publication.git.remote == "https://github.com/bio-comp/llm-evaluation.git"
     assert completed.verified_publication.ci.run_id == 99999
+
+    # Caller-constructed receipt parameter must not be accepted
+    with pytest.raises(TypeError):
+        complete_reconciliation_with_github(  # type: ignore[call-arg]
+            required=required,
+            git_readback=completed.verified_publication.git,
+            pr_number=9,
+            reviewed_head_sha=REVIEWED_HEAD_SHA,
+            github_client=provider,
+            run_id=99999,
+        )
+
+    # Reproduction of PR #8 (2436e562ee6aa9f29e5c6fd9235cf0eab258eeff) + run 40183314427:
+    # Genuine PR/CI facts at a commit lacking fixtures/reconciliation_policy_contract.json must fail!
+    pr8_remote = tmp_path / "pr8_remote.git"
+    subprocess.run(["git", "init", "--bare", str(pr8_remote)], check=True, capture_output=True)
+    pr8_pub = GitPublisher(str(pr8_remote), ref="refs/heads/main").publish(
+        PublicationTree(files=(PublicationFile("README.md", b"# pre-D016 main without fixture\n"),)),
+        expected_base=None,
+        commit_message="Merge pull request #8",
+    )
+    pr8_merge_sha = pr8_pub.resulting_commit
+    pr8_head_sha = "9117ce1f39a1b6476eb7f976847d94a91df27821"
+    pr8_provider = FakeGitHubProvider(
+        pr_payload=valid_pr_payload(
+            number=8,
+            merge_commit_sha=pr8_merge_sha,
+            head={
+                "ref": "feat/pr8",
+                "sha": pr8_head_sha,
+                "repo": {"full_name": REPO},
+            },
+        ),
+        run_payload=valid_run_payload(id=40183314427, head_sha=pr8_merge_sha),
+        jobs_payload=valid_jobs_payload(run_id=40183314427, head_sha=pr8_merge_sha),
+    )
+    with pytest.raises(RemoteVerificationError, match="remote projection differs"):
+        complete_reconciliation_with_github(
+            required=required,
+            publication_tree=reconciled.publication_tree,
+            pr_number=8,
+            reviewed_head_sha=pr8_head_sha,
+            github_client=pr8_provider,
+            run_id=40183314427,
+            git_remote=pr8_remote,
+        )
+
+    # Wrong bytes in fixtures/reconciliation_policy_contract.json on main must also fail
+    wrong_bytes_pub = GitPublisher(str(pr8_remote), ref="refs/heads/main").publish(
+        PublicationTree(
+            files=(
+                PublicationFile(
+                    "fixtures/reconciliation_policy_contract.json",
+                    b'{"stale":true}\n',
+                ),
+            )
+        ),
+        expected_base=pr8_merge_sha,
+        commit_message="wrong fixture bytes",
+    )
+    wrong_bytes_sha = wrong_bytes_pub.resulting_commit
+    wrong_bytes_provider = FakeGitHubProvider(
+        pr_payload=valid_pr_payload(merge_commit_sha=wrong_bytes_sha),
+        run_payload=valid_run_payload(head_sha=wrong_bytes_sha),
+        jobs_payload=valid_jobs_payload(head_sha=wrong_bytes_sha),
+    )
+    with pytest.raises(RemoteVerificationError, match="remote projection differs"):
+        complete_reconciliation_with_github(
+            required=required,
+            publication_tree=reconciled.publication_tree,
+            pr_number=9,
+            reviewed_head_sha=REVIEWED_HEAD_SHA,
+            github_client=wrong_bytes_provider,
+            run_id=99999,
+            git_remote=pr8_remote,
+        )
+
+    # If remote main tip moved away from merged_sha, verification must reject
+    with pytest.raises(RemoteVerificationError, match="remote commit differs"):
+        complete_reconciliation_with_github(
+            required=required,
+            publication_tree=reconciled.publication_tree,
+            pr_number=9,
+            reviewed_head_sha=REVIEWED_HEAD_SHA,
+            github_client=provider,  # expects merged_sha, but pr8_remote is at wrong_bytes_sha
+            run_id=99999,
+            git_remote=pr8_remote,
+        )
+
+    # Mismatched publication_tree vs required obligation must fail before completion
+    tampered_tree = PublicationTree(
+        files=(
+            PublicationFile(
+                "fixtures/reconciliation_policy_contract.json",
+                b'{"tampered":true}\n',
+            ),
+        )
+    )
+    with pytest.raises(ValueError, match="REQUIRED"):
+        complete_reconciliation_with_github(
+            required=required,
+            publication_tree=tampered_tree,
+            pr_number=9,
+            reviewed_head_sha=REVIEWED_HEAD_SHA,
+            github_client=provider,
+            run_id=99999,
+            git_remote=remote,
+        )
+
+    # Unauthorized remote URL must fail closed
+    with pytest.raises(ValueError, match="authorized"):
+        complete_reconciliation_with_github(
+            required=required,
+            publication_tree=reconciled.publication_tree,
+            pr_number=9,
+            reviewed_head_sha=REVIEWED_HEAD_SHA,
+            github_client=provider,
+            run_id=99999,
+            git_remote="https://github.com/other/repo.git",
+        )
+
 
 
 def test_canonical_record_rejects_bare_branch_payload() -> None:
@@ -836,3 +985,198 @@ def test_default_github_transport_workflow_jobs_edge_cases(monkeypatch: pytest.M
         DefaultGitHubTransport(max_pages=-1)
     with pytest.raises(ValueError, match="max_pages must be a positive integer"):
         DefaultGitHubTransport(max_pages="10")  # type: ignore[arg-type]
+
+
+def test_complete_reconciliation_with_github_projection_and_remote_binding_edges(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+    from canonical_sync.errors import RemoteVerificationError
+    from canonical_sync.git_publication import GitPublisher, PublicationFile, PublicationTree
+
+    contract = current_executable_policy_contract()
+    reconciled = reconcile_reviewed_snapshot(
+        current_snapshot_sha256=H2,
+        previous=LastReconciledStateRecord(snapshot_state_sha256=H1),
+        reviewed=ReviewedCanonicalImpact(
+            impact=ProjectImpact.PUBLIC_CHANGE_REQUIRED,
+            public_contract=contract,
+        ),
+    )
+    required = reconciled.disposition
+    assert reconciled.publication_tree is not None
+
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    publisher = GitPublisher(str(remote), ref="refs/heads/main")
+    pub = publisher.publish(
+        reconciled.publication_tree,
+        expected_base=None,
+        commit_message="Merge pull request #9",
+    )
+    merged_sha = pub.resulting_commit
+    provider = FakeGitHubProvider(
+        pr_payload=valid_pr_payload(merge_commit_sha=merged_sha),
+        run_payload=valid_run_payload(head_sha=merged_sha),
+        jobs_payload=valid_jobs_payload(head_sha=merged_sha),
+    )
+
+    # 1. Supplying public_contract alone derives and verifies the approved PublicationTree
+    completed_by_contract = complete_reconciliation_with_github(
+        required=required,
+        public_contract=contract,
+        pr_number=9,
+        reviewed_head_sha=REVIEWED_HEAD_SHA,
+        github_client=provider,
+        run_id=99999,
+        git_remote=str(remote),
+    )
+    assert completed_by_contract.disposition is ReconciliationDisposition.COMPLETE
+
+    # 2. Supplying both public_contract and matching publication_tree succeeds
+    completed_both = complete_reconciliation_with_github(
+        required=required,
+        publication_tree=reconciled.publication_tree,
+        public_contract=contract,
+        pr_number=9,
+        reviewed_head_sha=REVIEWED_HEAD_SHA,
+        github_client=provider,
+        run_id=99999,
+        git_remote=remote,
+    )
+    assert completed_both.disposition is ReconciliationDisposition.COMPLETE
+
+    # 3. Non-REQUIRED disposition is rejected
+    none_res = reconcile_reviewed_snapshot(
+        current_snapshot_sha256=H2,
+        previous=LastReconciledStateRecord(snapshot_state_sha256=H1),
+        reviewed=ReviewedCanonicalImpact(impact=ProjectImpact.NO_PUBLIC_IMPACT),
+    )
+    with pytest.raises(ValueError, match="only a REQUIRED reconciliation"):
+        complete_reconciliation_with_github(
+            required=none_res.disposition,
+            public_contract=contract,
+            pr_number=9,
+            reviewed_head_sha=REVIEWED_HEAD_SHA,
+            github_client=provider,
+            run_id=99999,
+            git_remote=remote,
+        )
+
+    # 4. Missing both publication_tree and public_contract is rejected
+    with pytest.raises(ValueError, match="requires an approved publication_tree or public_contract"):
+        complete_reconciliation_with_github(
+            required=required,
+            pr_number=9,
+            reviewed_head_sha=REVIEWED_HEAD_SHA,
+            github_client=provider,
+            run_id=99999,
+            git_remote=remote,
+        )
+
+    # 5. Stale/mismatched public_contract vs REQUIRED is rejected
+    stale_contract = contract.model_copy(update={"complete_requires_readback": False})
+    with pytest.raises(ValueError, match="public_contract_sha256"):
+        complete_reconciliation_with_github(
+            required=required,
+            public_contract=stale_contract,
+            pr_number=9,
+            reviewed_head_sha=REVIEWED_HEAD_SHA,
+            github_client=provider,
+            run_id=99999,
+            git_remote=remote,
+        )
+
+    # 6. Disagreement between supplied public_contract and supplied publication_tree is rejected
+    other_tree = PublicationTree(
+        files=(PublicationFile("fixtures/other.json", b"{}\n"),)
+    )
+    with pytest.raises(ValueError, match="does not match supplied public_contract"):
+        complete_reconciliation_with_github(
+            required=required,
+            public_contract=contract,
+            publication_tree=other_tree,
+            pr_number=9,
+            reviewed_head_sha=REVIEWED_HEAD_SHA,
+            github_client=provider,
+            run_id=99999,
+            git_remote=remote,
+        )
+
+    # 7. publication_tree without fixtures/reconciliation_policy_contract.json is rejected
+    with pytest.raises(ValueError, match="fixtures/reconciliation_policy_contract.json"):
+        complete_reconciliation_with_github(
+            required=required,
+            publication_tree=other_tree,
+            pr_number=9,
+            reviewed_head_sha=REVIEWED_HEAD_SHA,
+            github_client=provider,
+            run_id=99999,
+            git_remote=remote,
+        )
+
+    # 8. Invalid git_remote values (non-existent Path, untrimmed string) are rejected
+    with pytest.raises(ValueError, match="authorized"):
+        complete_reconciliation_with_github(
+            required=required,
+            publication_tree=reconciled.publication_tree,
+            pr_number=9,
+            reviewed_head_sha=REVIEWED_HEAD_SHA,
+            github_client=provider,
+            run_id=99999,
+            git_remote=tmp_path / "does-not-exist.git",
+        )
+    with pytest.raises(ValueError, match="git_remote"):
+        complete_reconciliation_with_github(
+            required=required,
+            publication_tree=reconciled.publication_tree,
+            pr_number=9,
+            reviewed_head_sha=REVIEWED_HEAD_SHA,
+            github_client=provider,
+            run_id=99999,
+            git_remote="  ",
+        )
+
+    # 9. Remote movement during readback in complete_reconciliation_with_github fails closed
+    second_pub = publisher.publish(
+        PublicationTree(
+            files=(
+                PublicationFile("EXTRA.txt", b"concurrent\n"),
+                *reconciled.publication_tree.files,
+            )
+        ),
+        expected_base=merged_sha,
+        commit_message="advance main",
+    )
+    advanced_sha = second_pub.resulting_commit
+    subprocess.run(
+        ["git", "-C", str(remote), "update-ref", "refs/heads/main", merged_sha],
+        check=True,
+        capture_output=True,
+    )
+
+    original_git = GitPublisher._git
+
+    def move_remote_after_fetch(
+        self_pub: GitPublisher, repo: Any, *args: str, **kwargs: Any
+    ) -> bytes:
+        res = original_git(self_pub, repo, *args, **kwargs)
+        if args and args[0] == "fetch":
+            subprocess.run(
+                ["git", "-C", str(remote), "update-ref", "refs/heads/main", advanced_sha],
+                check=True,
+                capture_output=True,
+            )
+        return res
+
+    monkeypatch.setattr(GitPublisher, "_git", move_remote_after_fetch)
+    with pytest.raises(RemoteVerificationError, match="remote moved during readback"):
+        complete_reconciliation_with_github(
+            required=required,
+            publication_tree=reconciled.publication_tree,
+            pr_number=9,
+            reviewed_head_sha=REVIEWED_HEAD_SHA,
+            github_client=provider,
+            run_id=99999,
+            git_remote=remote,
+        )

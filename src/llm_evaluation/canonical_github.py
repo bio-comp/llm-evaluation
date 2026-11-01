@@ -3,16 +3,27 @@ from __future__ import annotations
 import json
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Final, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from canonical_sync.records import GitPublicationReceiptRecord
+from canonical_sync.codec import canonical_record_hash, parse_canonical_record
+from canonical_sync.git_publication import (
+    DEFAULT_GIT_COMMAND_TIMEOUT,
+    GitPublisher,
+    PublicationTree,
+)
+from canonical_sync.records import safe_remote_identity
 from llm_evaluation.canonical_reconciliation import (
+    _PUBLIC_GIT_REMOTES,
     GitHubCIVerificationRecord,
     GitHubPullRequestMergeRecord,
+    ReconciliationDisposition,
     ReconciliationDispositionRecord,
+    ReconciliationPolicyContract,
     VerifiedPublicationReceiptRecord,
+    approved_policy_tree,
     complete_reconciliation,
 )
 
@@ -22,6 +33,8 @@ _EXPECTED_WORKFLOW_NAME: Final = "Public CI"
 _EXPECTED_WORKFLOW_PATH: Final = ".github/workflows/ci.yml"
 _EXPECTED_JOB_NAME: Final = "verify"
 _EXPECTED_EVENT: Final = "push"
+_DEFAULT_PUBLIC_GIT_REMOTE: Final = "https://github.com/bio-comp/llm-evaluation.git"
+_POLICY_FIXTURE_PATH: Final = "fixtures/reconciliation_policy_contract.json"
 
 
 class _UntrustedWireModel(BaseModel):
@@ -324,23 +337,122 @@ def acquire_and_verify_github_closure(
     return VerifiedGitHubClosureFacts(pull_request=pr_record, ci=ci_record)
 
 
+def _resolve_verified_projection_tree(
+    *,
+    required: ReconciliationDispositionRecord,
+    publication_tree: PublicationTree | None,
+    public_contract: ReconciliationPolicyContract | None,
+) -> tuple[PublicationTree, str, str]:
+    if required.disposition is not ReconciliationDisposition.REQUIRED:
+        raise ValueError("only a REQUIRED reconciliation can become COMPLETE")
+    if required.public_contract_sha256 is None or required.publication_tree_sha256 is None:
+        raise ValueError("REQUIRED reconciliation disposition missing contract or tree hash")
+    if publication_tree is None and public_contract is None:
+        raise ValueError(
+            "operational closure requires an approved publication_tree or public_contract"
+        )
+    if public_contract is not None:
+        if not isinstance(public_contract, ReconciliationPolicyContract):
+            raise TypeError("public_contract must be a ReconciliationPolicyContract")
+        if canonical_record_hash(public_contract) != required.public_contract_sha256:
+            raise ValueError(
+                "supplied public_contract does not match REQUIRED public_contract_sha256"
+            )
+        derived_tree = approved_policy_tree(public_contract)
+        if publication_tree is not None:
+            if not isinstance(publication_tree, PublicationTree):
+                raise TypeError("publication_tree must be a PublicationTree")
+            if publication_tree != derived_tree:
+                raise ValueError(
+                    "supplied publication_tree does not match supplied public_contract"
+                )
+        else:
+            publication_tree = derived_tree
+    else:
+        assert publication_tree is not None
+        if not isinstance(publication_tree, PublicationTree):
+            raise TypeError("publication_tree must be a PublicationTree")
+        files_by_path = publication_tree.as_dict()
+        contract_bytes = files_by_path.get(_POLICY_FIXTURE_PATH)
+        if contract_bytes is None:
+            raise ValueError(
+                f"approved publication_tree must contain '{_POLICY_FIXTURE_PATH}'"
+            )
+        try:
+            parsed_contract = parse_canonical_record(
+                contract_bytes, ReconciliationPolicyContract
+            )
+        except Exception as exc:
+            raise ValueError(
+                "supplied publication_tree does not match REQUIRED public_contract_sha256"
+            ) from exc
+        if (
+            canonical_record_hash(parsed_contract) != required.public_contract_sha256
+            or approved_policy_tree(parsed_contract) != publication_tree
+        ):
+            raise ValueError(
+                "supplied publication_tree does not match REQUIRED public_contract_sha256"
+            )
+
+    if publication_tree.sha256 != required.publication_tree_sha256:
+        raise ValueError(
+            "supplied publication_tree does not match REQUIRED publication_tree_sha256"
+        )
+    return (
+        publication_tree,
+        required.public_contract_sha256,
+        required.publication_tree_sha256,
+    )
+
+
+def _resolve_closure_git_remote(git_remote: str | Path) -> tuple[str, bool]:
+    if isinstance(git_remote, Path):
+        if not git_remote.is_dir():
+            raise ValueError(
+                "git_remote must identify the authorized bio-comp/llm-evaluation repository"
+            )
+        return str(git_remote), True
+    if not isinstance(git_remote, str) or not git_remote or git_remote != git_remote.strip():
+        raise ValueError("git_remote must be a non-empty, trimmed string or Path")
+    if git_remote in _PUBLIC_GIT_REMOTES or safe_remote_identity(git_remote) in _PUBLIC_GIT_REMOTES:
+        return git_remote, False
+    local_candidate = Path(git_remote)
+    if (
+        "://" not in git_remote
+        and not git_remote.startswith(("git@", "opaque-sha256:"))
+        and local_candidate.is_dir()
+    ):
+        return str(local_candidate), True
+    raise ValueError(
+        "git_remote must identify the authorized bio-comp/llm-evaluation repository"
+    )
+
+
 def complete_reconciliation_with_github(
     *,
     required: ReconciliationDispositionRecord,
-    git_readback: GitPublicationReceiptRecord,
+    publication_tree: PublicationTree | None = None,
+    public_contract: ReconciliationPolicyContract | None = None,
     pr_number: int,
     reviewed_head_sha: str,
     github_client: GitHubClosureProvider,
     run_id: int,
+    git_remote: str | Path = _DEFAULT_PUBLIC_GIT_REMOTE,
+    git_command_timeout: int = DEFAULT_GIT_COMMAND_TIMEOUT,
 ) -> ReconciliationDispositionRecord:
-    if required.public_contract_sha256 is None or required.publication_tree_sha256 is None:
-        raise ValueError("REQUIRED reconciliation disposition missing contract or tree hash")
-
-    merged_commit = git_readback.resulting_commit
+    verified_tree, contract_sha256, tree_sha256 = _resolve_verified_projection_tree(
+        required=required,
+        publication_tree=publication_tree,
+        public_contract=public_contract,
+    )
+    remote_locator, is_local_remote = _resolve_closure_git_remote(git_remote)
 
     pr_raw = github_client.get_pull_request(_EXPECTED_REPO, pr_number)
     run_raw = github_client.get_workflow_run(_EXPECTED_REPO, run_id)
     jobs_raw = github_client.get_workflow_run_jobs(_EXPECTED_REPO, run_id)
+
+    raw_merged_commit = pr_raw.get("merge_commit_sha") if isinstance(pr_raw, dict) else None
+    merged_commit = raw_merged_commit if isinstance(raw_merged_commit, str) else ""
 
     facts = acquire_and_verify_github_closure(
         pr_payload=pr_raw,
@@ -352,10 +464,24 @@ def complete_reconciliation_with_github(
         expected_merged_commit=merged_commit,
     )
 
+    publisher = GitPublisher(
+        remote_locator,
+        ref=_EXPECTED_BASE_REF,
+        command_timeout=git_command_timeout,
+    )
+    git_readback = publisher.verify(
+        verified_tree,
+        expected_commit=facts.pull_request.merged_commit_sha,
+    )
+    if is_local_remote:
+        git_readback = git_readback.model_copy(
+            update={"remote": _DEFAULT_PUBLIC_GIT_REMOTE}
+        )
+
     receipt = VerifiedPublicationReceiptRecord(
         snapshot_state_sha256=required.current_snapshot_sha256,
-        public_contract_sha256=required.public_contract_sha256,
-        publication_tree_sha256=required.publication_tree_sha256,
+        public_contract_sha256=contract_sha256,
+        publication_tree_sha256=tree_sha256,
         git=git_readback,
         pull_request=facts.pull_request,
         ci=facts.ci,

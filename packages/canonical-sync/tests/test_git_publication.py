@@ -595,3 +595,351 @@ def test_base_tree_valid_portable_base_remains_accepted(tmp_path: Path) -> None:
     assert result.status == "published"
     assert git_bytes(remote, "show", f"{result.resulting_commit}:src/alpha.txt") == b"alpha\n"
     assert git_bytes(remote, "show", f"{result.resulting_commit}:src/gamma.txt") == b"gamma\n"
+
+
+def test_lexical_interloper_hierarchy_collision_rejected_before_remote_mutation(
+    tmp_path: Path,
+) -> None:
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    publisher = GitPublisher(str(remote), ref="refs/heads/main")
+
+    base = publisher.publish(
+        PublicationTree(
+            files=(
+                PublicationFile("a", b"file-a\n"),
+                PublicationFile("a-b", b"interloper\n"),
+            )
+        ),
+        expected_base=None,
+        commit_message="valid base with a and a-b",
+    )
+    subprocess.run(["git", "-C", str(remote), "fsck", "--full"], check=True, capture_output=True)
+
+    with pytest.raises(GitPublicationError, match="retype a base path or directory"):
+        publisher.publish(
+            PublicationTree(files=(PublicationFile("a/c", b"descendant\n"),)),
+            expected_base=base.resulting_commit,
+            commit_message="must reject a/c overlay on a",
+        )
+
+    with pytest.raises(GitPublicationError, match="retype a base path or directory"):
+        publisher.publish(
+            PublicationTree(files=(PublicationFile("a/b/c/d", b"deep-descendant\n"),)),
+            expected_base=base.resulting_commit,
+            commit_message="must reject deep descendant a/b/c/d overlay on a",
+        )
+
+    assert git(remote, "rev-parse", "refs/heads/main") == base.resulting_commit
+    subprocess.run(["git", "-C", str(remote), "fsck", "--full"], check=True, capture_output=True)
+
+    # Also test base with deep descendant a/b/c/d and interloper a-b, overlaying ancestor a
+    remote2 = tmp_path / "remote2.git"
+    subprocess.run(["git", "init", "--bare", str(remote2)], check=True, capture_output=True)
+    publisher2 = GitPublisher(str(remote2), ref="refs/heads/main")
+    base2 = publisher2.publish(
+        PublicationTree(
+            files=(
+                PublicationFile("a/b/c/d", b"deep\n"),
+                PublicationFile("a-b", b"interloper\n"),
+            )
+        ),
+        expected_base=None,
+        commit_message="base with deep descendant and interloper",
+    )
+    with pytest.raises(GitPublicationError, match="retype a base path or directory"):
+        publisher2.publish(
+            PublicationTree(files=(PublicationFile("a", b"ancestor-file\n"),)),
+            expected_base=base2.resulting_commit,
+            commit_message="must reject ancestor file overlay on deep descendant",
+        )
+    assert git(remote2, "rev-parse", "refs/heads/main") == base2.resulting_commit
+
+
+def test_directory_prefix_alias_overlay_and_base_rejected_before_remote_mutation(
+    tmp_path: Path,
+) -> None:
+    import unicodedata
+    from canonical_sync.errors import RemoteVerificationError
+
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    publisher = GitPublisher(str(remote), ref="refs/heads/main")
+
+    base = publisher.publish(
+        PublicationTree(
+            files=(
+                PublicationFile("Foo/a.txt", b"a\n"),
+                PublicationFile("Café/one.txt", b"one\n"),
+            )
+        ),
+        expected_base=None,
+        commit_message="seed directories",
+    )
+
+    with pytest.raises(GitPublicationError, match="retype a base path or directory"):
+        publisher.publish(
+            PublicationTree(files=(PublicationFile("foo/b.txt", b"b\n"),)),
+            expected_base=base.resulting_commit,
+            commit_message="must reject case-aliased directory overlay",
+        )
+
+    nfd_dir_file = unicodedata.normalize("NFD", "Café") + "/two.txt"
+    with pytest.raises(GitPublicationError, match="retype a base path or directory"):
+        publisher.publish(
+            PublicationTree(files=(PublicationFile(nfd_dir_file, b"two\n"),)),
+            expected_base=base.resulting_commit,
+            commit_message="must reject NFD-aliased directory overlay",
+        )
+
+    assert git(remote, "rev-parse", "refs/heads/main") == base.resulting_commit
+
+    # Now construct a remote base containing Foo/a.txt and foo/b.txt directly in Git
+    blob_oid = subprocess.run(
+        ["git", "-C", str(remote), "hash-object", "-w", "--stdin"],
+        input=b"data\n",
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    sub_a = subprocess.run(
+        ["git", "-C", str(remote), "mktree", "-z"],
+        input=b"100644 blob " + blob_oid + b"\ta.txt\0",
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    sub_b = subprocess.run(
+        ["git", "-C", str(remote), "mktree", "-z"],
+        input=b"100644 blob " + blob_oid + b"\tb.txt\0",
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    root_tree = subprocess.run(
+        ["git", "-C", str(remote), "mktree", "-z"],
+        input=b"040000 tree " + sub_a + b"\tFoo\0" + b"040000 tree " + sub_b + b"\tfoo\0",
+        capture_output=True,
+        check=True,
+    ).stdout.strip().decode()
+    bad_base = git(
+        remote,
+        "-c",
+        "user.name=Seed",
+        "-c",
+        "user.email=seed@example.invalid",
+        "commit-tree",
+        root_tree,
+        "-m",
+        "base with Foo and foo directories",
+    )
+    git(remote, "update-ref", "refs/heads/main", bad_base)
+
+    with pytest.raises(RemoteVerificationError):
+        publisher.publish(
+            PublicationTree(files=(PublicationFile("other.txt", b"x\n"),)),
+            expected_base=bad_base,
+            commit_message="must reject base directory alias collision",
+        )
+    with pytest.raises(RemoteVerificationError):
+        publisher.verify(
+            PublicationTree(files=(PublicationFile("Foo/a.txt", b"data\n"),)),
+            expected_commit=bad_base,
+        )
+    assert git(remote, "rev-parse", "refs/heads/main") == bad_base
+
+
+def test_hfs_and_ntfs_protected_git_aliases_rejected_in_projection_and_remote_base(
+    tmp_path: Path,
+) -> None:
+    from canonical_sync.errors import RemoteVerificationError
+
+    for alias in (".g\u200cit/config", "sub/.g\u200cit/config", "git~1/config", ".git\ufeff"):
+        with pytest.raises(ValueError):
+            PublicationFile(alias, b"bad")
+
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    publisher = GitPublisher(str(remote), ref="refs/heads/main")
+
+    # Seed a valid tree and verify git fsck --full and protectHFS/protectNTFS clone succeed
+    valid_published = publisher.publish(
+        PublicationTree(
+            files=(
+                PublicationFile("Café/notes.md", b"unicode ok\n"),
+                PublicationFile("Café/more.md", b"shared unicode dir\n"),
+                PublicationFile("docs/guide.txt", b"guide\n"),
+            )
+        ),
+        expected_base=None,
+        commit_message="publish valid portable tree",
+    )
+    subprocess.run(["git", "-C", str(remote), "fsck", "--full"], check=True, capture_output=True)
+    clone_dir = tmp_path / "checkout"
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "core.protectHFS=true",
+            "-c",
+            "core.protectNTFS=true",
+            "clone",
+            "--branch",
+            "main",
+            str(remote),
+            str(clone_dir),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    assert (clone_dir / "docs" / "guide.txt").read_bytes() == b"guide\n"
+
+    # Now construct a remote base with .g\u200cit/config and ensure readback rejects it
+    blob_oid = subprocess.run(
+        ["git", "-C", str(remote), "hash-object", "-w", "--stdin"],
+        input=b"malicious\n",
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    sub_oid = subprocess.run(
+        ["git", "-C", str(remote), "mktree", "-z"],
+        input=b"100644 blob " + blob_oid + b"\tconfig\0",
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    root_oid = subprocess.run(
+        ["git", "-C", str(remote), "mktree", "-z"],
+        input=b"040000 tree " + sub_oid + "\t.g\u200cit\0".encode("utf-8"),
+        capture_output=True,
+        check=True,
+    ).stdout.strip().decode()
+    bad_commit = git(
+        remote,
+        "-c",
+        "user.name=Seed",
+        "-c",
+        "user.email=seed@example.invalid",
+        "commit-tree",
+        root_oid,
+        "-p",
+        valid_published.resulting_commit,
+        "-m",
+        "inject hfs dotgit",
+    )
+    git(remote, "update-ref", "refs/heads/main", bad_commit)
+
+    with pytest.raises(RemoteVerificationError):
+        publisher.publish(
+            PublicationTree(files=(PublicationFile("docs/guide.txt", b"updated\n"),)),
+            expected_base=bad_commit,
+            commit_message="must reject hfs dotgit in base",
+        )
+    with pytest.raises(RemoteVerificationError):
+        publisher.verify(
+            PublicationTree(files=(PublicationFile("docs/guide.txt", b"guide\n"),)),
+            expected_commit=bad_commit,
+        )
+    assert git(remote, "rev-parse", "refs/heads/main") == bad_commit
+
+    # Also verify NTFS shortname alias git~1 in remote base is rejected
+    ntfs_root_oid = subprocess.run(
+        ["git", "-C", str(remote), "mktree", "-z"],
+        input=b"040000 tree " + sub_oid + b"\tgit~1\0",
+        capture_output=True,
+        check=True,
+    ).stdout.strip().decode()
+    ntfs_bad_commit = git(
+        remote,
+        "-c",
+        "user.name=Seed",
+        "-c",
+        "user.email=seed@example.invalid",
+        "commit-tree",
+        ntfs_root_oid,
+        "-p",
+        valid_published.resulting_commit,
+        "-m",
+        "inject ntfs git~1",
+    )
+    git(remote, "update-ref", "refs/heads/main", ntfs_bad_commit)
+    with pytest.raises(RemoteVerificationError):
+        publisher.publish(
+            PublicationTree(files=(PublicationFile("docs/guide.txt", b"updated\n"),)),
+            expected_base=ntfs_bad_commit,
+            commit_message="must reject git~1 in base",
+        )
+    with pytest.raises(RemoteVerificationError):
+        publisher.verify(
+            PublicationTree(files=(PublicationFile("docs/guide.txt", b"guide\n"),)),
+            expected_commit=ntfs_bad_commit,
+        )
+    assert git(remote, "rev-parse", "refs/heads/main") == ntfs_bad_commit
+
+
+def test_empty_subtree_in_base_rejected_before_mutation_and_on_noop_and_verify(
+    tmp_path: Path,
+) -> None:
+    from canonical_sync.errors import RemoteVerificationError
+
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    publisher = GitPublisher(str(remote), ref="refs/heads/main")
+
+    blob_oid = subprocess.run(
+        ["git", "-C", str(remote), "hash-object", "-w", "--stdin"],
+        input=b"keep\n",
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    empty_tree_oid = subprocess.run(
+        ["git", "-C", str(remote), "mktree", "-z"],
+        input=b"",
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    root_oid = subprocess.run(
+        ["git", "-C", str(remote), "mktree", "-z"],
+        input=(
+            b"100644 blob " + blob_oid + b"\tKEEP.txt\0"
+            b"040000 tree " + empty_tree_oid + b"\tempty\0"
+        ),
+        capture_output=True,
+        check=True,
+    ).stdout.strip().decode()
+    base_commit = git(
+        remote,
+        "-c",
+        "user.name=Seed",
+        "-c",
+        "user.email=seed@example.invalid",
+        "commit-tree",
+        root_oid,
+        "-m",
+        "base with valid empty subtree",
+    )
+    git(remote, "update-ref", "refs/heads/main", base_commit)
+    subprocess.run(["git", "-C", str(remote), "fsck", "--full"], check=True, capture_output=True)
+    before_entries = git_bytes(remote, "ls-tree", "-r", "-t", "-z", base_commit)
+
+    # 1. Mutating publish must reject rather than silently dropping `empty`
+    with pytest.raises(RemoteVerificationError, match="empty"):
+        publisher.publish(
+            PublicationTree(files=(PublicationFile("added.txt", b"added\n"),)),
+            expected_base=base_commit,
+            commit_message="must not drop empty subtree",
+        )
+
+    # 2. No-op publish must also reject rather than concealing unsupported inventory
+    with pytest.raises(RemoteVerificationError, match="empty"):
+        publisher.publish(
+            PublicationTree(files=(PublicationFile("KEEP.txt", b"keep\n"),)),
+            expected_base=base_commit,
+            commit_message="noop must not conceal empty subtree",
+        )
+
+    # 3. Read-only verify must also reject
+    with pytest.raises(RemoteVerificationError, match="empty"):
+        publisher.verify(
+            PublicationTree(files=(PublicationFile("KEEP.txt", b"keep\n"),)),
+            expected_commit=base_commit,
+        )
+
+    assert git(remote, "rev-parse", "refs/heads/main") == base_commit
+    assert git_bytes(remote, "ls-tree", "-r", "-t", "-z", base_commit) == before_entries

@@ -248,3 +248,38 @@ def test_nonmovement_transport_failures_are_not_retried(failure: BaseException) 
     with pytest.raises(type(failure)):
         acquire_stable_candidate(transport, profile(), max_movement_attempts=3, clock=lambda: T0)
     assert transport.calls[("read", "object-001")] == 1
+
+
+@pytest.mark.parametrize(
+    "bad_paths",
+    [
+        (".",),
+        (".g\u200cit/config",),
+        ("a", "a-b", "a/c"),
+        ("Foo/a.txt", "foo/b.txt"),
+    ],
+)
+def test_invalid_authority_configuration_rejected_before_provider_reads(
+    bad_paths: tuple[str, ...],
+) -> None:
+    from canonical_sync.domain import AuthorityObjectSpec, AuthorityProfile
+
+    transport = stable_transport()
+    with pytest.raises(ValueError):
+        bad_profile = AuthorityProfile(
+            profile_name="invalid-config",
+            objects=tuple(
+                AuthorityObjectSpec(
+                    logical_path=p,
+                    provider="google_drive",
+                    object_id=f"object-00{idx}",
+                    expected_name=p,
+                    expected_mime_type=MIME,
+                    expected_parent_id="parent-001",
+                    representation_schema="test-representation-v1",
+                )
+                for idx, p in enumerate(bad_paths, start=1)
+            ),
+        )
+        acquire_stable_candidate(transport, bad_profile, clock=lambda: T0)
+    assert dict(transport.calls) == {}

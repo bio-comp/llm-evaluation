@@ -477,3 +477,55 @@ def test_authority_profile_rejects_path_hierarchy_collisions() -> None:
     with pytest.raises(ValidationError, match="path hierarchy collision"):
         AuthorityProfileRecord(profile_name="collision", objects=(spec1, spec2))
 
+
+def test_records_reject_lexical_interloper_hierarchy_and_directory_prefix_aliases() -> None:
+    with pytest.raises(ValidationError, match="path hierarchy collision"):
+        AuthorityProfileRecord(
+            profile_name="interloper-collision",
+            objects=(
+                object_spec(path="a", object_id="obj-1"),
+                object_spec(path="a-b", object_id="obj-2"),
+                object_spec(path="a/c", object_id="obj-3"),
+            ),
+        )
+
+    with pytest.raises(ValidationError, match="directory prefix"):
+        AuthorityProfileRecord(
+            profile_name="dir-prefix-case-collision",
+            objects=(
+                object_spec(path="Foo/a.txt", object_id="obj-1"),
+                object_spec(path="foo/b.txt", object_id="obj-2"),
+            ),
+        )
+
+    with pytest.raises(ValidationError, match="directory prefix"):
+        SnapshotStateRecord(
+            authority_spec_sha256=H1,
+            entries=(
+                SemanticEntryRecord(
+                    logical_path="Café/a.txt",
+                    representation_schema="v1",
+                    content_sha256=H2,
+                ),
+                SemanticEntryRecord(
+                    logical_path="Cafe\u0301/b.txt",
+                    representation_schema="v1",
+                    content_sha256=H3,
+                ),
+            ),
+        )
+
+    base_obs = observation(snapshot_hash=H1).sources[0]
+    with pytest.raises(ValidationError, match="directory prefix"):
+        SnapshotObservationRecord(
+            snapshot_state_sha256=H1,
+            authority_spec_sha256=H1,
+            acquired_at=T0,
+            attempt_count=1,
+            provenance=observation(snapshot_hash=H1).provenance,
+            sources=(
+                base_obs.model_copy(update={"logical_path": "Foo/a.txt", "object_id": "obj-1"}),
+                base_obs.model_copy(update={"logical_path": "foo/b.txt", "object_id": "obj-2"}),
+            ),
+        )
+
