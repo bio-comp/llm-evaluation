@@ -28,8 +28,8 @@ from llm_evaluation.model_runner import (
 
 
 class _FakeHandler(BaseHTTPRequestHandler):
-    requests = []
-    response_payload = {}
+    requests: list[tuple[str, str, dict[str, str], object]] = []
+    response_payload: dict[str, object] = {}
     response_status = 200
     response_request_id = "header-request-id"
 
@@ -119,6 +119,25 @@ class ModelRunnerTests(unittest.TestCase):
             ),
             timeout_seconds=timeout_seconds,
         )
+
+    def test_same_sync_facade_can_generate_twice_then_list_models(self):
+        _FakeHandler.response_payload = {
+            "model": "m",
+            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+        }
+        config = BackendConfig("fake", self.base_url, "m", "chat_completions", self.profile)
+        transport = self._transport(config)
+        request = GenerationRequest(condition_id="condition-a", messages=(("user", "x"),))
+        one = transport.generate(request)
+        two = transport.generate(request)
+        listed = transport.list_models()
+        self.assertEqual(one.raw_output, "ok")
+        self.assertEqual(two.raw_output, "ok")
+        self.assertEqual(one.effective_request.request_identity_sha256,
+                         two.effective_request.request_identity_sha256)
+        self.assertEqual(listed, ("fake-model",))
+        self.assertEqual([item[0] for item in _FakeHandler.requests],
+                         ["POST", "POST", "GET"])
 
     def test_execution_condition_must_match_request_and_backend_before_transmission(self):
         request = GenerationRequest(condition_id="condition-a", messages=(("user", "x"),))
@@ -688,20 +707,31 @@ class ModelRunnerTests(unittest.TestCase):
         self.assertEqual(condition.artifact_metadata["architecture"], "qwen35")
         self.assertEqual(condition.tokenizer_id, "qwen3.5-tokenizer")
 
+    def test_active_backend_config_rejects_retired_ollama(self):
+        with self.assertRaisesRegex(ValueError, "retired"):
+            BackendConfig(
+                "ollama",
+                self.base_url,
+                "historical-model",
+                "chat_completions",
+                self.profile,
+                config_id="new-ollama-run",
+            )
+
     def test_backend_registry_separates_provider_identity_from_config_identity(self):
         qwen = BackendConfig(
-            "ollama", self.base_url, "qwen3.5:9b", "chat_completions", self.profile,
-            config_id="ollama-qwen35",
+            "llamacpp", self.base_url, "qwen3.5:9b", "chat_completions", self.profile,
+            config_id="llamacpp-qwen35",
         )
         gpt_oss = BackendConfig(
-            "ollama", self.base_url, "gpt-oss:20b", "chat_completions", self.profile,
-            config_id="ollama-gpt-oss20b",
+            "llamacpp", self.base_url, "gpt-oss:20b", "chat_completions", self.profile,
+            config_id="llamacpp-gpt-oss20b",
         )
         registry = BackendRegistry((qwen, gpt_oss))
-        self.assertIs(registry["ollama-qwen35"], qwen)
-        self.assertIs(registry["ollama-gpt-oss20b"], gpt_oss)
-        self.assertEqual(registry.config_ids, ("ollama-qwen35", "ollama-gpt-oss20b"))
-        self.assertEqual(registry.provider_ids, ("ollama",))
+        self.assertIs(registry["llamacpp-qwen35"], qwen)
+        self.assertIs(registry["llamacpp-gpt-oss20b"], gpt_oss)
+        self.assertEqual(registry.config_ids, ("llamacpp-qwen35", "llamacpp-gpt-oss20b"))
+        self.assertEqual(registry.provider_ids, ("llamacpp",))
         with self.assertRaisesRegex(ValueError, "duplicate config_id"):
             BackendRegistry((qwen, qwen))
         with self.assertRaises(KeyError):
