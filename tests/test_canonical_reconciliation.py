@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -312,7 +313,7 @@ def test_public_policy_fixture_is_canonical_and_matches_executable_contract() ->
 def test_disposition_rejects_unchanged_snapshots(
     disposition: ReconciliationDisposition, impact: ProjectImpact
 ) -> None:
-    extra = {}
+    extra: dict[str, Any] = {}
     if disposition is ReconciliationDisposition.REQUIRED:
         extra = {"public_contract_sha256": H1, "publication_tree_sha256": H2}
     with pytest.raises(ValidationError, match="requires a changed snapshot"):
