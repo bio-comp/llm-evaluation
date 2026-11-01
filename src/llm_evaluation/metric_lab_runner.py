@@ -1,0 +1,607 @@
+"""Known-truth execution and Monte Carlo summaries for the metric laboratory."""
+
+from __future__ import annotations
+
+import math
+import random
+from collections import defaultdict
+from dataclasses import dataclass
+from typing import Sequence
+
+from canonical_sync.codec import canonical_record_hash
+from llm_evaluation.metric_lab_design import (
+    BaseCellSpec,
+    MetricLabDesign,
+    MetricLabPhase,
+    derive_metric_lab_seed,
+)
+from llm_evaluation.metric_lab_targets import (
+    SamplingUnit,
+    TargetKind,
+    generate_item_probabilities,
+)
+from llm_evaluation.metric_laboratory import (
+    binary_decision,
+    brier_score,
+    compute_aurc,
+    compute_forecast,
+    debiased_l2_calibration_error,
+    equal_mass_ece,
+    expected_brier,
+    expected_log_score,
+    fixed_bin_ece,
+    log_score,
+    noisy_target_probability,
+)
+
+_NORMAL_95_Z = 1.959963984540054
+
+
+@dataclass(frozen=True, slots=True)
+class MeanInterval:
+    estimate: float
+    se: float
+    lower: float
+    upper: float
+
+    @property
+    def width(self) -> float:
+        return self.upper - self.lower
+
+
+@dataclass(frozen=True, slots=True)
+class MeanLossIntervals:
+    naive: MeanInterval
+    cluster: MeanInterval
+
+
+@dataclass(frozen=True, slots=True)
+class RiskCoveragePoint:
+    coverage: float
+    risk: float
+    selected_count: int
+    confidence_floor: float
+
+
+@dataclass(frozen=True, slots=True)
+class BaseTargetTruth:
+    target: TargetKind
+    case_probabilities: tuple[float, ...]
+    expected_brier: float
+    expected_log_score: float
+    fixed_bin_calibration: float
+    equal_mass_calibration: float
+    l2_calibration: float
+    classification_error: float
+    aurc: float
+
+
+@dataclass(frozen=True, slots=True)
+class BaseTargetReplicateResult:
+    target: TargetKind
+    brier: float
+    log_score: float
+    fixed_bin_ece: float
+    equal_mass_ece: float
+    debiased_l2: float
+    classification_error: float
+    aurc: float
+    brier_intervals: MeanLossIntervals
+    fixed_bin_counts: tuple[int, ...]
+    equal_mass_bin_counts: tuple[int, ...]
+    risk_coverage: tuple[RiskCoveragePoint, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BaseReplicateResult:
+    design_sha256: str
+    cell_key: str
+    phase: MetricLabPhase
+    replicate_index: int
+    sampling_unit: SamplingUnit
+    item_count: int
+    row_count: int
+    realized_budget_rows: int
+    targets: dict[TargetKind, BaseTargetReplicateResult]
+
+
+@dataclass(frozen=True, slots=True)
+class MetricMonteCarloSummary:
+    true_value: float
+    mean_estimate: float
+    bias: float
+    rmse: float
+    mc_se: float
+    interval_coverage: float | None
+    mean_interval_width: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class TargetCellSummary:
+    target: TargetKind
+    truth: BaseTargetTruth
+    metrics: dict[str, MetricMonteCarloSummary]
+
+
+@dataclass(frozen=True, slots=True)
+class BaseCellSummary:
+    design_sha256: str
+    cell_key: str
+    phase: MetricLabPhase
+    sampling_unit: SamplingUnit
+    replicates_count: int
+    realized_budget_rows: int
+    targets: dict[TargetKind, TargetCellSummary]
+
+
+@dataclass(frozen=True, slots=True)
+class _BaseRow:
+    item_id: int
+    forecast: float
+    clean_probability: float
+    clean_label: int
+    noisy_label: int
+
+
+def _sample_standard_error(values: Sequence[float]) -> float:
+    if len(values) < 2:
+        return 0.0
+    mean = sum(values) / len(values)
+    variance = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
+    return math.sqrt(variance / len(values))
+
+
+def _normal_interval(estimate: float, se: float) -> MeanInterval:
+    return MeanInterval(
+        estimate=estimate,
+        se=se,
+        lower=estimate - _NORMAL_95_Z * se,
+        upper=estimate + _NORMAL_95_Z * se,
+    )
+
+
+def mean_loss_intervals(
+    *, values: Sequence[float], item_ids: Sequence[int]
+) -> MeanLossIntervals:
+    """Return row-naive and item-cluster normal intervals for a mean quantity."""
+    if len(values) != len(item_ids) or not values:
+        raise ValueError("values and item_ids must have equal non-zero length")
+    estimate = sum(values) / len(values)
+    naive = _normal_interval(estimate, _sample_standard_error(values))
+
+    grouped: dict[int, list[float]] = defaultdict(list)
+    for value, item_id in zip(values, item_ids, strict=True):
+        grouped[item_id].append(float(value))
+    item_means = tuple(sum(group) / len(group) for _, group in sorted(grouped.items()))
+    cluster = _normal_interval(estimate, _sample_standard_error(item_means))
+    return MeanLossIntervals(naive=naive, cluster=cluster)
+
+
+def risk_coverage_tie_blocks(
+    *, confidences: Sequence[float], errors: Sequence[float]
+) -> tuple[RiskCoveragePoint, ...]:
+    """Risk-coverage points at complete confidence-tie block boundaries only."""
+    if len(confidences) != len(errors) or not confidences:
+        raise ValueError("confidences and errors must have equal non-zero length")
+    blocks: dict[float, list[float]] = defaultdict(list)
+    for confidence, error in zip(confidences, errors, strict=True):
+        blocks[float(confidence)].append(float(error))
+    n = len(confidences)
+    selected = 0
+    cumulative_error = 0.0
+    points: list[RiskCoveragePoint] = []
+    for confidence in sorted(blocks, reverse=True):
+        block = blocks[confidence]
+        selected += len(block)
+        cumulative_error += sum(block)
+        points.append(
+            RiskCoveragePoint(
+                coverage=selected / n,
+                risk=cumulative_error / selected,
+                selected_count=selected,
+                confidence_floor=confidence,
+            )
+        )
+    return tuple(points)
+
+
+def official_get_aurc_reference_behavior(
+    residuals: Sequence[float], confidence: Sequence[float]
+) -> float:
+    """Reproduce han678/AsymptoticAURC ``get_AURC`` at fa445bcd.
+
+    This function is intentionally a negative control.  The upstream loop divides
+    the post-removal accumulated residual by ``m - i`` rather than the remaining
+    count, which yields 0.5 instead of the exact 0.75 on the canonical two-item
+    counterexample.  Do not use this as the laboratory oracle.
+    """
+    if len(residuals) != len(confidence) or not residuals:
+        raise ValueError("residuals and confidence must have equal non-zero length")
+    m = len(residuals)
+    sorted_indices = sorted(range(m), key=lambda index: confidence[index])
+    acc = sum(float(residuals[index]) for index in sorted_indices)
+    risks = [acc / m]
+    for i in range(0, len(sorted_indices) - 1):
+        acc -= float(residuals[sorted_indices[i]])
+        risks.append(acc / (m - i))
+    return sum(risks) / len(risks)
+
+
+def _population_l2_from_fixed_bins(
+    forecasts: Sequence[float], target_probabilities: Sequence[float], num_bins: int
+) -> float:
+    _, details = fixed_bin_ece(forecasts, target_probabilities, num_bins=num_bins)
+    n = len(forecasts)
+    squared = sum((detail.count / n) * detail.gap**2 for detail in details)
+    return math.sqrt(squared)
+
+
+def _truth_case_probabilities(
+    *, design: MetricLabDesign, cell: BaseCellSpec, sampling_unit: SamplingUnit
+) -> tuple[float, ...]:
+    p_values = design.p_value_floats
+    if sampling_unit is SamplingUnit.FIXED_CASE:
+        return generate_item_probabilities(
+            p_values=p_values,
+            n_items=cell.n_base_items,
+            sampling_unit=SamplingUnit.FIXED_CASE,
+            seed=0,
+        )
+    if sampling_unit is SamplingUnit.QUESTION_POPULATION:
+        # The population estimand is the declared equal-weight support, not one
+        # realized sample from it.
+        return p_values
+    raise TypeError("unsupported sampling_unit")
+
+
+def base_target_truth(
+    *,
+    design: MetricLabDesign,
+    cell: BaseCellSpec,
+    target: TargetKind,
+    sampling_unit: SamplingUnit,
+) -> BaseTargetTruth:
+    """Analytic/population truth for one target under a base-grid cell."""
+    if target not in {TargetKind.CLEAN_TRUTH, TargetKind.NOISY_REFERENCE}:
+        raise ValueError(
+            "base-grid truth supports clean_truth and noisy_reference targets"
+        )
+    case_p = _truth_case_probabilities(
+        design=design, cell=cell, sampling_unit=sampling_unit
+    )
+    forecasts = tuple(compute_forecast(p, cell.forecast_kind) for p in case_p)
+    if target is TargetKind.CLEAN_TRUTH:
+        target_p = case_p
+    else:
+        target_p = tuple(
+            noisy_target_probability(p, cell.reference_flip_eta) for p in case_p
+        )
+
+    expected_b = sum(
+        expected_brier(p, q) for p, q in zip(target_p, forecasts, strict=True)
+    ) / len(forecasts)
+    expected_log = sum(
+        expected_log_score(p, q) for p, q in zip(target_p, forecasts, strict=True)
+    ) / len(forecasts)
+    fixed_ece = fixed_bin_ece(forecasts, target_p, num_bins=design.fixed_bin_count)[0]
+    equal_ece = equal_mass_ece(
+        forecasts, target_p, num_bins=design.equal_mass_bin_count
+    )[0]
+    l2 = _population_l2_from_fixed_bins(
+        forecasts, target_p, num_bins=design.fixed_bin_count
+    )
+    predictions = tuple(
+        binary_decision(
+            q,
+            threshold=design.decision_threshold_float,
+            tie_break=design.decision_tie_break,
+        )
+        for q in forecasts
+    )
+    error_probabilities = tuple(
+        (1.0 - p) if prediction == 1 else p
+        for p, prediction in zip(target_p, predictions, strict=True)
+    )
+    classification_error = sum(error_probabilities) / len(error_probabilities)
+    confidences = tuple(max(q, 1.0 - q) for q in forecasts)
+    aurc = compute_aurc(
+        confidences,
+        error_probabilities,
+        tie_convention=design.aurc_tie_convention,
+    )
+    return BaseTargetTruth(
+        target=target,
+        case_probabilities=case_p,
+        expected_brier=expected_b,
+        expected_log_score=expected_log,
+        fixed_bin_calibration=fixed_ece,
+        equal_mass_calibration=equal_ece,
+        l2_calibration=l2,
+        classification_error=classification_error,
+        aurc=aurc,
+    )
+
+
+def _generate_base_rows(
+    *,
+    design: MetricLabDesign,
+    cell: BaseCellSpec,
+    phase: MetricLabPhase,
+    replicate_index: int,
+    sampling_unit: SamplingUnit,
+) -> tuple[_BaseRow, ...]:
+    design_hash = canonical_record_hash(design)
+    case_seed = derive_metric_lab_seed(
+        design_hash=design_hash,
+        phase=phase,
+        cell_key=cell.cell_key,
+        replicate_index=replicate_index,
+        purpose="case-population",
+    )
+    outcome_seed = derive_metric_lab_seed(
+        design_hash=design_hash,
+        phase=phase,
+        cell_key=cell.cell_key,
+        replicate_index=replicate_index,
+        purpose="outcomes",
+    )
+    case_probabilities = generate_item_probabilities(
+        p_values=design.p_value_floats,
+        n_items=cell.n_base_items,
+        sampling_unit=sampling_unit,
+        seed=case_seed,
+    )
+    rng = random.Random(outcome_seed)
+    rows: list[_BaseRow] = []
+    for item_id, p in enumerate(case_probabilities):
+        forecast = compute_forecast(p, cell.forecast_kind)
+        shared_clean = 1 if rng.random() < p else 0
+        for _ in range(cell.k_within_item):
+            clean = (
+                shared_clean
+                if cell.shared_within_item
+                else (1 if rng.random() < p else 0)
+            )
+            noisy = clean
+            if cell.reference_flip_eta > 0.0 and rng.random() < cell.reference_flip_eta:
+                noisy = 1 - noisy
+            rows.append(
+                _BaseRow(
+                    item_id=item_id,
+                    forecast=forecast,
+                    clean_probability=p,
+                    clean_label=clean,
+                    noisy_label=noisy,
+                )
+            )
+    return tuple(rows)
+
+
+def _evaluate_target_rows(
+    *, design: MetricLabDesign, rows: tuple[_BaseRow, ...], target: TargetKind
+) -> BaseTargetReplicateResult:
+    if target is TargetKind.CLEAN_TRUTH:
+        outcomes = tuple(row.clean_label for row in rows)
+    elif target is TargetKind.NOISY_REFERENCE:
+        outcomes = tuple(row.noisy_label for row in rows)
+    else:
+        raise ValueError("base-grid replicate supports clean_truth and noisy_reference")
+    forecasts = tuple(row.forecast for row in rows)
+    item_ids = tuple(row.item_id for row in rows)
+    brier_losses = tuple(
+        (forecast - outcome) ** 2
+        for forecast, outcome in zip(forecasts, outcomes, strict=True)
+    )
+    brier = brier_score(forecasts, outcomes)
+    log = log_score(forecasts, outcomes)
+    fixed, fixed_details = fixed_bin_ece(
+        forecasts, outcomes, num_bins=design.fixed_bin_count
+    )
+    equal, equal_details = equal_mass_ece(
+        forecasts, outcomes, num_bins=design.equal_mass_bin_count
+    )
+    l2 = debiased_l2_calibration_error(
+        forecasts, outcomes, num_bins=design.fixed_bin_count
+    )
+    predictions = tuple(
+        binary_decision(
+            forecast,
+            threshold=design.decision_threshold_float,
+            tie_break=design.decision_tie_break,
+        )
+        for forecast in forecasts
+    )
+    errors = tuple(
+        float(prediction != outcome)
+        for prediction, outcome in zip(predictions, outcomes, strict=True)
+    )
+    confidences = tuple(max(forecast, 1.0 - forecast) for forecast in forecasts)
+    return BaseTargetReplicateResult(
+        target=target,
+        brier=brier,
+        log_score=log,
+        fixed_bin_ece=fixed,
+        equal_mass_ece=equal,
+        debiased_l2=l2,
+        classification_error=sum(errors) / len(errors),
+        aurc=compute_aurc(
+            confidences,
+            errors,
+            tie_convention=design.aurc_tie_convention,
+        ),
+        brier_intervals=mean_loss_intervals(values=brier_losses, item_ids=item_ids),
+        fixed_bin_counts=tuple(detail.count for detail in fixed_details),
+        equal_mass_bin_counts=tuple(detail.count for detail in equal_details),
+        risk_coverage=risk_coverage_tie_blocks(confidences=confidences, errors=errors),
+    )
+
+
+def evaluate_base_replicate(
+    *,
+    design: MetricLabDesign,
+    cell: BaseCellSpec,
+    phase: MetricLabPhase,
+    replicate_index: int,
+    sampling_unit: SamplingUnit,
+) -> BaseReplicateResult:
+    if type(replicate_index) is not int or replicate_index < 0:
+        raise ValueError("replicate_index must be a non-negative exact integer")
+    rows = _generate_base_rows(
+        design=design,
+        cell=cell,
+        phase=phase,
+        replicate_index=replicate_index,
+        sampling_unit=sampling_unit,
+    )
+    targets = {
+        target: _evaluate_target_rows(design=design, rows=rows, target=target)
+        for target in (TargetKind.CLEAN_TRUTH, TargetKind.NOISY_REFERENCE)
+    }
+    return BaseReplicateResult(
+        design_sha256=canonical_record_hash(design),
+        cell_key=cell.cell_key,
+        phase=phase,
+        replicate_index=replicate_index,
+        sampling_unit=sampling_unit,
+        item_count=cell.n_base_items,
+        row_count=len(rows),
+        realized_budget_rows=len(rows),
+        targets=targets,
+    )
+
+
+def summarize_metric_estimates(
+    *,
+    estimates: Sequence[float],
+    true_value: float,
+    intervals: Sequence[tuple[float, float]] | None = None,
+) -> MetricMonteCarloSummary:
+    if not estimates:
+        raise ValueError("estimates must be non-empty")
+    mean_estimate = sum(estimates) / len(estimates)
+    bias = mean_estimate - true_value
+    rmse = math.sqrt(
+        sum((estimate - true_value) ** 2 for estimate in estimates) / len(estimates)
+    )
+    mc_se = _sample_standard_error(estimates)
+    coverage: float | None = None
+    width: float | None = None
+    if intervals is not None:
+        if len(intervals) != len(estimates):
+            raise ValueError("intervals length must match estimates")
+        coverage = sum(
+            lower <= true_value <= upper for lower, upper in intervals
+        ) / len(intervals)
+        width = sum(upper - lower for lower, upper in intervals) / len(intervals)
+    return MetricMonteCarloSummary(
+        true_value=true_value,
+        mean_estimate=mean_estimate,
+        bias=bias,
+        rmse=rmse,
+        mc_se=mc_se,
+        interval_coverage=coverage,
+        mean_interval_width=width,
+    )
+
+
+def summarize_base_cell(
+    *,
+    design: MetricLabDesign,
+    cell: BaseCellSpec,
+    phase: MetricLabPhase,
+    sampling_unit: SamplingUnit,
+    num_replicates: int,
+) -> BaseCellSummary:
+    if type(num_replicates) is not int or num_replicates < 1:
+        raise ValueError("num_replicates must be a positive exact integer")
+    replicates = tuple(
+        evaluate_base_replicate(
+            design=design,
+            cell=cell,
+            phase=phase,
+            replicate_index=index,
+            sampling_unit=sampling_unit,
+        )
+        for index in range(num_replicates)
+    )
+    target_summaries: dict[TargetKind, TargetCellSummary] = {}
+    for target in (TargetKind.CLEAN_TRUTH, TargetKind.NOISY_REFERENCE):
+        truth = base_target_truth(
+            design=design,
+            cell=cell,
+            target=target,
+            sampling_unit=sampling_unit,
+        )
+        values = tuple(rep.targets[target] for rep in replicates)
+        metric_specs = {
+            "brier": (
+                tuple(value.brier for value in values),
+                truth.expected_brier,
+            ),
+            "log_score": (
+                tuple(value.log_score for value in values),
+                truth.expected_log_score,
+            ),
+            "fixed_bin_ece": (
+                tuple(value.fixed_bin_ece for value in values),
+                truth.fixed_bin_calibration,
+            ),
+            "equal_mass_ece": (
+                tuple(value.equal_mass_ece for value in values),
+                truth.equal_mass_calibration,
+            ),
+            "debiased_l2": (
+                tuple(value.debiased_l2 for value in values),
+                truth.l2_calibration,
+            ),
+            "classification_error": (
+                tuple(value.classification_error for value in values),
+                truth.classification_error,
+            ),
+            "aurc": (
+                tuple(value.aurc for value in values),
+                truth.aurc,
+            ),
+        }
+        summaries = {
+            name: summarize_metric_estimates(estimates=estimates, true_value=true_value)
+            for name, (estimates, true_value) in metric_specs.items()
+        }
+        brier_estimates = tuple(value.brier for value in values)
+        summaries["brier_cluster_interval"] = summarize_metric_estimates(
+            estimates=brier_estimates,
+            true_value=truth.expected_brier,
+            intervals=tuple(
+                (
+                    value.brier_intervals.cluster.lower,
+                    value.brier_intervals.cluster.upper,
+                )
+                for value in values
+            ),
+        )
+        summaries["brier_naive_interval"] = summarize_metric_estimates(
+            estimates=brier_estimates,
+            true_value=truth.expected_brier,
+            intervals=tuple(
+                (
+                    value.brier_intervals.naive.lower,
+                    value.brier_intervals.naive.upper,
+                )
+                for value in values
+            ),
+        )
+        target_summaries[target] = TargetCellSummary(
+            target=target,
+            truth=truth,
+            metrics=summaries,
+        )
+
+    return BaseCellSummary(
+        design_sha256=canonical_record_hash(design),
+        cell_key=cell.cell_key,
+        phase=phase,
+        sampling_unit=sampling_unit,
+        replicates_count=num_replicates,
+        realized_budget_rows=sum(rep.realized_budget_rows for rep in replicates),
+        targets=target_summaries,
+    )
