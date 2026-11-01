@@ -20,7 +20,7 @@ Pydantic validates durable record structure, but hash identity is not `sha256(mo
 
 ## Local read-only verification
 
-Live Drive acquisition is opt-in and is never part of ordinary PR CI. It uses Google Application Default Credentials with the single scope `https://www.googleapis.com/auth/drive.readonly`.
+Live Drive acquisition is opt-in and is never part of ordinary PR CI. It uses Google Application Default Credentials with the single scope `https://www.googleapis.com/auth/drive.readonly`. Operator provisioning of isolated local credentials across multiple consumers is detailed in [Local Google Authentication Runbook](canonical-sync-local-google-auth.md).
 
 Keep the authority profile outside the repository. It is a private TOML file containing the exact registered object and parent identities for the D-016 roles `README.md`, `DECISIONS.md`, `EXPERIMENTS.md`, and `REVIEW_LEDGER.md`. A schematic profile entry is:
 
@@ -72,6 +72,7 @@ The policy contract schema v2 explicitly declares these invariants via dedicated
 - [`canonical-sync` implementation design](design/2026-10-26-canonical-sync-design.md)
 - [Prompt Research/prlab second-consumer compatibility check](canonical-sync-prlab-compatibility.md)
 - [Hosted GitHub OIDC → Google WIF activation design](design/canonical-sync-oidc-wif-activation.md)
+- [Local Google Authentication Runbook for canonical-sync consumers](canonical-sync-local-google-auth.md)
 
 ## Operational invariants and current status
 
@@ -107,6 +108,7 @@ Historical payloads remain untouched; current readers explicitly reject old sche
 
 ### Current status and pending gates
 
-- **Implemented and deterministically verified**: `canonical_sync` acquisition/store/Git mechanics, `llm_evaluation` authority and reconciliation adapters, read-only Git + GitHub operational closure (`complete_reconciliation_with_github`), and the `fixtures/reconciliation_policy_contract.json` vertical slice.
-- **Historical live verification**: Stage-A local OAuth read-only Drive acquisition was live-verified against the registered D-016 profile; sessions without live Drive credentials run the deterministic offline test suite (`-m 'not live_drive'`).
-- **Pending activation gates**: D-016 still has an unresolved `REQUIRED` reconciliation obligation (later `NONE` watch receipts do not cancel an earlier unresolved `REQUIRED` obligation). Drive authority requires project-owned last-reconciled state but does not yet designate the storage object/path for `LastReconciledStateRecord`; resolving that storage home and executing post-merge closure after PR #9 lands on `main` remain separate steps. Hosted GitHub OIDC -> Google WIF remains unprovisioned, and E-002 remains `PLANNED` (no real model sampling is authorized here).
+- **Implemented and deterministically verified**: `canonical_sync` acquisition/store/Git mechanics, `llm_evaluation` authority and reconciliation adapters, read-only Git + GitHub operational closure (`complete_reconciliation_with_github`), the `fixtures/reconciliation_policy_contract.json` vertical slice, and the project-owned durable reconciliation state store (`~/.config/llm-evaluation/last-reconciled-state.json`).
+- **Verified local live acquisition**: Dedicated local OAuth Desktop client (`LLM Evaluation - Mac`), isolated authorized-user ADC (`CLOUDSDK_CONFIG="$HOME/.config/gcloud-llm-evaluation"`), exact `https://www.googleapis.com/auth/drive.readonly` scope, and live Drive acquisition against the registered D-016 authority profile have been verified. Sessions without live Drive credentials run the deterministic offline test suite (`-m 'not live_drive'`).
+- **Durable reconciliation store and PR closure**: PR #9 operational closure was verified at merge commit `869bdb26c3038edeb7fd1627a1acce6ca723c25c` with post-merge `Public CI` success and Git readback. The project-owned durable store for `LastReconciledStateRecord` and `ReconciliationDispositionRecord` is designated at `~/.config/llm-evaluation/last-reconciled-state.json` (overrideable via `LLM_EVALUATION_RECONCILIATION_STATE_PATH`) with atomic write and readback verification.
+- **Pending activation gates**: D-016 remains `REQUIRED` until this local-auth runbook and durable store PR is reviewed, merged into `main`, verified in post-merge `Public CI`, read back via Git, and the latest last-reconciled state is durably persisted. Hosted GitHub OIDC -> Google WIF remains unprovisioned, and E-002 remains `PLANNED` (no real model sampling is authorized here).
