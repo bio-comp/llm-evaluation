@@ -62,6 +62,7 @@ def test_registered_d016_authority_live(tmp_path: Path) -> None:
 def test_live_drive_adc_failure_sanitizes_exception_chain(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    pytest.importorskip("google.auth.exceptions")
     import traceback
     import unittest.mock as mock
     from google.auth.exceptions import DefaultCredentialsError

@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+import os
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import ClassVar, Literal, Self
+from pathlib import Path
+from typing import ClassVar, Final, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from canonical_sync.codec import canonical_record_bytes, canonical_record_hash
+from canonical_sync.codec import (
+    canonical_record_bytes,
+    canonical_record_hash,
+    parse_canonical_record,
+)
 from canonical_sync.git_publication import PublicationFile, PublicationTree
 from canonical_sync.records import GitPublicationReceiptRecord
 
@@ -282,6 +289,39 @@ class ReconciliationDispositionRecord(_StrictFrozenProjectRecord):
         raise ValueError(f"unsupported disposition: {self.disposition}")
 
 
+class ReconciliationStateError(RuntimeError):
+    """Raised when durable reconciliation state persistence, readback, or verification fails."""
+
+
+class DurableReconciliationStateRecord(_StrictFrozenProjectRecord):
+    canonical_identity_domain: ClassVar[str] = "llm-evaluation.durable-reconciliation-state"
+    canonical_identity_version: ClassVar[int] = 1
+    record_type: Literal["llm_evaluation_durable_reconciliation_state"] = (
+        "llm_evaluation_durable_reconciliation_state"
+    )
+    schema_version: Literal[1] = 1
+    state: LastReconciledStateRecord
+    disposition: ReconciliationDispositionRecord
+
+    @model_validator(mode="after")
+    def validate_durable_consistency(self) -> Self:
+        if self.disposition.disposition is not ReconciliationDisposition.COMPLETE:
+            raise ValueError(
+                "durable reconciliation state requires disposition COMPLETE, "
+                f"got {self.disposition.disposition.value}"
+            )
+        if self.disposition.verified_publication is None:
+            raise ValueError(
+                "durable reconciliation state requires verified_publication evidence"
+            )
+        if self.state.snapshot_state_sha256 != self.disposition.current_snapshot_sha256:
+            raise ValueError(
+                "durable state snapshot hash must equal disposition current_snapshot_sha256: "
+                f"{self.state.snapshot_state_sha256} != {self.disposition.current_snapshot_sha256}"
+            )
+        return self
+
+
 class ReconciliationPolicyContract(_StrictFrozenProjectRecord):
     canonical_identity_domain: ClassVar[str] = "llm-evaluation.reconciliation-policy"
     canonical_identity_version: ClassVar[int] = 1
@@ -432,3 +472,161 @@ def reconcile_reviewed_snapshot(
         public_projection=contract,
         publication_tree=tree,
     )
+
+
+DEFAULT_RECONCILIATION_STATE_PATH: Final = (
+    Path.home() / ".config" / "llm-evaluation" / "last-reconciled-state.json"
+)
+RECONCILIATION_STATE_ENV_VAR: Final = "LLM_EVALUATION_RECONCILIATION_STATE_PATH"
+
+
+def resolve_reconciliation_state_path(path: Path | str | None = None) -> Path:
+    if path is not None:
+        return Path(path).expanduser()
+    env_path = os.environ.get(RECONCILIATION_STATE_ENV_VAR)
+    if env_path is not None and env_path.strip():
+        return Path(env_path.strip()).expanduser()
+    return DEFAULT_RECONCILIATION_STATE_PATH.expanduser()
+
+
+def load_durable_reconciliation_state(
+    path: Path | str | None = None,
+) -> DurableReconciliationStateRecord | None:
+    target = resolve_reconciliation_state_path(path)
+    if target.is_symlink():
+        raise ReconciliationStateError(
+            f"durable reconciliation state path must not be a symlink: {target}"
+        )
+    if not target.exists():
+        return None
+    if not target.is_file():
+        raise ReconciliationStateError(
+            f"durable reconciliation state path must be a regular file: {target}"
+        )
+    try:
+        raw_bytes = target.read_bytes()
+    except OSError as exc:
+        raise ReconciliationStateError(
+            f"failed to read durable reconciliation state file '{target}': {exc}"
+        ) from exc
+    if not raw_bytes:
+        raise ReconciliationStateError(
+            f"durable reconciliation state file '{target}' is empty"
+        )
+    try:
+        record = parse_canonical_record(raw_bytes, DurableReconciliationStateRecord)
+    except Exception as exc:
+        raise ReconciliationStateError(
+            f"failed to parse durable reconciliation state from '{target}': {exc}"
+        ) from exc
+    return record
+
+
+def load_last_reconciled_state(
+    path: Path | str | None = None,
+) -> LastReconciledStateRecord | None:
+    durable = load_durable_reconciliation_state(path)
+    return durable.state if durable is not None else None
+
+
+def save_durable_reconciliation_state(
+    record: DurableReconciliationStateRecord,
+    path: Path | str | None = None,
+) -> Path:
+    if not isinstance(record, DurableReconciliationStateRecord):
+        raise TypeError(
+            f"expected DurableReconciliationStateRecord, got {type(record).__name__}"
+        )
+    target = resolve_reconciliation_state_path(path)
+    if target.is_symlink():
+        raise ReconciliationStateError(
+            f"durable reconciliation state target must not be a symlink: {target}"
+        )
+    parent = target.parent
+    if parent.is_symlink():
+        raise ReconciliationStateError(
+            f"durable reconciliation state parent directory must not be a symlink: {parent}"
+        )
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(parent, 0o700)
+        except OSError:
+            pass
+    except OSError as exc:
+        raise ReconciliationStateError(
+            f"failed to create state parent directory '{parent}': {exc}"
+        ) from exc
+
+    payload = canonical_record_bytes(record)
+    temp_path = parent / f".last-reconciled-state.tmp.{os.getpid()}.{time.time_ns()}.json"
+    try:
+        fd = os.open(str(temp_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with open(fd, "wb", closefd=True) as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(str(temp_path), str(target))
+        try:
+            dir_fd = os.open(str(parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
+    except Exception as exc:
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+        raise ReconciliationStateError(
+            f"failed to atomically persist durable reconciliation state: {exc}"
+        ) from exc
+
+    # Readback verification
+    try:
+        readback_bytes = target.read_bytes()
+    except OSError as exc:
+        raise ReconciliationStateError(
+            f"readback verification failed to read '{target}': {exc}"
+        ) from exc
+    if readback_bytes != payload:
+        raise ReconciliationStateError(
+            f"readback verification failed: written bytes do not match expected canonical bytes for '{target}'"
+        )
+    try:
+        readback_record = parse_canonical_record(readback_bytes, DurableReconciliationStateRecord)
+    except Exception as exc:
+        raise ReconciliationStateError(
+            f"readback verification failed to parse record from '{target}': {exc}"
+        ) from exc
+    if canonical_record_hash(readback_record) != canonical_record_hash(record):
+        raise ReconciliationStateError(
+            f"readback verification failed: hash mismatch ({canonical_record_hash(readback_record)} != {canonical_record_hash(record)})"
+        )
+    return target
+
+
+def persist_completed_reconciliation(
+    completed: ReconciliationDispositionRecord,
+    path: Path | str | None = None,
+) -> DurableReconciliationStateRecord:
+    if completed.disposition is not ReconciliationDisposition.COMPLETE:
+        raise ValueError(
+            f"only a COMPLETE disposition can be durably persisted, got {completed.disposition.value}"
+        )
+    if completed.verified_publication is None:
+        raise ValueError(
+            "persisted completion requires a verified_publication receipt"
+        )
+    state = LastReconciledStateRecord(
+        snapshot_state_sha256=completed.current_snapshot_sha256
+    )
+    durable = DurableReconciliationStateRecord(
+        state=state,
+        disposition=completed,
+    )
+    save_durable_reconciliation_state(durable, path=path)
+    return durable

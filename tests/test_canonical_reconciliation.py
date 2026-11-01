@@ -5,18 +5,34 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from canonical_sync.codec import canonical_record_bytes, canonical_record_hash
+from canonical_sync.codec import (
+    canonical_record_bytes,
+    canonical_record_hash,
+)
+from canonical_sync.records import GitPublicationReceiptRecord
 from llm_evaluation.canonical_authority import D016_REQUIRED_ROLES, load_d016_authority_profile
 from llm_evaluation.canonical_reconciliation import (
+    DEFAULT_RECONCILIATION_STATE_PATH,
+    RECONCILIATION_STATE_ENV_VAR,
+    DurableReconciliationStateRecord,
+    GitHubCIVerificationRecord,
+    GitHubPullRequestMergeRecord,
     LastReconciledStateRecord,
     ProjectImpact,
     ReconciliationDisposition,
     ReconciliationDispositionRecord,
     ReconciliationPolicyContract,
+    ReconciliationStateError,
     ReviewedCanonicalImpact,
+    VerifiedPublicationReceiptRecord,
     approved_policy_tree,
     current_executable_policy_contract,
+    load_durable_reconciliation_state,
+    load_last_reconciled_state,
+    persist_completed_reconciliation,
     reconcile_reviewed_snapshot,
+    resolve_reconciliation_state_path,
+    save_durable_reconciliation_state,
     verify_executable_policy_contract,
 )
 
@@ -275,3 +291,242 @@ def test_repository_git_tree_contains_only_supported_blob_modes() -> None:
     assert not unsupported_tree_entries, (
         f"Git tree at HEAD contains unsupported entry modes for GitPublisher (must be 100644): {unsupported_tree_entries}"
     )
+
+
+MERGED_SHA = "c" * 40
+HEAD_SHA = "d" * 40
+
+
+def _make_valid_complete_disposition(
+    *,
+    snapshot_sha: str = H1,
+    contract_sha: str = H2,
+    tree_sha: str = H2,
+    merged_sha: str = MERGED_SHA,
+) -> ReconciliationDispositionRecord:
+    git_receipt = GitPublicationReceiptRecord(
+        remote="https://github.com/bio-comp/llm-evaluation",
+        remote_ref="refs/heads/main",
+        expected_base_commit=merged_sha,
+        resulting_commit=merged_sha,
+        git_tree_oid="e" * 40,
+        publication_tree_sha256=tree_sha,
+        verified_remote_commit=merged_sha,
+        status="unchanged",
+        fast_forward_only=True,
+        readback_verified=True,
+    )
+    pr_record = GitHubPullRequestMergeRecord(
+        repository="bio-comp/llm-evaluation",
+        pull_request_number=9,
+        head_ref="refs/heads/feat/d016-doc",
+        head_commit_sha=HEAD_SHA,
+        base_ref="refs/heads/main",
+        merged_commit_sha=merged_sha,
+        merged_at="2026-11-01T03:00:00Z",
+    )
+    ci_record = GitHubCIVerificationRecord(
+        repository="bio-comp/llm-evaluation",
+        run_id=12345,
+        workflow_name="Public CI",
+        workflow_path=".github/workflows/ci.yml",
+        event="push",
+        head_branch="refs/heads/main",
+        commit_sha=merged_sha,
+        run_conclusion="success",
+        job_id=67890,
+        job_name="verify",
+        job_conclusion="success",
+    )
+    receipt = VerifiedPublicationReceiptRecord(
+        snapshot_state_sha256=snapshot_sha,
+        public_contract_sha256=contract_sha,
+        publication_tree_sha256=tree_sha,
+        git=git_receipt,
+        pull_request=pr_record,
+        ci=ci_record,
+    )
+    return ReconciliationDispositionRecord(
+        current_snapshot_sha256=snapshot_sha,
+        previous_snapshot_sha256="0" * 64,
+        impact=ProjectImpact.PUBLIC_CHANGE_REQUIRED,
+        disposition=ReconciliationDisposition.COMPLETE,
+        public_contract_sha256=contract_sha,
+        publication_tree_sha256=tree_sha,
+        verified_publication=receipt,
+    )
+
+
+def test_durable_reconciliation_state_record_valid_construction() -> None:
+    comp = _make_valid_complete_disposition()
+    state = LastReconciledStateRecord(snapshot_state_sha256=comp.current_snapshot_sha256)
+    record = DurableReconciliationStateRecord(state=state, disposition=comp)
+    assert record.state.snapshot_state_sha256 == H1
+    assert record.disposition.disposition is ReconciliationDisposition.COMPLETE
+    assert record.disposition.verified_publication is not None
+
+
+def test_durable_reconciliation_state_record_rejects_non_complete_disposition() -> None:
+    req = ReconciliationDispositionRecord(
+        current_snapshot_sha256=H1,
+        previous_snapshot_sha256="0" * 64,
+        impact=ProjectImpact.PUBLIC_CHANGE_REQUIRED,
+        disposition=ReconciliationDisposition.REQUIRED,
+        public_contract_sha256=H2,
+        publication_tree_sha256=H2,
+    )
+    state = LastReconciledStateRecord(snapshot_state_sha256=H1)
+    with pytest.raises(ValidationError, match="requires disposition COMPLETE"):
+        DurableReconciliationStateRecord(state=state, disposition=req)
+
+
+def test_durable_reconciliation_state_record_rejects_mismatched_snapshot_hash() -> None:
+    comp = _make_valid_complete_disposition(snapshot_sha=H1)
+    state = LastReconciledStateRecord(snapshot_state_sha256=H2)
+    with pytest.raises(ValidationError, match="snapshot hash must equal disposition"):
+        DurableReconciliationStateRecord(state=state, disposition=comp)
+
+
+def test_resolve_reconciliation_state_path_default_and_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.delenv(RECONCILIATION_STATE_ENV_VAR, raising=False)
+    default_path = resolve_reconciliation_state_path()
+    assert default_path == DEFAULT_RECONCILIATION_STATE_PATH.expanduser()
+
+    custom = tmp_path / "custom.json"
+    assert resolve_reconciliation_state_path(custom) == custom
+
+    env_target = tmp_path / "env-target.json"
+    monkeypatch.setenv(RECONCILIATION_STATE_ENV_VAR, str(env_target))
+    assert resolve_reconciliation_state_path() == env_target
+    # explicit argument takes precedence over env var
+    assert resolve_reconciliation_state_path(custom) == custom
+
+
+def test_save_and_load_durable_reconciliation_state_roundtrip(tmp_path: Path) -> None:
+    store_path = tmp_path / "state" / "reconciled.json"
+    comp = _make_valid_complete_disposition()
+    state = LastReconciledStateRecord(snapshot_state_sha256=comp.current_snapshot_sha256)
+    record = DurableReconciliationStateRecord(state=state, disposition=comp)
+
+    saved_path = save_durable_reconciliation_state(record, path=store_path)
+    assert saved_path == store_path
+    assert store_path.exists()
+
+    loaded = load_durable_reconciliation_state(store_path)
+    assert loaded is not None
+    assert loaded == record
+    assert canonical_record_hash(loaded) == canonical_record_hash(record)
+
+    loaded_last = load_last_reconciled_state(store_path)
+    assert loaded_last == state
+
+
+def test_save_durable_reconciliation_state_permissions_and_atomicity(tmp_path: Path) -> None:
+    store_path = tmp_path / "secure_dir" / "last-reconciled-state.json"
+    comp = _make_valid_complete_disposition()
+    state = LastReconciledStateRecord(snapshot_state_sha256=comp.current_snapshot_sha256)
+    record = DurableReconciliationStateRecord(state=state, disposition=comp)
+
+    save_durable_reconciliation_state(record, path=store_path)
+    # Check permissions (owner-only)
+    file_mode = store_path.stat().st_mode & 0o777
+    assert file_mode == 0o600
+    dir_mode = store_path.parent.stat().st_mode & 0o777
+    assert dir_mode == 0o700
+
+
+def test_load_durable_reconciliation_state_missing_file_returns_none(tmp_path: Path) -> None:
+    missing = tmp_path / "nonexistent.json"
+    assert load_durable_reconciliation_state(missing) is None
+    assert load_last_reconciled_state(missing) is None
+
+
+def test_load_durable_reconciliation_state_empty_or_malformed_fails_closed(tmp_path: Path) -> None:
+    empty = tmp_path / "empty.json"
+    empty.write_bytes(b"")
+    with pytest.raises(ReconciliationStateError, match="empty"):
+        load_durable_reconciliation_state(empty)
+
+    malformed = tmp_path / "bad.json"
+    malformed.write_text('{"record_type": "llm_evaluation_durable_reconciliation_state"')
+    with pytest.raises(ReconciliationStateError, match="parse"):
+        load_durable_reconciliation_state(malformed)
+
+    wrong_schema = tmp_path / "wrong.json"
+    wrong_schema.write_text('{"record_type": "wrong_type", "schema_version": 1}')
+    with pytest.raises(ReconciliationStateError, match="parse"):
+        load_durable_reconciliation_state(wrong_schema)
+
+
+def test_durable_reconciliation_state_rejects_symlink_target_and_parent(tmp_path: Path) -> None:
+    real_file = tmp_path / "real.json"
+    comp = _make_valid_complete_disposition()
+    state = LastReconciledStateRecord(snapshot_state_sha256=comp.current_snapshot_sha256)
+    record = DurableReconciliationStateRecord(state=state, disposition=comp)
+    save_durable_reconciliation_state(record, path=real_file)
+
+    symlink_file = tmp_path / "symlink.json"
+    symlink_file.symlink_to(real_file)
+
+    with pytest.raises(ReconciliationStateError, match="symlink"):
+        load_durable_reconciliation_state(symlink_file)
+
+    with pytest.raises(ReconciliationStateError, match="symlink"):
+        save_durable_reconciliation_state(record, path=symlink_file)
+
+    real_dir = tmp_path / "real_dir"
+    real_dir.mkdir()
+    symlink_dir = tmp_path / "symlink_dir"
+    symlink_dir.symlink_to(real_dir)
+
+    target_under_symlink_dir = symlink_dir / "state.json"
+    with pytest.raises(ReconciliationStateError, match="symlink"):
+        save_durable_reconciliation_state(record, path=target_under_symlink_dir)
+
+
+def test_save_durable_reconciliation_state_readback_mismatch_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "tampered.json"
+    comp = _make_valid_complete_disposition()
+    state = LastReconciledStateRecord(snapshot_state_sha256=comp.current_snapshot_sha256)
+    record = DurableReconciliationStateRecord(state=state, disposition=comp)
+
+    # Simulate readback byte corruption
+    original_read_bytes = Path.read_bytes
+    tampered_bytes = b'{"corrupted": true}'
+
+    def tampered_read_bytes(self: Path) -> bytes:
+        if self == target.resolve():
+            return tampered_bytes
+        return original_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", tampered_read_bytes)
+
+    with pytest.raises(ReconciliationStateError, match="readback verification failed"):
+        save_durable_reconciliation_state(record, path=target)
+
+
+def test_persist_completed_reconciliation_success_and_rejections(tmp_path: Path) -> None:
+    target = tmp_path / "persisted.json"
+    comp = _make_valid_complete_disposition()
+
+    durable = persist_completed_reconciliation(comp, path=target)
+    assert durable.state.snapshot_state_sha256 == comp.current_snapshot_sha256
+    assert durable.disposition == comp
+
+    reloaded = load_last_reconciled_state(target)
+    assert reloaded == durable.state
+
+    # Rejection of non-COMPLETE disposition
+    req = ReconciliationDispositionRecord(
+        current_snapshot_sha256=H1,
+        previous_snapshot_sha256="0" * 64,
+        impact=ProjectImpact.PUBLIC_CHANGE_REQUIRED,
+        disposition=ReconciliationDisposition.REQUIRED,
+        public_contract_sha256=H2,
+        publication_tree_sha256=H2,
+    )
+    with pytest.raises(ValueError, match="only a COMPLETE disposition can be durably persisted"):
+        persist_completed_reconciliation(req, path=target)
+
