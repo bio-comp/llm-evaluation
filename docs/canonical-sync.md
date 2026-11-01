@@ -1,0 +1,112 @@
+# Canonical synchronization boundary
+
+`llm-evaluation` treats Google Drive as the sole mutable authority for methodology and reconciliation state. The public repository contains executable code, tests, schemas, public-safe contracts, and deliberately published artifacts; it does not mirror private canonical bodies or Drive metadata.
+
+The reusable mechanics are incubated in the workspace package `packages/canonical-sync` (import namespace `canonical_sync`). The governing boundary is: `canonical_sync` owns verified acquisition/snapshot mechanics and mechanical Git application/readback of an already-approved path/byte projection over an exact verified base; omitted base paths are preserved and are not implicit deletion authorization. `llm_evaluation` owns authority-role interpretation, material significance, public-safe projection construction, repository/ref/review/CI completion semantics, and the `NONE` / `REQUIRED` / `BLOCKED` / `COMPLETE` governance state machine. A `VerifiedSnapshot` is evidence, not authorization to mutate Git.
+
+The current vertical slice in `llm_evaluation` is intentionally narrow: it acquires the four configured root governance roles (`README.md`, `DECISIONS.md`, `EXPERIMENTS.md`, and `REVIEW_LEDGER.md`) and projects only one public-safe fixture (`fixtures/reconciliation_policy_contract.json`), rather than mirroring or compiling the entire evaluation methodology.
+
+## Identity and canonical serialization
+
+The package keeps three authority/acquisition identities separate:
+
+- `content_sha256`: exact bytes for one acquired source representation;
+- `source_state_id`: `canonical_record_hash(SnapshotStateRecord)`, binding registered source identity + meaning-bearing logical mapping + exact content identities. Existing persisted names such as `snapshot_state_sha256` refer to this same identity;
+- `observation_id` / `receipt_id`: hashes of the observation and acquisition-receipt records. Observations bind provider revision/version plus timing/attempt and safe runner/transport/auth provenance; both successful and failed acquisition receipts retain safe runner/transport/auth provenance, while failures retain only sanitized error codes rather than raw provider bodies or credentials.
+
+Changing Drive object identity or logical mapping changes `source_state_id` even if bytes are identical. Reacquiring unchanged registered objects/mapping/bytes preserves `source_state_id` while new provider/runtime/auth observations can produce new observation/receipt identities.
+
+Pydantic validates durable record structure, but hash identity is not `sha256(model_dump(...))`. Canonical persisted payloads use deterministic UTF-8 JSON with explicit scalar normalization and no trailing newline. Cryptographic identity wraps those bytes in `canonical-sync` identity protocol v1 with a declared record domain, domain version, record schema version, and length framing before SHA-256. Runtime-only frozen dataclasses such as verified/staged handles and approved `PublicationTree` values are not persistence formats.
+
+## Local read-only verification
+
+Live Drive acquisition is opt-in and is never part of ordinary PR CI. It uses Google Application Default Credentials with the single scope `https://www.googleapis.com/auth/drive.readonly`.
+
+Keep the authority profile outside the repository. It is a private TOML file containing the exact registered object and parent identities for the D-016 roles `README.md`, `DECISIONS.md`, `EXPERIMENTS.md`, and `REVIEW_LEDGER.md`. A schematic profile entry is:
+
+```toml
+[profile]
+profile_name = "llm-evaluation-d016"
+
+[[profile.objects]]
+logical_path = "README.md"
+provider = "google_drive"
+object_id = "<private registered Drive object ID>"
+expected_name = "README.md"
+expected_mime_type = "application/vnd.google-apps.document"
+expected_parent_id = "<private registered parent ID>"
+representation_schema = "google-drive-export-markdown-v1"
+```
+
+Repeat the object table for the other required roles. Do not commit the populated profile, OAuth client material, ADC files, tokens, private snapshots, or copied canonical bodies.
+
+With already-authorized local ADC credentials and the private profile available, run:
+
+```bash
+export LLM_EVALUATION_LIVE_DRIVE=1
+export LLM_EVALUATION_DRIVE_PROFILE=/absolute/private/path/llm-evaluation-d016.toml
+uv run --all-packages --extra drive pytest -m live_drive tests/test_canonical_drive_live.py -q
+```
+
+Without both environment variables the live test skips before credential discovery or network access. The test performs only read operations, acquires a stable multi-object snapshot into a temporary private store, reopens and verifies it, and checks a controlled authority-mismatch failure.
+
+## CI boundary
+
+Ordinary public CI is credential-free. It may install the optional Google client libraries to type-check and unit-test the adapter, but it supplies no Google credentials and runs pytest with `-m 'not live_drive'`. Hosted GitHub OIDC → Google Workload Identity Federation is a later activation step and is not configured by this tranche.
+
+## Public reconciliation contract
+
+`fixtures/reconciliation_policy_contract.json` is deliberately public-safe. It records only the executable four-state reconciliation contract (`NONE`, `REQUIRED`, `BLOCKED`, `COMPLETE`) and the verified-publication conditions required for `COMPLETE` under schema version 2. Private Drive identities and canonical narrative are excluded by design.
+
+Under D-016, structural record validation is strictly distinguished from operational acquisition and readback. Pure structural helpers (`complete_reconciliation`, `VerifiedPublicationReceiptRecord`, `GitPublicationReceiptRecord`) validate persisted record invariants, but a caller-constructed or deserialized receipt never substitutes for live operational verification. Operational closure in `llm_evaluation.canonical_github.complete_reconciliation_with_github` executes the following read-only sequence:
+1. Recomputes and binds the supplied `PublicationTree` and/or `ReconciliationPolicyContract` against `required.public_contract_sha256` and `required.publication_tree_sha256` before any network or Git call;
+2. Validates external GitHub responses (`_WirePullRequest`, `_WireWorkflowRun`, `_WireWorkflowJob`) using strict Pydantic wire models without network I/O inside validators;
+3. Verifies exact bindings for `bio-comp/llm-evaluation`: pull request `pr_number` is merged (`merged == True`, explicit ISO-8601 UTC `merged_at`, `merge_commit_sha == M`, reviewed `head.sha == H` on a non-`main` branch where `H` and `M` may legitimately differ, and `base.ref == "refs/heads/main"`), and post-merge `push` workflow run `run_id` on `refs/heads/main` at `head_sha == M` succeeded for `.github/workflows/ci.yml` (`Public CI`) with unique required job `verify` (`conclusion == "success"`);
+4. Performs actual read-only Git verification via `GitPublisher(remote, ref="refs/heads/main").verify(publication_tree, expected_commit=M)` to confirm `refs/heads/main` is at `M` without concurrent movement and contains the exact approved `PublicationTree` bytes;
+5. Produces versioned durable evidence records (`GitHubPullRequestMergeRecord` schema v2, `GitHubCIVerificationRecord` schema v3, `GitPublicationReceiptRecord` schema v3) bound into `VerifiedPublicationReceiptRecord` schema v4 and `ReconciliationDispositionRecord` schema v3 (`COMPLETE`).
+
+The policy contract schema v2 explicitly declares these invariants via dedicated boolean fields (`complete_requires_authoritative_github_evidence`, `complete_requires_merged_pull_request`, `complete_requires_post_merge_main_push_ci`, `complete_requires_exact_workflow_identity`, `complete_requires_exact_required_job_identity`, `complete_requires_snapshot_match`, `complete_requires_contract_match`, `complete_requires_readback`).
+
+## Related design records
+
+- [`canonical-sync` implementation design](design/2026-10-26-canonical-sync-design.md)
+- [Prompt Research/prlab second-consumer compatibility check](canonical-sync-prlab-compatibility.md)
+- [Hosted GitHub OIDC → Google WIF activation design](design/canonical-sync-oidc-wif-activation.md)
+
+## Operational invariants and current status
+
+### Atomic CAS Git publication lease
+
+`GitPublisher.publish()` enforces a server-side atomic compare-and-swap (CAS) lease on the pushed ref. For an existing base, it pushes with `--force-with-lease=<ref>:<expected_base>`. For target creation when `expected_base is None`, it pushes with the explicit empty expectation `--force-with-lease=<ref>:`, ensuring the push fails if the ref was concurrently created. In addition, the publisher mechanically validates that candidate commits have the exact expected base as their single parent before pushing. A concurrent remote rewind, ref deletion, or concurrent branch creation raises `RemoteRaceError`, leaving the remote state untouched.
+
+### Supported path/tree inventories, pre-mutation rejection, and omission-preservation
+
+Path and inventory validators apply one consistent portable boundary across authority configurations (`AuthorityProfile`, `AuthorityProfileRecord`, `AuthoritySpecificationRecord`), snapshot records (`SnapshotStateRecord`, `SnapshotObservationRecord`), publication projections (`PublicationFile`, `PublicationTree`), remote-base inspection (`GitPublisher._read_tree()`), and the combined base-plus-projection tree in `GitPublisher.publish()`:
+- **Single-path hygiene**: Every path must be a non-empty canonical relative POSIX path with at least one component. Literal `.`, `..`, empty segments, backslashes, ASCII control characters, Windows illegal characters/reserved stems, trailing dots/spaces, and Git metadata names/aliases under `core.protectHFS` and `core.protectNTFS` (including `.git`, `git~1`, and HFS-ignorable formatting characters `U+200C..U+200F`, `U+202A..U+202E`, `U+206A..U+206F`, `U+FEFF` in any directory or leaf component) are rejected.
+- **Full-inventory ancestor hierarchy and directory-prefix consistency**: Across every inventory, portable file keys (NFC-normalized, HFS-stripped, case-folded) must be unique, every shared ancestor directory prefix must use one consistent exact spelling across all entries (rejecting case or NFC/NFD directory-prefix aliases such as `Foo/a.txt` + `foo/b.txt` or `Café/a.txt` + `Cafe\u0301/b.txt`), and no file path may collide with any ancestor directory prefix of another path regardless of lexical interlopers (such as `a`, `a-b`, `a/c`).
+- **Supported Git tree entries and omission-preservation**: `GitPublisher` supports regular `100644` blobs and non-empty `040000` directories implied by those blobs. `_read_tree()` inspects `git ls-tree -r -t -z` and fails closed with `RemoteVerificationError` before commit creation or push (and on no-op or read-only `verify()`) if a remote commit contains executable/symlink/submodule modes, empty subtrees (`040000 tree` without descendant blobs), or path/prefix collisions. Valid base paths omitted from a `PublicationTree` projection are preserved byte-for-byte. Invalid authority configurations fail before any provider `observe`/`read` calls.
+
+### SnapshotStore operational error boundary
+
+`SnapshotStore` operations sanitize low-level filesystem `OSError` exceptions by translating them into `SnapshotIntegrityError` without leaking private local filesystem paths, store root paths, or internal diagnostics in `str(exc)` or `__cause__` (`raise SnapshotIntegrityError(...) from None`). Path traversal defenses reject symlinks across store operations while safely accommodating standard platform root directory aliases (such as macOS `/tmp` and `/var` owned by root).
+
+### Narrow D-016 authority-profile parent invariant
+
+The D-016 authority profile validator in `llm_evaluation.canonical_authority` enforces that all four required root authority roles (`README.md`, `DECISIONS.md`, `EXPERIMENTS.md`, `REVIEW_LEDGER.md`) share the exact same non-null Drive parent ID. This invariant reflects the single authoritative Drive governance folder for the project and prevents accidentally mixing objects across unrelated folders, while deliberately remaining narrow so secondary or nested canonical objects are not erroneously forced into the root folder.
+
+### Durable schema versioning
+
+- `GitPublicationReceiptRecord`: schema v3 retained (restores declared CAS and verified-readback guarantees without changing persisted fields).
+- `GitHubPullRequestMergeRecord`: schema v2 (`merged_at` ISO 8601 UTC timestamp, canonical `refs/heads/...` ref format).
+- `GitHubCIVerificationRecord`: schema v3 (`workflow_path`, `event="push"`, `head_branch="refs/heads/main"`, `run_conclusion="success"`, `job_id`, `job_name="verify"`, `job_conclusion="success"`).
+- `VerifiedPublicationReceiptRecord`: schema v4 (binds PR v2, CI v3, and verified Git readback v3).
+- `ReconciliationDispositionRecord`: schema v3 (binds `VerifiedPublicationReceiptRecord` v4).
+- `ReconciliationPolicyContract`: schema v2 (explicit booleans for all authoritative closure requirements).
+
+Historical payloads remain untouched; current readers explicitly reject old schema versions and never infer missing provenance or completion evidence. No historical private receipt is deleted or migrated.
+
+### Current status and pending gates
+
+- **Implemented and deterministically verified**: `canonical_sync` acquisition/store/Git mechanics, `llm_evaluation` authority and reconciliation adapters, read-only Git + GitHub operational closure (`complete_reconciliation_with_github`), and the `fixtures/reconciliation_policy_contract.json` vertical slice.
+- **Historical live verification**: Stage-A local OAuth read-only Drive acquisition was live-verified against the registered D-016 profile; sessions without live Drive credentials run the deterministic offline test suite (`-m 'not live_drive'`).
+- **Pending activation gates**: D-016 still has an unresolved `REQUIRED` reconciliation obligation (later `NONE` watch receipts do not cancel an earlier unresolved `REQUIRED` obligation). Drive authority requires project-owned last-reconciled state but does not yet designate the storage object/path for `LastReconciledStateRecord`; resolving that storage home and executing post-merge closure after PR #9 lands on `main` remain separate steps. Hosted GitHub OIDC -> Google WIF remains unprovisioned, and E-002 remains `PLANNED` (no real model sampling is authorized here).

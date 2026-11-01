@@ -7,7 +7,13 @@ name = "llm-evaluation"
 version = "0.1.0"
 description = "Public, reproducible evaluation-methodology diagnostics"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "canonical-sync",
+    "pydantic==2.14.1",
+]
+
+[project.optional-dependencies]
+drive = ["canonical-sync[drive]"]
 
 [project.scripts]
 llm-evaluation = "llm_evaluation.cli:main"
@@ -19,6 +25,20 @@ packages = ["src/llm_evaluation"]
 [dependency-groups]
 dev = [
     "coverage==7.17.0",
+    "hypothesis>=6.100.0",
     "mypy==1.18.2",
+    "pytest>=9,<10",
+    "pytest-randomly>=3.15.0",
     "ruff==0.14.4",
+]
+
+[tool.uv.sources]
+canonical-sync = { workspace = true }
+
+[tool.uv.workspace]
+members = ["packages/canonical-sync"]
+
+[tool.pytest.ini_options]
+markers = [
+    "live_drive: explicit read-only Google Drive authority verification",
 ]
