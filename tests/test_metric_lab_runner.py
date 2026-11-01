@@ -300,3 +300,37 @@ def test_ambiguity_summary_reports_known_target_truths_and_rating_budget() -> No
     assert rater.metrics["brier"].true_value == 0.25
     assert rater.metrics["brier"].mean_estimate == 0.25
     assert rater.metrics["brier"].bias == 0.0
+
+
+def test_operational_risk_points_expose_realized_coverage_when_ties_block_request() -> (
+    None
+):
+    from llm_evaluation.metric_lab_runner import operational_risk_points
+
+    curve = risk_coverage_tie_blocks(
+        confidences=(0.9, 0.9, 0.7),
+        errors=(0.0, 1.0, 1.0),
+    )
+    matched = operational_risk_points(curve, requested_coverages=(0.1, 0.7, 1.0))
+    assert matched[0].requested_coverage == 0.1
+    assert math.isclose(matched[0].realized_coverage, 2 / 3, rel_tol=1e-12)
+    assert matched[1].requested_coverage == 0.7
+    assert matched[1].realized_coverage == 1.0
+    assert matched[-1].requested_coverage == matched[-1].realized_coverage == 1.0
+
+
+def test_auxiliary_deterministic_controls_include_prevalence_subgroup_and_aurc_negative() -> (
+    None
+):
+    from llm_evaluation.metric_lab_runner import run_auxiliary_deterministic_controls
+
+    design = MetricLabDesign()
+    controls = run_auxiliary_deterministic_controls(design)
+    assert [cell.prevalence for cell in controls.prevalence] == [0.01, 0.1, 0.5]
+    assert math.isclose(controls.prevalence[0].precision, 10 / 21, rel_tol=1e-12)
+    assert math.isclose(controls.prevalence[-1].precision, 90 / 91, rel_tol=1e-12)
+    assert controls.subgroup.pooled_ece == 0.0
+    assert controls.subgroup.max_subgroup_ece == 0.25
+    assert controls.aurc_upstream_negative_control == 0.5
+    assert controls.aurc_prefix_oracle == 0.75
+    assert controls.aurc_defect_detected is True

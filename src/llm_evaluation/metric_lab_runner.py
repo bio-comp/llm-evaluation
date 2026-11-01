@@ -14,13 +14,17 @@ from llm_evaluation.metric_lab_design import (
     BaseCellSpec,
     MetricLabDesign,
     MetricLabPhase,
+    PrevalenceCellSpec,
     derive_metric_lab_seed,
+    prevalence_grid_cells,
 )
 from llm_evaluation.metric_lab_targets import (
     SamplingUnit,
     TargetKind,
     generate_item_probabilities,
     generate_rater_ambiguity_items,
+    prevalence_precision,
+    subgroup_calibration_cancellation_control,
 )
 from llm_evaluation.metric_laboratory import (
     binary_decision,
@@ -66,6 +70,32 @@ class RiskCoveragePoint:
 
 
 @dataclass(frozen=True, slots=True)
+class OperationalRiskPoint:
+    requested_coverage: float
+    realized_coverage: float
+    risk: float
+    selected_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class PrevalenceControlResult:
+    cell_key: str
+    prevalence: float
+    tpr: float
+    fpr: float
+    precision: float
+
+
+@dataclass(frozen=True, slots=True)
+class AuxiliaryDeterministicControls:
+    prevalence: tuple[PrevalenceControlResult, ...]
+    subgroup: object
+    aurc_upstream_negative_control: float
+    aurc_prefix_oracle: float
+    aurc_defect_detected: bool
+
+
+@dataclass(frozen=True, slots=True)
 class BaseTargetTruth:
     target: TargetKind
     case_probabilities: tuple[float, ...]
@@ -76,6 +106,7 @@ class BaseTargetTruth:
     l2_calibration: float
     classification_error: float
     aurc: float
+    operational_risk: tuple[OperationalRiskPoint, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +123,7 @@ class BaseTargetReplicateResult:
     fixed_bin_counts: tuple[int, ...]
     equal_mass_bin_counts: tuple[int, ...]
     risk_coverage: tuple[RiskCoveragePoint, ...]
+    operational_risk: tuple[OperationalRiskPoint, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +239,34 @@ def risk_coverage_tie_blocks(
     return tuple(points)
 
 
+def operational_risk_points(
+    curve: Sequence[RiskCoveragePoint],
+    *,
+    requested_coverages: Sequence[float],
+) -> tuple[OperationalRiskPoint, ...]:
+    """Match requested coverages to the first attainable complete tie-block coverage."""
+    if not curve:
+        raise ValueError("curve must be non-empty")
+    if not requested_coverages:
+        raise ValueError("requested_coverages must be non-empty")
+    result: list[OperationalRiskPoint] = []
+    for requested in requested_coverages:
+        if not 0.0 < requested <= 1.0:
+            raise ValueError("requested coverages must lie in (0, 1]")
+        match = next((point for point in curve if point.coverage >= requested), None)
+        if match is None:
+            raise ValueError("risk-coverage curve does not reach requested coverage")
+        result.append(
+            OperationalRiskPoint(
+                requested_coverage=float(requested),
+                realized_coverage=match.coverage,
+                risk=match.risk,
+                selected_count=match.selected_count,
+            )
+        )
+    return tuple(result)
+
+
 def official_get_aurc_reference_behavior(
     residuals: Sequence[float], confidence: Sequence[float]
 ) -> float:
@@ -311,6 +371,12 @@ def base_target_truth(
         error_probabilities,
         tie_convention=design.aurc_tie_convention,
     )
+    risk_curve = risk_coverage_tie_blocks(
+        confidences=confidences, errors=error_probabilities
+    )
+    operational = operational_risk_points(
+        risk_curve, requested_coverages=design.operational_coverage_floats
+    )
     return BaseTargetTruth(
         target=target,
         case_probabilities=case_p,
@@ -321,6 +387,7 @@ def base_target_truth(
         l2_calibration=l2,
         classification_error=classification_error,
         aurc=aurc,
+        operational_risk=operational,
     )
 
 
@@ -418,6 +485,7 @@ def _evaluate_target_rows(
         for prediction, outcome in zip(predictions, outcomes, strict=True)
     )
     confidences = tuple(max(forecast, 1.0 - forecast) for forecast in forecasts)
+    risk_curve = risk_coverage_tie_blocks(confidences=confidences, errors=errors)
     return BaseTargetReplicateResult(
         target=target,
         brier=brier,
@@ -434,7 +502,10 @@ def _evaluate_target_rows(
         brier_intervals=mean_loss_intervals(values=brier_losses, item_ids=item_ids),
         fixed_bin_counts=tuple(detail.count for detail in fixed_details),
         equal_mass_bin_counts=tuple(detail.count for detail in equal_details),
-        risk_coverage=risk_coverage_tie_blocks(confidences=confidences, errors=errors),
+        risk_coverage=risk_curve,
+        operational_risk=operational_risk_points(
+            risk_curve, requested_coverages=design.operational_coverage_floats
+        ),
     )
 
 
@@ -565,6 +636,11 @@ def summarize_base_cell(
                 truth.aurc,
             ),
         }
+        for index, requested in enumerate(design.operational_coverage_floats):
+            metric_specs[f"risk_at_coverage_{requested:g}"] = (
+                tuple(value.operational_risk[index].risk for value in values),
+                truth.operational_risk[index].risk,
+            )
         summaries = {
             name: summarize_metric_estimates(estimates=estimates, true_value=true_value)
             for name, (estimates, true_value) in metric_specs.items()
@@ -609,6 +685,38 @@ def summarize_base_cell(
     )
 
 
+def evaluate_prevalence_control(cell: PrevalenceCellSpec) -> PrevalenceControlResult:
+    return PrevalenceControlResult(
+        cell_key=cell.cell_key,
+        prevalence=cell.prevalence,
+        tpr=cell.tpr,
+        fpr=cell.fpr,
+        precision=prevalence_precision(
+            tpr=cell.tpr, fpr=cell.fpr, prevalence=cell.prevalence
+        ),
+    )
+
+
+def run_auxiliary_deterministic_controls(
+    design: MetricLabDesign,
+) -> AuxiliaryDeterministicControls:
+    prevalence = tuple(
+        evaluate_prevalence_control(cell) for cell in prevalence_grid_cells(design)
+    )
+    subgroup = subgroup_calibration_cancellation_control()
+    upstream = official_get_aurc_reference_behavior((0.0, 1.0), (0.1, 0.9))
+    oracle = 0.75
+    return AuxiliaryDeterministicControls(
+        prevalence=prevalence,
+        subgroup=subgroup,
+        aurc_upstream_negative_control=upstream,
+        aurc_prefix_oracle=oracle,
+        aurc_defect_detected=not math.isclose(
+            upstream, oracle, rel_tol=0.0, abs_tol=0.0
+        ),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class AmbiguityTargetTruth:
     target: TargetKind
@@ -619,6 +727,7 @@ class AmbiguityTargetTruth:
     l2_calibration: float
     classification_error: float
     aurc: float
+    operational_risk: tuple[OperationalRiskPoint, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -634,6 +743,7 @@ class AmbiguityTargetReplicateResult:
     aurc: float
     brier_intervals: MeanLossIntervals
     risk_coverage: tuple[RiskCoveragePoint, ...]
+    operational_risk: tuple[OperationalRiskPoint, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -738,6 +848,12 @@ def _ambiguity_truth_from_probabilities(
         error_probabilities,
         tie_convention=design.aurc_tie_convention,
     )
+    risk_curve = risk_coverage_tie_blocks(
+        confidences=confidences, errors=error_probabilities
+    )
+    operational = operational_risk_points(
+        risk_curve, requested_coverages=design.operational_coverage_floats
+    )
     return AmbiguityTargetTruth(
         target=target,
         expected_brier=expected_b,
@@ -747,6 +863,7 @@ def _ambiguity_truth_from_probabilities(
         l2_calibration=l2,
         classification_error=classification_error,
         aurc=aurc,
+        operational_risk=operational,
     )
 
 
@@ -803,6 +920,7 @@ def _evaluate_ambiguity_target(
     )
     fixed = fixed_bin_ece(forecasts, outcomes, num_bins=design.fixed_bin_count)[0]
     equal = equal_mass_ece(forecasts, outcomes, num_bins=design.equal_mass_bin_count)[0]
+    risk_curve = risk_coverage_tie_blocks(confidences=confidences, errors=errors)
     return AmbiguityTargetReplicateResult(
         target=target,
         evaluation_count=len(outcomes),
@@ -818,7 +936,10 @@ def _evaluate_ambiguity_target(
             confidences, errors, tie_convention=design.aurc_tie_convention
         ),
         brier_intervals=mean_loss_intervals(values=brier_losses, item_ids=item_ids),
-        risk_coverage=risk_coverage_tie_blocks(confidences=confidences, errors=errors),
+        risk_coverage=risk_curve,
+        operational_risk=operational_risk_points(
+            risk_curve, requested_coverages=design.operational_coverage_floats
+        ),
     )
 
 
@@ -937,6 +1058,11 @@ def summarize_ambiguity_cell(
             ),
             "aurc": (tuple(value.aurc for value in values), truth.aurc),
         }
+        for index, requested in enumerate(design.operational_coverage_floats):
+            metric_specs[f"risk_at_coverage_{requested:g}"] = (
+                tuple(value.operational_risk[index].risk for value in values),
+                truth.operational_risk[index].risk,
+            )
         metrics = {
             name: summarize_metric_estimates(estimates=estimates, true_value=true_value)
             for name, (estimates, true_value) in metric_specs.items()
