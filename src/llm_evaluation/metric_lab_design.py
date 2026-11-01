@@ -108,6 +108,15 @@ class MetricLabDesign(_StrictFrozenRecord):
     subgroup_control_version: Literal["opposing-gap-cancellation-v1"] = (
         "opposing-gap-cancellation-v1"
     )
+    question_population_stress_policy: Literal[
+        "k1-independent-reference-eta-endpoints-all-forecast-n-v1"
+    ] = "k1-independent-reference-eta-endpoints-all-forecast-n-v1"
+    l2_debias_primary_sampling_target: Literal["iid-question-population-v1"] = (
+        "iid-question-population-v1"
+    )
+    fixed_case_l2_debias_role: Literal["stress-diagnostic-not-unbiased-v1"] = (
+        "stress-diagnostic-not-unbiased-v1"
+    )
 
     @staticmethod
     def _validate_probability_text(value: str, *, label: str) -> str:
@@ -359,6 +368,25 @@ def base_grid_cells(design: MetricLabDesign) -> tuple[BaseCellSpec, ...]:
                             )
                         )
     return tuple(cells)
+
+
+def question_population_stress_cells(
+    design: MetricLabDesign,
+) -> tuple[BaseCellSpec, ...]:
+    """Exact population-sampling stress inventory encoded by the design contract."""
+    if design.question_population_stress_policy != (
+        "k1-independent-reference-eta-endpoints-all-forecast-n-v1"
+    ):
+        raise ValueError("unsupported question-population stress policy")
+    etas = design.reference_flip_eta_floats
+    endpoint_etas = {min(etas), max(etas)}
+    return tuple(
+        cell
+        for cell in base_grid_cells(design)
+        if cell.k_within_item == 1
+        and not cell.shared_within_item
+        and cell.reference_flip_eta in endpoint_etas
+    )
 
 
 def ambiguity_grid_cells(design: MetricLabDesign) -> tuple[AmbiguityCellSpec, ...]:

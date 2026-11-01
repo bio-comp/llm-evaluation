@@ -194,3 +194,26 @@ def test_uncertainty_and_independent_unit_policies_are_identity_bearing() -> Non
         update={"calibration_independent_unit_policy": "different-policy"}
     )
     assert canonical_record_hash(changed) != baseline
+
+
+def test_question_population_stress_inventory_is_exact_and_identity_bearing() -> None:
+    from llm_evaluation.metric_lab_design import question_population_stress_cells
+
+    design = MetricLabDesign()
+    cells = question_population_stress_cells(design)
+    assert len(cells) == 4 * 3 * 2 == 24
+    assert len({cell.cell_key for cell in cells}) == 24
+    assert all(cell.k_within_item == 1 for cell in cells)
+    assert all(cell.shared_within_item is False for cell in cells)
+    assert {cell.reference_flip_eta for cell in cells} == {0.0, 0.2}
+    assert design.question_population_stress_policy == (
+        "k1-independent-reference-eta-endpoints-all-forecast-n-v1"
+    )
+    assert design.l2_debias_primary_sampling_target == "iid-question-population-v1"
+    assert design.fixed_case_l2_debias_role == "stress-diagnostic-not-unbiased-v1"
+
+    baseline = canonical_record_hash(design)
+    changed = design.model_copy(
+        update={"question_population_stress_policy": "different-policy"}
+    )
+    assert canonical_record_hash(changed) != baseline
