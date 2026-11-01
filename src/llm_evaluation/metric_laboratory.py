@@ -6,6 +6,7 @@ and Research/METRIC_VALIDITY_AND_MEASUREMENT.md.
 
 from __future__ import annotations
 
+import bisect
 import math
 import random
 from dataclasses import dataclass
@@ -117,65 +118,169 @@ def fixed_bin_ece(
     return ece, details
 
 
+def _equal_mass_boundaries(forecasts: Sequence[float], num_bins: int) -> list[float]:
+    """Return deterministic equal-mass boundaries without splitting equal scores.
+
+    This follows the boundary construction used by the reference implementation
+    accompanying Kumar, Liang, and Ma (NeurIPS 2019): sort scores, make
+    approximately equal-count chunks, put boundaries halfway between adjacent
+    chunks, deduplicate coincident boundaries, and include 1.0 as the terminal
+    boundary.  Assigning with ``bisect_left`` keeps an identical score value in
+    exactly one bin even when it straddles a requested equal-count split.
+    """
+    if not forecasts:
+        raise ValueError("forecasts must be non-empty")
+    if num_bins < 1:
+        raise ValueError("num_bins must be positive")
+    if any(not 0.0 <= float(q) <= 1.0 for q in forecasts):
+        raise ValueError("forecasts must be in [0, 1]")
+
+    values = sorted(float(q) for q in forecasts)
+    bins = min(num_bins, len(values))
+    base, remainder = divmod(len(values), bins)
+    chunks: list[list[float]] = []
+    start = 0
+    for index in range(bins):
+        size = base + (1 if index < remainder else 0)
+        chunks.append(values[start : start + size])
+        start += size
+
+    boundaries: list[float] = []
+    for left, right in zip(chunks, chunks[1:], strict=False):
+        boundaries.append((left[-1] + right[0]) / 2.0)
+    boundaries.append(1.0)
+    return sorted(set(boundaries))
+
+
 def equal_mass_ece(
     forecasts: Sequence[float],
     outcomes: Sequence[int | float],
     num_bins: int = 10,
 ) -> tuple[float, list[BinDetail]]:
-    """Compute adaptive quantile equal-mass Expected Calibration Error (ECE)."""
+    """Compute tie-preserving equal-mass binned L1 calibration error.
+
+    Requested equal counts are secondary to score identity: identical forecast
+    values are never split across bins merely to achieve equal cardinality.
+    """
     if len(forecasts) != len(outcomes) or not forecasts:
         raise ValueError("forecasts and outcomes must have equal non-zero length")
-    if num_bins < 1:
-        raise ValueError("num_bins must be positive")
-
+    boundaries = _equal_mass_boundaries(forecasts, num_bins)
     n = len(forecasts)
-    paired = sorted(zip(forecasts, outcomes, strict=True), key=lambda x: x[0])
+    bin_confs: list[list[float]] = [[] for _ in boundaries]
+    bin_accs: list[list[float]] = [[] for _ in boundaries]
+
+    for q_raw, y_raw in zip(forecasts, outcomes, strict=True):
+        q = float(q_raw)
+        idx = bisect.bisect_left(boundaries, q)
+        if idx >= len(boundaries):
+            idx = len(boundaries) - 1
+        bin_confs[idx].append(q)
+        bin_accs[idx].append(float(y_raw))
+
     details: list[BinDetail] = []
     ece = 0.0
-
-    chunk_size = n // num_bins
-    remainder = n % num_bins
-
-    start = 0
-    for b in range(num_bins):
-        size = chunk_size + (1 if b < remainder else 0)
-        end = start + size
-        bin_items = paired[start:end]
-        if bin_items:
-            m_conf = sum(x[0] for x in bin_items) / size
-            m_acc = sum(x[1] for x in bin_items) / size
-            gap = abs(m_acc - m_conf)
-            low = float(bin_items[0][0])
-            high = float(bin_items[-1][0])
-            ece += (size / n) * gap
+    lower = 0.0
+    for index, upper in enumerate(boundaries):
+        count = len(bin_confs[index])
+        if count:
+            mean_conf = sum(bin_confs[index]) / count
+            mean_acc = sum(bin_accs[index]) / count
+            gap = abs(mean_acc - mean_conf)
+            ece += count / n * gap
         else:
-            m_conf = 0.0
-            m_acc = 0.0
+            mean_conf = 0.0
+            mean_acc = 0.0
             gap = 0.0
-            low = 0.0
-            high = 0.0
-        details.append(BinDetail(b, low, high, size, m_conf, m_acc, gap))
-        start = end
-
+        details.append(BinDetail(index, lower, upper, count, mean_conf, mean_acc, gap))
+        lower = upper
     return ece, details
+
+
+def debiased_squared_l2_calibration_error(
+    forecasts: Sequence[float],
+    outcomes: Sequence[int | float],
+    num_bins: int = 10,
+) -> float:
+    """Kumar et al. unbiased estimator of *squared* binned L2 calibration error.
+
+    The raw estimator is allowed to be negative at finite sample sizes.  This is
+    important evidence rather than an error: clipping belongs only to the
+    square-root L2 presentation, not to the unbiased squared estimator itself.
+    Bins with fewer than two observations contribute zero, matching the
+    accompanying reference implementation's convention.
+    """
+    if len(forecasts) != len(outcomes) or not forecasts:
+        raise ValueError("forecasts and outcomes must have equal non-zero length")
+    _, details = fixed_bin_ece(forecasts, outcomes, num_bins=num_bins)
+    n = len(forecasts)
+    total = 0.0
+    for detail in details:
+        if detail.count < 2:
+            continue
+        raw_squared_gap = (detail.mean_conf - detail.mean_acc) ** 2
+        bernoulli_variance = (
+            detail.mean_acc * (1.0 - detail.mean_acc) / (detail.count - 1.0)
+        )
+        total += detail.count / n * (raw_squared_gap - bernoulli_variance)
+    return total
+
+
+def debiased_l2_calibration_error(
+    forecasts: Sequence[float],
+    outcomes: Sequence[int | float],
+    num_bins: int = 10,
+) -> float:
+    """Non-negative L2 presentation of the unbiased squared estimator."""
+    squared = debiased_squared_l2_calibration_error(
+        forecasts, outcomes, num_bins=num_bins
+    )
+    return math.sqrt(max(squared, 0.0))
 
 
 def debiased_ece(
     forecasts: Sequence[float],
     outcomes: Sequence[int | float],
     num_bins: int = 10,
+    *,
+    seed: int = 0,
+    resamples: int = 1000,
 ) -> float:
-    """Compute finite-sample debiased calibration error adjustment."""
-    _, details = fixed_bin_ece(forecasts, outcomes, num_bins=num_bins)
+    """Seeded normal-resampling bias correction for L1 binned ECE.
+
+    This is the separate L1/ECE correction used by the Kumar et al. reference
+    implementation; it is *not* the provably unbiased squared-L2 estimator.
+    The explicit seed removes hidden global-RNG state from evaluation evidence.
+    Empty or singleton bins are rejected because the normal approximation is not
+    defined as a defensible correction there.
+    """
+    if len(forecasts) != len(outcomes) or not forecasts:
+        raise ValueError("forecasts and outcomes must have equal non-zero length")
+    if type(seed) is not int:
+        raise TypeError("seed must be an exact integer")
+    if type(resamples) is not int or resamples < 1:
+        raise ValueError("resamples must be a positive integer")
+
+    plugin, details = fixed_bin_ece(forecasts, outcomes, num_bins=num_bins)
+    if any(detail.count <= 1 for detail in details):
+        raise ValueError(
+            "every fixed-width bin must contain at least two observations for "
+            "normal-resampling ECE debiasing"
+        )
+
+    rng = random.Random(seed)
     n = len(forecasts)
-    total = 0.0
-    for b in details:
-        if b.count > 1:
-            raw_sq = (b.mean_acc - b.mean_conf) ** 2
-            penalty = (b.mean_acc * (1.0 - b.mean_acc)) / (b.count - 1)
-            unbiased_sq = max(0.0, raw_sq - penalty)
-            total += (b.count / n) * math.sqrt(unbiased_sq)
-    return total
+    total_resampled = 0.0
+    for _ in range(resamples):
+        resampled = 0.0
+        for detail in details:
+            std_error = math.sqrt(
+                detail.mean_acc * (1.0 - detail.mean_acc) / detail.count
+            )
+            sampled_acc = rng.gauss(detail.mean_acc, std_error)
+            resampled += detail.count / n * abs(sampled_acc - detail.mean_conf)
+        total_resampled += resampled
+    mean_resampled = total_resampled / resamples
+    return 2.0 * plugin - mean_resampled
 
 
 def population_ece(
@@ -440,6 +545,26 @@ def compute_cluster_vs_naive_se(
 # ==============================================================================
 
 
+def binary_decision(
+    forecast: float,
+    *,
+    threshold: float = 0.5,
+    tie_break: Literal["positive", "negative"] = "positive",
+) -> int:
+    """Convert a probability to a binary decision under an explicit tie rule."""
+    if not 0.0 <= forecast <= 1.0:
+        raise ValueError("forecast must be in [0, 1]")
+    if not 0.0 <= threshold <= 1.0:
+        raise ValueError("threshold must be in [0, 1]")
+    if tie_break not in {"positive", "negative"}:
+        raise ValueError("tie_break must be 'positive' or 'negative'")
+    if forecast > threshold:
+        return 1
+    if forecast < threshold:
+        return 0
+    return 1 if tie_break == "positive" else 0
+
+
 def compute_forecast(p: float, kind: str) -> float:
     """Compute forecast q from clean p under the 4 declared forecast models."""
     if kind == "oracle":
@@ -567,7 +692,7 @@ def evaluate_replicate(
 
     # For AURC, error indicator is |y_obs - round(q)|
     binary_errors = [
-        1 if int(round(q)) != y else 0
+        1 if binary_decision(q) != y else 0
         for q, y in zip(forecasts, observed_labels, strict=True)
     ]
     # Confidence is max(q, 1-q)

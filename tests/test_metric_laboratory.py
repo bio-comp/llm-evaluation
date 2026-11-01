@@ -12,6 +12,9 @@ from llm_evaluation.metric_laboratory import (
     fixed_bin_ece,
     equal_mass_ece,
     debiased_ece,
+    debiased_squared_l2_calibration_error,
+    debiased_l2_calibration_error,
+    binary_decision,
     population_ece,
     mean_prefix_risk,
     empirical_aurc_harmonic,
@@ -87,12 +90,61 @@ class TestCalibrationEstimators:
         assert all(b.count == 5 for b in bins)
         assert 0.0 <= ece <= 1.0
 
-    def test_debiased_ece(self):
-        forecasts = [0.5] * 20
-        outcomes = [1] * 10 + [0] * 10
-        # Perfectly calibrated sample, debiased ECE should be 0.0 (non-negative floor)
-        deb_ece = debiased_ece(forecasts, outcomes, num_bins=2)
-        assert math.isclose(deb_ece, 0.0, abs_tol=1e-9)
+    def test_debiased_l2_matches_kumar_unbiased_squared_definition(self):
+        forecasts = [0.5] * 4
+        outcomes = [1, 1, 0, 0]
+        # Kumar et al. Definition 5.2 subtracts the Bernoulli variance term from
+        # the squared bin gap.  With mean label == mean forecast == 0.5, the
+        # unbiased squared estimate is negative rather than silently truncated.
+        expected_squared = -(0.5 * 0.5) / (4 - 1)
+        squared = debiased_squared_l2_calibration_error(forecasts, outcomes, num_bins=1)
+        assert math.isclose(squared, expected_squared, rel_tol=1e-12)
+        assert debiased_l2_calibration_error(forecasts, outcomes, num_bins=1) == 0.0
+
+    def test_debiased_l2_positive_case_matches_exact_formula(self):
+        forecasts = [0.2] * 4
+        outcomes = [1, 1, 1, 1]
+        assert math.isclose(
+            debiased_squared_l2_calibration_error(forecasts, outcomes, num_bins=1),
+            0.64,
+            rel_tol=1e-12,
+        )
+        assert math.isclose(
+            debiased_l2_calibration_error(forecasts, outcomes, num_bins=1),
+            0.8,
+            rel_tol=1e-12,
+        )
+
+    def test_debiased_ece_is_explicit_seeded_l1_normal_bias_correction(self):
+        forecasts = [0.2, 0.2, 0.8, 0.8]
+        outcomes = [1, 1, 0, 0]
+        # Zero within-bin Bernoulli variance makes the normal-resampling
+        # correction reduce exactly to the L1 plugin ECE here.
+        assert math.isclose(
+            debiased_ece(forecasts, outcomes, num_bins=2, seed=17, resamples=50),
+            0.8,
+            rel_tol=1e-12,
+        )
+        variable_forecasts = [0.2] * 4 + [0.8] * 4
+        variable_outcomes = [0, 1, 0, 1, 1, 0, 1, 0]
+        first = debiased_ece(
+            variable_forecasts, variable_outcomes, num_bins=2, seed=19, resamples=100
+        )
+        second = debiased_ece(
+            variable_forecasts, variable_outcomes, num_bins=2, seed=19, resamples=100
+        )
+        assert first == second
+
+    def test_equal_mass_binning_does_not_split_identical_forecast_ties(self):
+        forecasts = [0.2] * 4 + [0.8] * 4
+        outcomes = [0, 1, 0, 1, 0, 1, 0, 1]
+        _, bins = equal_mass_ece(forecasts, outcomes, num_bins=4)
+        nonempty = [b for b in bins if b.count]
+        # A tied score value must belong to one bin, not be split solely to hit a
+        # requested equal-count target.  Two unique scores therefore imply no
+        # more than two non-empty bins.
+        assert len(nonempty) <= 2
+        assert sorted(b.count for b in nonempty) == [4, 4]
 
 
 class TestAURCAndLE103Gate:
@@ -229,6 +281,12 @@ class TestCandidateSimulationGrid:
         assert 0.0 <= rep.aurc <= 1.0
         assert rep.item_cluster_se >= 0.0
         assert rep.naive_row_se >= 0.0
+
+    def test_binary_decision_uses_explicit_positive_tie_at_half(self):
+        assert binary_decision(0.499999) == 0
+        assert binary_decision(0.5) == 1
+        assert binary_decision(0.500001) == 1
+        assert binary_decision(0.5, tie_break="negative") == 0
 
     def test_forecast_generation_kinds(self):
         p = 0.7
