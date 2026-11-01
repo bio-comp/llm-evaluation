@@ -64,6 +64,9 @@ class ResourceLease:
     def __exit__(self, *args: object) -> None:
         self.close()
 
+    def __del__(self) -> None:
+        self.close()
+
 
 def acquire_resource_lease(root: Path | str, resource: str) -> ResourceLease:
     resource = canonical_resource(resource)

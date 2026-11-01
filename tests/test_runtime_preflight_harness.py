@@ -90,6 +90,8 @@ def test_conflict_records_zero_launches(fake, monkeypatch):
     )
     record = run_preflight(**fake)
     assert record.status == "incomplete" and record.budget.server_launches == 0
+    assert record.failure_stage == "external_conflict"
+    assert record.failure_code == "resource_busy"
 
 
 def test_failed_start_preserves_attempt_count_and_failure(fake):

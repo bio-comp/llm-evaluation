@@ -635,6 +635,9 @@ def run_preflight(
             else:
                 progress["cleanup_status"] = "verified"
                 progress.setdefault("gates", {})["cleanup"] = True
+    elif status != "failed":
+        progress["failure_stage"] = "external_conflict"
+        progress["failure_code"] = "resource_busy"
     data = _snapshot(progress)
     if status == "passed" and not all(v is True for v in data["gates"].model_dump().values()):
         status = "failed"

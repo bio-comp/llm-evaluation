@@ -53,14 +53,10 @@ def build_structured_output_contract(
             raise ValueError("exact build supports bounds only for integer schemas")
         if s.get("type") == "object" and s.get("additionalProperties") is not False:
             raise ValueError("closed objects required")
-        for key in ("properties", "$defs"):
-            for child in s.get(key, {}).values():
-                check(child)
+        for child in s.get("properties", {}).values():
+            check(child)
         if "items" in s:
             check(s["items"])
-        for key in ("anyOf", "oneOf"):
-            for child in s.get(key, []):
-                check(child)
 
     check(schema)
     wire = canonical_json_bytes(schema)
