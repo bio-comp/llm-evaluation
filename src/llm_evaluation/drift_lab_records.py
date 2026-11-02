@@ -73,12 +73,14 @@ def _decimal_map(value: dict[str, str], *, label: str, probability: bool = False
 
 class DriftOutcomeSummaryRecord(_StrictFrozenRecord):
     record_type: Literal["e004_drift_outcome_summary"] = "e004_drift_outcome_summary"
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     matched_policy_false_alarm: dict[str, str]
     psi_heuristic_null_false_alarm: dict[str, str]
     psi_calibrated_null_false_alarm: dict[str, str]
     distribution_only_adjusted_process_alarm: str
     distribution_only_raw_process_alarm: str
+    process_only_adjusted_distribution_alarm: str
+    process_only_raw_distribution_alarm: str
     adjusted_typed_accuracy: dict[str, str]
     raw_typed_accuracy: dict[str, str]
     variable_denominator_fixed_n_shewhart_false_alarm: str
@@ -106,6 +108,8 @@ class DriftOutcomeSummaryRecord(_StrictFrozenRecord):
     @field_validator(
         "distribution_only_adjusted_process_alarm",
         "distribution_only_raw_process_alarm",
+        "process_only_adjusted_distribution_alarm",
+        "process_only_raw_distribution_alarm",
         "variable_denominator_fixed_n_shewhart_false_alarm",
         "variable_denominator_adjusted_shewhart_false_alarm",
         "overdispersion_adjusted_ewma_false_alarm",
@@ -137,7 +141,7 @@ class DriftOutcomeSummaryRecord(_StrictFrozenRecord):
 
 class ScenarioPolicyOutcomeRecord(_StrictFrozenRecord):
     record_type: Literal["e004_scenario_policy_outcome"] = "e004_scenario_policy_outcome"
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     scenario: str
     policy: str
     horizon_alarm_successes: int
@@ -206,10 +210,19 @@ class ScenarioPolicyOutcomeRecord(_StrictFrozenRecord):
     def _consistent(self) -> Self:
         if self.trials < 1 or self.horizon_alarm_successes > self.trials:
             raise ValueError("scenario-policy outcome requires 0 <= successes <= trials")
-        if Decimal(self.horizon_alarm_wilson_lower) > Decimal(self.horizon_alarm_probability):
+        horizon_probability = Decimal(self.horizon_alarm_probability)
+        expected_horizon_probability = Decimal(self.horizon_alarm_successes) / Decimal(self.trials)
+        if abs(horizon_probability - expected_horizon_probability) > Decimal("1e-12"):
+            raise ValueError("horizon alarm probability is inconsistent with horizon successes/trials")
+        if Decimal(self.horizon_alarm_wilson_lower) > horizon_probability:
             raise ValueError("horizon Wilson lower bound exceeds estimate")
-        if Decimal(self.horizon_alarm_wilson_upper) < Decimal(self.horizon_alarm_probability):
+        if Decimal(self.horizon_alarm_wilson_upper) < horizon_probability:
             raise ValueError("horizon Wilson upper bound is below estimate")
+        prechange_probability = Decimal(self.prechange_alarm_probability)
+        if Decimal(self.prechange_alarm_wilson_lower) > prechange_probability:
+            raise ValueError("prechange Wilson lower bound exceeds estimate")
+        if Decimal(self.prechange_alarm_wilson_upper) < prechange_probability:
+            raise ValueError("prechange Wilson upper bound is below estimate")
         optional_post_probabilities = (
             self.postchange_detection_probability,
             self.postchange_detection_wilson_lower,
@@ -222,6 +235,12 @@ class ScenarioPolicyOutcomeRecord(_StrictFrozenRecord):
         if self.postchange_detection_probability is not None:
             assert self.missed_detection_probability is not None
             detection = Decimal(self.postchange_detection_probability)
+            assert self.postchange_detection_wilson_lower is not None
+            assert self.postchange_detection_wilson_upper is not None
+            if Decimal(self.postchange_detection_wilson_lower) > detection:
+                raise ValueError("postchange Wilson lower bound exceeds estimate")
+            if Decimal(self.postchange_detection_wilson_upper) < detection:
+                raise ValueError("postchange Wilson upper bound is below estimate")
             if abs(detection + Decimal(self.missed_detection_probability) - Decimal("1")) > Decimal("1e-12"):
                 raise ValueError("post-change detection and missed-detection probabilities must sum to one")
             if detection > 0 and self.median_postchange_delay_weeks is None:
@@ -302,7 +321,7 @@ class DriftFinalRunRecord(_StrictFrozenRecord):
     canonical_identity_domain: ClassVar[str] = "llm-evaluation.e004-drift-final-run"
     canonical_identity_version: ClassVar[int] = 1
     record_type: Literal["e004_drift_final_run"] = "e004_drift_final_run"
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     design_sha256: str
     frozen_design_sha256: str
     calibration_record_sha256: str

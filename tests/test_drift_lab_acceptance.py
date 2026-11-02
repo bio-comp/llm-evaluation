@@ -22,6 +22,8 @@ def passing_summary() -> DriftOutcomeSummaryRecord:
         psi_calibrated_null_false_alarm={"100": "0.05", "200": "0.05", "1000": "0.05"},
         distribution_only_adjusted_process_alarm="0.08",
         distribution_only_raw_process_alarm="0.90",
+        process_only_adjusted_distribution_alarm="0.05",
+        process_only_raw_distribution_alarm="0.05",
         adjusted_typed_accuracy={
             "stable/stable": "0.95",
             "distribution_only": "0.95",

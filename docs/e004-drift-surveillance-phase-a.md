@@ -16,7 +16,7 @@ Stress controls cover gradual degradation, a four-week temporary excursion, deno
 
 Distribution channels are two-bin PSI with pseudocount 0.5 and a two-sample Pearson 2×2 statistic. PSI=0.10 is retained only as a fixed-threshold negative control; matched comparisons use simulation-calibrated thresholds.
 
-Process channels use one-sided standardized worsening-error residuals. Raw aggregate EWMA deliberately remains vulnerable to case-mix confounding. Adjusted EWMA, adjusted CUSUM (k=0.5), and adjusted Shewhart use finite-baseline stratum-specific error estimates and current observed stratum membership. A fixed-average-n Shewhart chart is a denominator-misspecification negative control.
+Process channels use one-sided standardized worsening-error residuals. Raw aggregate EWMA deliberately remains vulnerable to case-mix confounding. Adjusted EWMA, adjusted CUSUM (k=0.5), and adjusted Shewhart use finite-baseline stratum-specific error estimates and current observed stratum membership. The fixed-average-n Shewhart negative control uses the same case-mix-adjusted observed-minus-expected rate residual but incorrectly fixes the variance denominator at n=200, isolating denominator misspecification rather than reintroducing case-mix confounding.
 
 The seven matched-budget policies are PSI-only, Pearson-only, adjusted-EWMA-only, adjusted-CUSUM-only, PSI+raw-EWMA, PSI+adjusted-EWMA, and PSI+adjusted-CUSUM. Layered outputs preserve typed `none`, `distribution`, `process`, and `both` states; they do not collapse the two estimands into one score.
 
@@ -30,7 +30,7 @@ All matched policies target a 0.05 family alert probability over the 52-look hor
 
 Calibration and FINAL evidence use versioned immutable records. Quantitative persisted values are decimal text rather than binary floating-point scalars so canonical record identities remain exact. Finalized records bind the exact design, frozen-design record, Git software identity, package-source digest, Python runtime, immutable readback, and—during FINAL—the exact finalized DEVELOPMENT calibration identity.
 
-FINAL retains gate-level outcomes plus scenario×policy operating characteristics: horizon alarm probability with Wilson 95% interval, pre-change alarm probability, post-change detection probability with Wilson interval, missed detection, first-alarm timing, conditional post-change delay, and alarm burden.
+FINAL retains gate-level outcomes plus scenario×policy operating characteristics: horizon alarm probability with Wilson 95% interval, pre-change alarm probability, post-change detection probability with Wilson interval, missed detection, first-alarm timing, conditional post-change delay, and alarm burden. The v2 outcome summary also retains both cross-channel attribution controls: false process alarms under distribution-only shift and false distribution alarms under process-only degradation. Realized generated-case accounting reflects the actual generator calls performed by the implementation, including deterministic repeated calls used by the separate gate-summary and scenario-reporting passes.
 
 ## Executable gates
 

@@ -29,6 +29,8 @@ def _summary() -> DriftOutcomeSummaryRecord:
         psi_calibrated_null_false_alarm={"100": "0.05", "200": "0.05", "1000": "0.05"},
         distribution_only_adjusted_process_alarm="0.05",
         distribution_only_raw_process_alarm="0.90",
+        process_only_adjusted_distribution_alarm="0.05",
+        process_only_raw_distribution_alarm="0.05",
         adjusted_typed_accuracy={"stable/stable": "0.95", "distribution_only": "0.95", "process_only": "0.85", "both": "0.85"},
         raw_typed_accuracy={"stable/stable": "0.70", "distribution_only": "0.60", "process_only": "0.70", "both": "0.70"},
         variable_denominator_fixed_n_shewhart_false_alarm="0.25",
@@ -288,3 +290,69 @@ def test_final_record_rejects_incomplete_scenario_policy_inventory() -> None:
             package_source_sha256=None,
             python_version="3.11.13",
         )
+
+
+def test_scenario_policy_outcome_rejects_horizon_probability_inconsistent_with_counts() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="horizon.*successes|successes.*horizon"):
+        ScenarioPolicyOutcomeRecord(
+            scenario="stable/stable",
+            policy="psi_only",
+            horizon_alarm_successes=80,
+            trials=100,
+            horizon_alarm_probability="0.70",
+            horizon_alarm_wilson_lower="0.60",
+            horizon_alarm_wilson_upper="0.80",
+            prechange_alarm_probability="0.70",
+            prechange_alarm_wilson_lower="0.60",
+            prechange_alarm_wilson_upper="0.80",
+            postchange_detection_probability=None,
+            postchange_detection_wilson_lower=None,
+            postchange_detection_wilson_upper=None,
+            missed_detection_probability=None,
+            median_first_alarm_week="20",
+            median_postchange_delay_weeks=None,
+            mean_alarm_weeks="1.0",
+        )
+
+
+def test_hardened_e004_record_versions_reject_old_public_shapes() -> None:
+    from canonical_sync.codec import canonical_record_bytes, parse_canonical_record
+    from pydantic import ValidationError
+
+    summary = _summary()
+    detail = _detail()
+    design = DriftLabDesign()
+    frozen = freeze_drift_lab_design(design)
+    calibration = DriftCalibrationRecord(
+        design_sha256=canonical_record_hash(design),
+        frozen_design_sha256=canonical_record_hash(frozen),
+        development_paths=20_000,
+        thresholds={"psi": "1"},
+        layered_component_tail_probability={"layered_raw": "0.02"},
+        development_family_false_alarm={"psi_only": "0.05"},
+        software_commit="a" * 40,
+        package_source_sha256="b" * 64,
+        python_version="3.11.13",
+    )
+    final = DriftFinalRunRecord(
+        design_sha256=canonical_record_hash(design),
+        frozen_design_sha256=canonical_record_hash(frozen),
+        calibration_record_sha256=canonical_record_hash(calibration),
+        final_paths_per_scenario=20_000,
+        outcomes=summary,
+        scenario_policy_outcomes=_details(),
+        realized_cases=5_611_000_000,
+        runtime_seconds="1",
+        software_commit="a" * 40,
+        package_source_sha256="b" * 64,
+        python_version="3.11.13",
+    )
+    assert DriftOutcomeSummaryRecord.model_fields["schema_version"].default == 2
+    assert ScenarioPolicyOutcomeRecord.model_fields["schema_version"].default == 2
+    assert DriftFinalRunRecord.model_fields["schema_version"].default == 2
+    for record in (summary, detail, final):
+        old = record.model_copy(update={"schema_version": 1})
+        with pytest.raises(ValidationError):
+            parse_canonical_record(canonical_record_bytes(old), type(record))

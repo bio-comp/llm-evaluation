@@ -43,3 +43,14 @@ def test_scientific_phases_require_explicit_frozen_design_path() -> None:
         main(["--phase", "development", "--output", "unused.json"])
     with pytest.raises(SystemExit, match="--frozen-design is required"):
         main(["--phase", "final", "--calibration", "unused.json", "--output", "unused2.json"])
+
+
+def test_realized_final_case_count_matches_actual_current_generator_calls() -> None:
+    from llm_evaluation.drift_lab_cli import _realized_final_cases
+    from llm_evaluation.drift_lab_design import DriftLabDesign, freeze_drift_lab_design
+
+    frozen = freeze_drift_lab_design(DriftLabDesign())
+    # FINAL summary generates 6 core paths + variable-denominator + 3 PSI-null
+    # paths per replicate; scenario-policy reporting separately regenerates 7 core paths.
+    # Count actual generated cases, including those deterministic repeated calls.
+    assert _realized_final_cases(frozen) == 5_611_000_000

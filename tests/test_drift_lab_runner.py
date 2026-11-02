@@ -283,3 +283,48 @@ def test_tiny_scenario_policy_reporting_includes_temporal_stresses_and_wilson_bo
         lower = float(item.horizon_alarm_wilson_lower)
         upper = float(item.horizon_alarm_wilson_upper)
         assert 0.0 <= lower <= estimate <= upper <= 1.0
+
+
+def test_fixed_average_n_shewhart_is_case_mix_adjusted_and_isolates_denominator_misspecification() -> None:
+    from llm_evaluation.drift_lab_runner import (
+        GeneratedPath,
+        StratumCounts,
+        WeekObservation,
+        compute_path_monitoring_series,
+    )
+
+    design = DriftLabDesign()
+    baseline = StratumCounts(a_cases=3200, b_cases=800, a_errors=160, b_errors=160)
+    # n=100 with a pure case-mix shift to 40/60 and exactly the baseline
+    # conditional errors: A=2/40=.05, B=12/60=.20. An adjusted residual is zero.
+    week = WeekObservation(
+        a_cases=40,
+        b_cases=60,
+        a_errors=2,
+        b_errors=12,
+        week=1,
+        truth_b_probability=0.60,
+        truth_a_error=0.05,
+        truth_b_error=0.20,
+    )
+    path = GeneratedPath(
+        phase=DriftLabPhase.FINAL,
+        scenario="variable_denominator_stable",
+        replicate_index=0,
+        seed=1,
+        baseline=baseline,
+        weeks=(week,),
+    )
+    series = compute_path_monitoring_series(design, path)
+    assert series.adjusted_shewhart == pytest.approx((0.0,), abs=1e-15)
+    assert series.fixed_average_n_shewhart == pytest.approx((0.0,), abs=1e-15)
+
+
+def test_final_summary_retains_process_only_false_distribution_attribution_rates() -> None:
+    from llm_evaluation.drift_lab_runner import run_development_calibration, run_final_summary
+
+    design = DriftLabDesign()
+    calibration = run_development_calibration(design, path_count=40)
+    summary = run_final_summary(design, calibration=calibration, path_count=40)
+    assert 0.0 <= float(summary.process_only_adjusted_distribution_alarm) <= 1.0
+    assert 0.0 <= float(summary.process_only_raw_distribution_alarm) <= 1.0

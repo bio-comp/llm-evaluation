@@ -43,13 +43,16 @@ def _load_frozen_design(path: Path) -> FrozenDriftLabDesignRecord:
 def _realized_final_cases(frozen: FrozenDriftLabDesignRecord) -> int:
     design = frozen.design
     core = design.baseline_cases + design.looks * design.core_weekly_cases
-    primary_and_core_stress = 8 * core  # 4 primary + gradual + temporary + overdispersion + localized
+    # run_final_summary generates 6 core paths per replicate (4 primary,
+    # overdispersion, localized). run_scenario_policy_reporting separately
+    # generates 7 core paths (4 primary, gradual, temporary, localized).
+    actual_core_generator_calls = 13 * core
     variable = design.baseline_cases + (design.looks // 4) * sum(design.variable_denominators)
     psi_null = sum(
         design.baseline_cases + design.looks * weekly_cases
         for weekly_cases in design.psi_null_weekly_cases
     )
-    return design.final_paths_per_scenario * (primary_and_core_stress + variable + psi_null)
+    return design.final_paths_per_scenario * (actual_core_generator_calls + variable + psi_null)
 
 
 def _parser() -> argparse.ArgumentParser:
