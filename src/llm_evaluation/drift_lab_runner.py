@@ -332,13 +332,20 @@ def compute_path_monitoring_series(
                 baseline_stratum_error_rates=(baseline.a_error_rate, baseline.b_error_rate),
             )
         )
-        standard_error = math.sqrt(
-            baseline.aggregate_error_rate
-            * (1.0 - baseline.aggregate_error_rate)
-            / design.core_weekly_cases
+        expected_rate = (
+            week.a_cases * baseline.a_error_rate + week.b_cases * baseline.b_error_rate
+        ) / week.total_cases
+        variance_per_case = (
+            (week.a_cases / week.total_cases)
+            * baseline.a_error_rate
+            * (1.0 - baseline.a_error_rate)
+            + (week.b_cases / week.total_cases)
+            * baseline.b_error_rate
+            * (1.0 - baseline.b_error_rate)
         )
+        fixed_n_standard_error = math.sqrt(variance_per_case / design.core_weekly_cases)
         fixed_n_residuals.append(
-            (week.total_errors / week.total_cases - baseline.aggregate_error_rate) / standard_error
+            (week.total_errors / week.total_cases - expected_rate) / fixed_n_standard_error
         )
         if week.b_cases == 0:
             b_residuals.append(0.0)
@@ -686,6 +693,19 @@ def run_final_summary(
             for item in distribution_stats
         ]
     )
+    process_stats = primary_stats["process_only"]
+    adjusted_distribution_alarm = _rate(
+        [
+            item.max_psi > calibration.thresholds["layered_adjusted_ewma.distribution"]
+            for item in process_stats
+        ]
+    )
+    raw_distribution_alarm = _rate(
+        [
+            item.max_psi > calibration.thresholds["layered_raw.distribution"]
+            for item in process_stats
+        ]
+    )
 
     variable = [
         compute_path_statistics(
@@ -759,6 +779,10 @@ def run_final_summary(
         },
         distribution_only_adjusted_process_alarm=_decimal_probability(adjusted_process_alarm),
         distribution_only_raw_process_alarm=_decimal_probability(raw_process_alarm),
+        process_only_adjusted_distribution_alarm=_decimal_probability(
+            adjusted_distribution_alarm
+        ),
+        process_only_raw_distribution_alarm=_decimal_probability(raw_distribution_alarm),
         adjusted_typed_accuracy={
             key: _decimal_probability(value) for key, value in adjusted_accuracy.items()
         },
