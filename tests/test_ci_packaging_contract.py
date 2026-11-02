@@ -14,3 +14,9 @@ def test_root_wheel_dependencies_are_prefetched_before_offline_install() -> None
     assert prefetch in workflow
     assert offline_install in workflow
     assert workflow.index(prefetch) < workflow.index(offline_install)
+
+
+def test_metric_lab_installed_entrypoint_is_exercised_in_ci() -> None:
+    workflow = Path(".github/workflows/ci.yml").read_text()
+    assert '"$build_dir/venv-root/bin/llm-evaluation-metric-lab" --help' in workflow
+    assert 'grep -q "known-truth metric/reference-error" "$build_dir/metric-lab-help.txt"' in workflow

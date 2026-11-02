@@ -22,6 +22,7 @@ local-auth = [
 [project.scripts]
 llm-evaluation = "llm_evaluation.cli:main"
 llm-evaluation-stopping = "llm_evaluation.stopping_cli:main"
+llm-evaluation-metric-lab = "llm_evaluation.metric_lab_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/llm_evaluation"]

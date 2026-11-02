@@ -118,7 +118,7 @@ class MetricLabDesign(_StrictFrozenRecord):
     record_type: Literal["known_truth_metric_lab_design"] = (
         "known_truth_metric_lab_design"
     )
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     acceptance: MetricLabAcceptanceCriteria = Field(default_factory=MetricLabAcceptanceCriteria)
 
     p_values: tuple[str, ...] = ("0.01", "0.1", "0.3", "0.5", "0.7", "0.9", "0.99")
@@ -150,7 +150,7 @@ class MetricLabDesign(_StrictFrozenRecord):
         "0.99",
     )
     ambiguity_n_items: tuple[int, ...] = (50, 200, 1000)
-    ambiguity_raters_per_item: tuple[int, ...] = (1, 3, 5)
+    ambiguity_raters_per_item: tuple[int, ...] = (1, 3, 9, 25)
     prevalence_values: tuple[str, ...] = ("0.01", "0.1", "0.5")
     prevalence_tpr: str = "0.9"
     prevalence_fpr: str = "0.01"
@@ -205,6 +205,11 @@ class MetricLabDesign(_StrictFrozenRecord):
     label_noise_identifiability_control_version: Literal[
         "symmetric-flip-two-solution-v1"
     ] = "symmetric-flip-two-solution-v1"
+    coverage_mc_interval_method: Literal["wilson95-v1"] = "wilson95-v1"
+    bias_mc_uncertainty_method: Literal["sample-se-replicate-estimates-v1"] = (
+        "sample-se-replicate-estimates-v1"
+    )
+    rmse_mc_uncertainty_method: Literal["delta-mse-v1"] = "delta-mse-v1"
 
     @staticmethod
     def _validate_probability_text(value: str, *, label: str) -> str:

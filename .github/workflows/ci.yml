@@ -77,6 +77,8 @@ jobs:
           python -c 'import json,sys; assert json.load(open(sys.argv[1]))["macro"]["marginal"] == 0.5' "$build_dir/preview.json"
           (unset PYTHONPATH; "$build_dir/venv-root/bin/llm-evaluation-stopping" > "$build_dir/stopping-preview.json")
           python -c 'import json,sys; assert json.load(open(sys.argv[1]))["record_type"] == "e002_stopping_simulation"' "$build_dir/stopping-preview.json"
+          (unset PYTHONPATH; "$build_dir/venv-root/bin/llm-evaluation-metric-lab" --help > "$build_dir/metric-lab-help.txt")
+          grep -q "known-truth metric/reference-error" "$build_dir/metric-lab-help.txt"
           if (unset PYTHONPATH; "$build_dir/venv-root/bin/llm-evaluation" fixtures/e002_synthetic.json --k 2 --output "$build_dir/wheel-output.json") >"$build_dir/wheel-error.log" 2>&1; then
             echo "installed wheel unexpectedly finalized" >&2
             exit 1

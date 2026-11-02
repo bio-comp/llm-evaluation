@@ -1,9 +1,11 @@
+from pathlib import Path
+import hashlib
 from collections import Counter
 
 import pytest
 from pydantic import ValidationError
 
-from canonical_sync.codec import canonical_record_hash
+from canonical_sync.codec import canonical_record_bytes, canonical_record_hash, parse_canonical_record
 from llm_evaluation.metric_lab_design import (
     FINAL_REPLICATES_PER_CELL,
     BaseCellSpec,
@@ -143,9 +145,9 @@ def test_auxiliary_grid_parameters_are_identity_bearing_and_enumerable() -> None
     design = MetricLabDesign()
     ambiguity = ambiguity_grid_cells(design)
     prevalence = prevalence_grid_cells(design)
-    assert len(ambiguity) == 4 * 3 * 3 == 36
-    assert len({cell.cell_key for cell in ambiguity}) == 36
-    assert {cell.raters_per_item for cell in ambiguity} == {1, 3, 5}
+    assert len(ambiguity) == 4 * 3 * 4 == 48
+    assert len({cell.cell_key for cell in ambiguity}) == 48
+    assert {cell.raters_per_item for cell in ambiguity} == {1, 3, 9, 25}
     assert {cell.n_items for cell in ambiguity} == {50, 200, 1000}
     assert {cell.forecast_kind for cell in ambiguity} == set(design.forecast_kinds)
     assert [cell.prevalence for cell in prevalence] == [0.01, 0.1, 0.5]
@@ -171,7 +173,7 @@ def test_design_hash_changes_when_auxiliary_or_operational_policy_changes() -> N
 
 def test_candidate_operational_and_sampling_policies_are_explicit() -> None:
     design = MetricLabDesign()
-    assert design.schema_version == 3
+    assert design.schema_version == 4
     assert design.l2_debias_method == "kumar-unbiased-squared-l2-v1"
     assert (
         design.l2_presentation_method
@@ -252,7 +254,7 @@ def test_negative_control_versions_are_identity_bearing() -> None:
 def test_acceptance_policy_is_explicit_and_identity_bearing() -> None:
     design = MetricLabDesign()
     criteria = design.acceptance
-    assert design.schema_version == 3
+    assert design.schema_version == 4
     assert criteria.schema_version == 1
     assert criteria.analytic_bias_mcse_multiplier == "4"
     assert criteria.analytic_bias_absolute_floor == "1e-10"
@@ -272,3 +274,32 @@ def test_acceptance_policy_is_explicit_and_identity_bearing() -> None:
         }
     )
     assert canonical_record_hash(changed) != baseline
+
+
+def test_monte_carlo_uncertainty_methods_are_identity_bearing() -> None:
+    design = MetricLabDesign()
+    assert design.coverage_mc_interval_method == "wilson95-v1"
+    assert design.bias_mc_uncertainty_method == "sample-se-replicate-estimates-v1"
+    assert design.rmse_mc_uncertainty_method == "delta-mse-v1"
+    baseline = canonical_record_hash(design)
+    changed = design.model_copy(update={"coverage_mc_interval_method": "different-method"})
+    assert canonical_record_hash(changed) != baseline
+
+
+def test_public_frozen_metric_lab_fixture_exactly_matches_reconciled_design() -> None:
+    fixture_path = Path("fixtures/known_truth_metric_lab_design.json")
+    payload = fixture_path.read_bytes()
+    record = parse_canonical_record(payload, FrozenMetricLabDesignRecord)
+    current = freeze_metric_lab_design(MetricLabDesign())
+
+    assert payload == canonical_record_bytes(record)
+    assert record == current
+    assert canonical_record_hash(record.design) == (
+        "9e02a784d8f6e14e3e046d5729d5a7a60ce9e0bf76ce88e19d87226058f653a7"
+    )
+    assert canonical_record_hash(record) == (
+        "acfd7fabe0cd03fb50f7f1a8145245e39b7afc211f68f05cc500b99190e550ba"
+    )
+    assert hashlib.sha256(payload).hexdigest() == (
+        "0d95648cfb4125cd09718e6092a225cc20e3913e65fd34005193783919c1d148"
+    )
