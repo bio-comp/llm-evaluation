@@ -259,6 +259,13 @@ The test has a deliberate counterfactual: mutate the authoritative public-safe p
 
 This proves the feedback mechanism without copying Drive narrative into Git or redesigning E-002.
 
+
+### Partial obligation completion and global checkpoint safety
+
+A source snapshot can contain several independent public/executable obligations with different implementation lifecycles. A verified PR/Git/CI transaction for one reviewed subset is therefore not sufficient evidence that the whole source snapshot is reconciled. Project-level persistence distinguishes these cases: subset completions are archived as exact, readback-verified partial receipts without moving `last-reconciled-state.json`; the global checkpoint advances only when a reviewed COMPLETE transaction explicitly covers the complete outstanding obligation set for that snapshot. Generic `canonical-sync` remains unchanged: this is consumer policy in `llm_evaluation`.
+
+A later semantic-discovery recovery uses the same evidence-first rule. If a current-schema checkpoint is proven to overstate scope, recovery must preserve the invalid bytes, bind both active and replacement raw/canonical identities, and restore only a replacement independently reconstructed or otherwise verified from authoritative evidence. Recovery never silently edits a receipt in place and never reinterprets the overbroad receipt as globally valid; the valid subset transaction can instead be retained separately as a partial completion receipt.
+
 ## 13. Local OAuth and live integration boundary
 
 The live integration test is project-specific and opt-in:
