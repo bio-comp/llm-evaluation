@@ -196,8 +196,8 @@ def test_preview_records_base_ambiguity_and_auxiliary_controls() -> None:
         phase=MetricLabPhase.DEVELOPMENT,
         cell_summaries=(base, ambiguity),
     )
-    assert preview.schema_version == 3
-    assert preview.auxiliary_controls.schema_version == 2
+    assert preview.schema_version == 4
+    assert preview.auxiliary_controls.schema_version == 3
     assert preview.cell_count == 2
     assert {cell.cell_kind for cell in preview.cells} == {"base", "ambiguity"}
     assert preview.realized_budget_by_unit == {"ratings": 48, "rows": 32}
@@ -222,3 +222,17 @@ def test_preview_records_base_ambiguity_and_auxiliary_controls() -> None:
     assert preview.auxiliary_controls.label_noise_candidate_clean_probabilities == (0.8, 0.9)
     assert preview.auxiliary_controls.label_noise_candidate_flip_rates == (0.1, 0.2)
     assert preview.auxiliary_controls.label_noise_nonidentifiable is True
+    assert preview.auxiliary_controls.reference_ranking_reversal["reversal_detected"] is True
+
+    base_record = next(cell for cell in preview.cells if cell.cell_kind == "base")
+    brier = base_record.targets[0].metrics["brier"]
+    assert brier.schema_version == 2
+    assert brier.bias_mc_se >= 0.0
+    assert brier.rmse_mc_se >= 0.0
+    assert brier.coverage_mc_lower is None
+    assert brier.coverage_mc_upper is None
+    interval_metric = base_record.targets[0].metrics["brier_cluster_interval"]
+    assert interval_metric.coverage_mc_lower is not None
+    assert interval_metric.coverage_mc_upper is not None
+    assert interval_metric.coverage_mc_lower <= interval_metric.interval_coverage
+    assert interval_metric.coverage_mc_upper >= interval_metric.interval_coverage

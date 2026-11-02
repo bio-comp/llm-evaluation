@@ -43,6 +43,7 @@ from llm_evaluation.metric_laboratory import (
     fixed_bin_ece,
     log_score,
     noisy_target_probability,
+    check_reference_ranking_reversal,
 )
 
 _NORMAL_95_Z = 1.959963984540054
@@ -101,6 +102,7 @@ class AuxiliaryDeterministicControls:
     aurc_defect_detected: bool
     positive_class_inversion: PositiveClassInversionControl
     label_noise_nonidentifiability: LabelNoiseNonidentifiabilityControl
+    reference_ranking_reversal: dict[str, float | bool]
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,7 +159,10 @@ class MetricMonteCarloSummary:
     bias: float
     rmse: float
     mc_se: float
+    bias_mc_se: float
+    rmse_mc_se: float
     interval_coverage: float | None
+    coverage_mc_interval: MeanInterval | None
     mean_interval_width: float | None
 
 
@@ -194,6 +199,30 @@ def _sample_standard_error(values: Sequence[float]) -> float:
     mean = sum(values) / len(values)
     variance = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
     return math.sqrt(variance / len(values))
+
+
+def _wilson_binomial_interval(successes: int, trials: int) -> MeanInterval:
+    if type(successes) is not int or type(trials) is not int:
+        raise TypeError("binomial counts must be exact integers")
+    if trials < 1 or successes < 0 or successes > trials:
+        raise ValueError("binomial counts require 0 <= successes <= trials and trials >= 1")
+    estimate = successes / trials
+    z2 = _NORMAL_95_Z**2
+    denominator = 1.0 + z2 / trials
+    center = (estimate + z2 / (2.0 * trials)) / denominator
+    half_width = (
+        _NORMAL_95_Z
+        * math.sqrt(
+            estimate * (1.0 - estimate) / trials + z2 / (4.0 * trials**2)
+        )
+        / denominator
+    )
+    return MeanInterval(
+        estimate=estimate,
+        se=None,
+        lower=max(0.0, center - half_width),
+        upper=min(1.0, center + half_width),
+    )
 
 
 def _normal_interval(estimate: float, se: float) -> MeanInterval:
@@ -627,14 +656,22 @@ def summarize_metric_estimates(
         sum((estimate - true_value) ** 2 for estimate in estimates) / len(estimates)
     )
     mc_se = _sample_standard_error(estimates)
+    squared_errors = tuple((estimate - true_value) ** 2 for estimate in estimates)
+    mse_mc_se = _sample_standard_error(squared_errors)
+    rmse_mc_se = 0.0 if rmse == 0.0 else mse_mc_se / (2.0 * rmse)
     coverage: float | None = None
+    coverage_mc_interval: MeanInterval | None = None
     width: float | None = None
     if intervals is not None:
         if len(intervals) != len(estimates):
             raise ValueError("intervals length must match estimates")
-        coverage = sum(
+        coverage_count = sum(
             lower <= true_value <= upper for lower, upper in intervals
-        ) / len(intervals)
+        )
+        coverage = coverage_count / len(intervals)
+        coverage_mc_interval = _wilson_binomial_interval(
+            coverage_count, len(intervals)
+        )
         width = sum(upper - lower for lower, upper in intervals) / len(intervals)
     return MetricMonteCarloSummary(
         true_value=true_value,
@@ -642,7 +679,10 @@ def summarize_metric_estimates(
         bias=bias,
         rmse=rmse,
         mc_se=mc_se,
+        bias_mc_se=mc_se,
+        rmse_mc_se=rmse_mc_se,
         interval_coverage=coverage,
+        coverage_mc_interval=coverage_mc_interval,
         mean_interval_width=width,
     )
 
@@ -815,6 +855,12 @@ def run_auxiliary_deterministic_controls(
         ),
         positive_class_inversion=positive_class_inversion_control(),
         label_noise_nonidentifiability=label_noise_nonidentifiability_control(),
+        reference_ranking_reversal=check_reference_ranking_reversal(
+            clean_p=0.9,
+            q_clean=0.9,
+            q_noisy=0.74,
+            eta=0.2,
+        ),
     )
 
 

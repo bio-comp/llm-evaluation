@@ -51,13 +51,17 @@ def _finite(value: float | None, *, label: str) -> float | None:
 
 class MetricSummaryRecord(_StrictFrozenRecord):
     record_type: Literal["metric_lab_metric_summary"] = "metric_lab_metric_summary"
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     true_value: float
     mean_estimate: float
     bias: float
     rmse: float
     mc_se: float
+    bias_mc_se: float
+    rmse_mc_se: float
     interval_coverage: float | None = None
+    coverage_mc_lower: float | None = None
+    coverage_mc_upper: float | None = None
     mean_interval_width: float | None = None
 
     @field_validator(
@@ -66,7 +70,11 @@ class MetricSummaryRecord(_StrictFrozenRecord):
         "bias",
         "rmse",
         "mc_se",
+        "bias_mc_se",
+        "rmse_mc_se",
         "interval_coverage",
+        "coverage_mc_lower",
+        "coverage_mc_upper",
         "mean_interval_width",
     )
     @classmethod
@@ -75,13 +83,32 @@ class MetricSummaryRecord(_StrictFrozenRecord):
 
     @model_validator(mode="after")
     def _validate_nonnegative_fields(self) -> Self:
-        if self.rmse < 0.0 or self.mc_se < 0.0:
-            raise ValueError("rmse and mc_se must be non-negative")
+        if (
+            self.rmse < 0.0
+            or self.mc_se < 0.0
+            or self.bias_mc_se < 0.0
+            or self.rmse_mc_se < 0.0
+        ):
+            raise ValueError("RMSE and Monte Carlo standard errors must be non-negative")
         if (
             self.interval_coverage is not None
             and not 0.0 <= self.interval_coverage <= 1.0
         ):
             raise ValueError("interval_coverage must lie in [0, 1]")
+        coverage_bounds = (self.coverage_mc_lower, self.coverage_mc_upper)
+        if self.interval_coverage is None:
+            if any(value is not None for value in coverage_bounds):
+                raise ValueError("coverage MC bounds require interval_coverage")
+        else:
+            if any(value is None for value in coverage_bounds):
+                raise ValueError("interval_coverage requires both coverage MC bounds")
+            assert self.coverage_mc_lower is not None
+            assert self.coverage_mc_upper is not None
+            if not (
+                0.0 <= self.coverage_mc_lower <= self.interval_coverage
+                <= self.coverage_mc_upper <= 1.0
+            ):
+                raise ValueError("coverage MC bounds must contain interval_coverage in [0, 1]")
         if self.mean_interval_width is not None and self.mean_interval_width < 0.0:
             raise ValueError("mean_interval_width must be non-negative")
         return self
@@ -197,7 +224,7 @@ class AuxiliaryControlsRecord(_StrictFrozenRecord):
     record_type: Literal["metric_lab_auxiliary_controls"] = (
         "metric_lab_auxiliary_controls"
     )
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     prevalence: tuple[PrevalenceControlRecord, ...]
     subgroup_pooled_ece: float
     subgroup_ece: dict[str, float]
@@ -212,6 +239,7 @@ class AuxiliaryControlsRecord(_StrictFrozenRecord):
     label_noise_candidate_clean_probabilities: tuple[float, float]
     label_noise_candidate_flip_rates: tuple[float, float]
     label_noise_nonidentifiable: bool
+    reference_ranking_reversal: dict[str, float | bool]
 
     @field_validator(
         "subgroup_pooled_ece",
@@ -258,7 +286,7 @@ class MetricLabRunRecord(_StrictFrozenRecord):
     canonical_identity_domain: ClassVar[str] = "llm-evaluation.metric-lab-run"
     canonical_identity_version: ClassVar[int] = 1
     record_type: Literal["known_truth_metric_lab_run"] = "known_truth_metric_lab_run"
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     phase: MetricLabPhase
     design_sha256: str
     frozen_design_record_sha256: str | None = None
@@ -363,7 +391,19 @@ def _metric_summary_record(summary: MetricMonteCarloSummary) -> MetricSummaryRec
         bias=summary.bias,
         rmse=summary.rmse,
         mc_se=summary.mc_se,
+        bias_mc_se=summary.bias_mc_se,
+        rmse_mc_se=summary.rmse_mc_se,
         interval_coverage=summary.interval_coverage,
+        coverage_mc_lower=(
+            summary.coverage_mc_interval.lower
+            if summary.coverage_mc_interval is not None
+            else None
+        ),
+        coverage_mc_upper=(
+            summary.coverage_mc_interval.upper
+            if summary.coverage_mc_interval is not None
+            else None
+        ),
         mean_interval_width=summary.mean_interval_width,
     )
 
@@ -472,6 +512,7 @@ def _auxiliary_record(design: MetricLabDesign) -> AuxiliaryControlsRecord:
         label_noise_nonidentifiable=(
             controls.label_noise_nonidentifiability.distinct_parameterizations_match_observed
         ),
+        reference_ranking_reversal=controls.reference_ranking_reversal,
     )
 
 

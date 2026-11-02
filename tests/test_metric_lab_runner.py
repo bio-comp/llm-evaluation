@@ -123,6 +123,11 @@ def test_metric_summary_computes_bias_rmse_mcse_coverage_and_width_exactly() -> 
     assert math.isclose(summary.interval_coverage, 2 / 3, rel_tol=1e-12)
     assert math.isclose(summary.mean_interval_width, 4 / 3, rel_tol=1e-12)
     assert summary.mc_se > 0.0
+    assert math.isclose(summary.bias_mc_se, summary.mc_se, rel_tol=1e-12)
+    assert summary.rmse_mc_se > 0.0
+    assert summary.coverage_mc_interval is not None
+    assert summary.coverage_mc_interval.lower < summary.interval_coverage
+    assert summary.coverage_mc_interval.upper > summary.interval_coverage
 
 
 def test_risk_coverage_curve_never_splits_a_confidence_tie_block() -> None:
@@ -343,6 +348,13 @@ def test_auxiliary_deterministic_controls_include_prevalence_subgroup_and_aurc_n
         rel_tol=1e-12,
     )
     assert controls.label_noise_nonidentifiability.distinct_parameterizations_match_observed is True
+    assert controls.reference_ranking_reversal["reversal_detected"] is True
+    assert math.isclose(
+        controls.reference_ranking_reversal["clean_brier_q_clean"], 0.09, rel_tol=1e-12
+    )
+    assert math.isclose(
+        controls.reference_ranking_reversal["noisy_brier_q_noisy"], 0.1924, rel_tol=1e-12
+    )
 
 
 def test_independent_unit_debiased_squared_l2_is_invariant_to_shared_row_duplication() -> (
