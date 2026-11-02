@@ -1,0 +1,238 @@
+import json
+import math
+from pathlib import Path
+
+import pytest
+
+from llm_evaluation.metric_lab_design import (
+    BaseCellSpec,
+    MetricLabDesign,
+    MetricLabPhase,
+    freeze_metric_lab_design,
+)
+from llm_evaluation.metric_lab_records import (
+    finalize_metric_lab_run,
+    metric_lab_record_bytes,
+    preview_metric_lab_run_record,
+    read_metric_lab_run,
+    validate_final_execution_gate,
+)
+from llm_evaluation.metric_lab_runner import summarize_base_cell
+from llm_evaluation.metric_lab_targets import SamplingUnit
+
+
+def _small_design() -> tuple[MetricLabDesign, BaseCellSpec]:
+    design = MetricLabDesign(
+        p_values=("0.5",),
+        forecast_kinds=("constant",),
+        n_base_items=(10,),
+        k_within_item=(2,),
+        shared_within_item=(False, True),
+        reference_flip_etas=("0",),
+        fixed_bin_count=2,
+        equal_mass_bin_count=2,
+    )
+    cell = BaseCellSpec(
+        forecast_kind="constant",
+        n_base_items=10,
+        k_within_item=2,
+        shared_within_item=False,
+        reference_flip_eta=0.0,
+    )
+    return design, cell
+
+
+def test_development_run_finalizes_canonically_and_second_write_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import llm_evaluation.metric_lab_records as records
+
+    design, cell = _small_design()
+    summary = summarize_base_cell(
+        design=design,
+        cell=cell,
+        phase=MetricLabPhase.DEVELOPMENT,
+        sampling_unit=SamplingUnit.FIXED_CASE,
+        num_replicates=5,
+    )
+    preview = preview_metric_lab_run_record(
+        design=design,
+        phase=MetricLabPhase.DEVELOPMENT,
+        cell_summaries=(summary,),
+    )
+    assert preview.software_commit is None
+    assert preview.package_source_sha256 is None
+    assert preview.frozen_design_record_sha256 is None
+
+    monkeypatch.setattr(records, "software_identity", lambda: ("a" * 40, "b" * 64))
+    target = tmp_path / "metric-lab-dev.json"
+    finalized = finalize_metric_lab_run(target, preview)
+    assert finalized.software_commit == "a" * 40
+    assert finalized.package_source_sha256 == "b" * 64
+    assert target.read_bytes() == metric_lab_record_bytes(finalized)
+    assert read_metric_lab_run(target) == finalized
+
+    with pytest.raises(FileExistsError):
+        finalize_metric_lab_run(target, preview)
+
+
+def test_final_execution_gate_requires_exact_frozen_design_and_2000_replicates() -> (
+    None
+):
+    design, _ = _small_design()
+    frozen = freeze_metric_lab_design(design)
+    validate_final_execution_gate(
+        design=design,
+        frozen_design=frozen,
+        replicates_per_cell=2000,
+    )
+    with pytest.raises(ValueError, match="2000"):
+        validate_final_execution_gate(
+            design=design,
+            frozen_design=frozen,
+            replicates_per_cell=1999,
+        )
+    changed = design.model_copy(update={"decision_threshold": "0.6"})
+    with pytest.raises(ValueError, match="frozen|design"):
+        validate_final_execution_gate(
+            design=changed,
+            frozen_design=frozen,
+            replicates_per_cell=2000,
+        )
+
+
+def test_final_preview_rejects_development_sized_summary() -> None:
+    design, cell = _small_design()
+    frozen = freeze_metric_lab_design(design)
+    summary = summarize_base_cell(
+        design=design,
+        cell=cell,
+        phase=MetricLabPhase.FINAL,
+        sampling_unit=SamplingUnit.FIXED_CASE,
+        num_replicates=3,
+    )
+    with pytest.raises(ValueError, match="2000"):
+        preview_metric_lab_run_record(
+            design=design,
+            phase=MetricLabPhase.FINAL,
+            cell_summaries=(summary,),
+            frozen_design=frozen,
+        )
+
+
+def test_read_rejects_noncanonical_json_even_when_semantically_valid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import llm_evaluation.metric_lab_records as records
+
+    design, cell = _small_design()
+    summary = summarize_base_cell(
+        design=design,
+        cell=cell,
+        phase=MetricLabPhase.DEVELOPMENT,
+        sampling_unit=SamplingUnit.FIXED_CASE,
+        num_replicates=2,
+    )
+    preview = preview_metric_lab_run_record(
+        design=design,
+        phase=MetricLabPhase.DEVELOPMENT,
+        cell_summaries=(summary,),
+    )
+    monkeypatch.setattr(records, "software_identity", lambda: ("c" * 40, "d" * 64))
+    canonical_path = tmp_path / "canonical.json"
+    finalized = finalize_metric_lab_run(canonical_path, preview)
+
+    noncanonical = tmp_path / "pretty.json"
+    noncanonical.write_text(
+        json.dumps(finalized.model_dump(mode="json"), indent=2) + "\n"
+    )
+    with pytest.raises(ValueError, match="canonical"):
+        read_metric_lab_run(noncanonical)
+
+
+def test_preview_records_base_ambiguity_and_auxiliary_controls() -> None:
+    from llm_evaluation.metric_lab_design import AmbiguityCellSpec
+    from llm_evaluation.metric_lab_runner import summarize_ambiguity_cell
+
+    design = MetricLabDesign(
+        p_values=("0.5",),
+        forecast_kinds=("constant",),
+        n_base_items=(8,),
+        k_within_item=(2,),
+        shared_within_item=(False, True),
+        reference_flip_etas=("0",),
+        ambiguity_theta_values=("0.5",),
+        ambiguity_n_items=(8,),
+        ambiguity_raters_per_item=(3,),
+        prevalence_values=("0.01", "0.5"),
+        fixed_bin_count=1,
+        equal_mass_bin_count=1,
+    )
+    base_cell = BaseCellSpec(
+        forecast_kind="constant",
+        n_base_items=8,
+        k_within_item=2,
+        shared_within_item=False,
+        reference_flip_eta=0.0,
+    )
+    ambiguity_cell = AmbiguityCellSpec(
+        forecast_kind="constant", n_items=8, raters_per_item=3
+    )
+    base = summarize_base_cell(
+        design=design,
+        cell=base_cell,
+        phase=MetricLabPhase.DEVELOPMENT,
+        sampling_unit=SamplingUnit.FIXED_CASE,
+        num_replicates=2,
+    )
+    ambiguity = summarize_ambiguity_cell(
+        design=design,
+        cell=ambiguity_cell,
+        phase=MetricLabPhase.DEVELOPMENT,
+        num_replicates=2,
+    )
+    preview = preview_metric_lab_run_record(
+        design=design,
+        phase=MetricLabPhase.DEVELOPMENT,
+        cell_summaries=(base, ambiguity),
+    )
+    assert preview.schema_version == 4
+    assert preview.auxiliary_controls.schema_version == 3
+    assert preview.cell_count == 2
+    assert {cell.cell_kind for cell in preview.cells} == {"base", "ambiguity"}
+    assert preview.realized_budget_by_unit == {"ratings": 48, "rows": 32}
+    assert len(preview.auxiliary_controls.prevalence) == 2
+    assert preview.auxiliary_controls.subgroup_pooled_ece == 0.0
+    assert preview.auxiliary_controls.subgroup_max_ece == 0.25
+    assert preview.auxiliary_controls.aurc_upstream_negative_control == 0.5
+    assert preview.auxiliary_controls.aurc_prefix_oracle == 0.75
+    assert preview.auxiliary_controls.aurc_defect_detected is True
+    assert math.isclose(
+        preview.auxiliary_controls.positive_class_correct_brier, 0.025, rel_tol=1e-12
+    )
+    assert math.isclose(
+        preview.auxiliary_controls.positive_class_inverted_brier, 0.725, rel_tol=1e-12
+    )
+    assert preview.auxiliary_controls.positive_class_inversion_detected is True
+    assert math.isclose(
+        preview.auxiliary_controls.label_noise_observed_reference_probability,
+        0.74,
+        rel_tol=1e-12,
+    )
+    assert preview.auxiliary_controls.label_noise_candidate_clean_probabilities == (0.8, 0.9)
+    assert preview.auxiliary_controls.label_noise_candidate_flip_rates == (0.1, 0.2)
+    assert preview.auxiliary_controls.label_noise_nonidentifiable is True
+    assert preview.auxiliary_controls.reference_ranking_reversal["reversal_detected"] is True
+
+    base_record = next(cell for cell in preview.cells if cell.cell_kind == "base")
+    brier = base_record.targets[0].metrics["brier"]
+    assert brier.schema_version == 2
+    assert brier.bias_mc_se >= 0.0
+    assert brier.rmse_mc_se >= 0.0
+    assert brier.coverage_mc_lower is None
+    assert brier.coverage_mc_upper is None
+    interval_metric = base_record.targets[0].metrics["brier_cluster_interval"]
+    assert interval_metric.coverage_mc_lower is not None
+    assert interval_metric.coverage_mc_upper is not None
+    assert interval_metric.coverage_mc_lower <= interval_metric.interval_coverage
+    assert interval_metric.coverage_mc_upper >= interval_metric.interval_coverage
