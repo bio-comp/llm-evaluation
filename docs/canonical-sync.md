@@ -76,7 +76,7 @@ Under D-016, structural record validation is strictly distinguished from operati
 4. Performs actual read-only Git verification via `GitPublisher(remote, ref="refs/heads/main").verify(publication_tree, expected_commit=M)` to confirm `refs/heads/main` is at `M` without concurrent movement and contains the exact approved `PublicationTree` bytes;
 5. Produces versioned durable evidence records (`GitHubPullRequestMergeRecord` schema v2, `GitHubCIVerificationRecord` schema v3, `GitPublicationReceiptRecord` schema v3) bound into `VerifiedPublicationReceiptRecord` schema v5 and `ReconciliationDispositionRecord` schema v4 (`COMPLETE`), preserving the exact obligation set and approved tree identity.
 
-The policy contract schema v3 explicitly declares these invariants via dedicated boolean fields, including exact approved-publication-tree and obligation-set matching in addition to snapshot/contract/readback, authoritative GitHub evidence, merged PR, post-merge `push`/`main` CI, exact workflow identity, and exact required-job identity.
+The policy contract schema v4 explicitly declares these invariants via dedicated boolean fields, including exact approved-publication-tree and obligation-set matching in addition to snapshot/contract/readback, authoritative GitHub evidence, merged PR, post-merge `push`/`main` CI, exact workflow identity, and exact required-job identity. It also declares that advancing the global durable checkpoint requires the completion evidence to match the caller-reviewed complete outstanding obligation set.
 
 ## Related design records
 
@@ -113,7 +113,7 @@ The D-016 authority profile validator in `llm_evaluation.canonical_authority` en
 - `GitHubCIVerificationRecord`: schema v3 (`workflow_path`, `event="push"`, `head_branch="refs/heads/main"`, `run_conclusion="success"`, `job_id`, `job_name="verify"`, `job_conclusion="success"`).
 - `VerifiedPublicationReceiptRecord`: schema v5 (binds the exact obligation set, PR v2, CI v3, and verified Git readback v3).
 - `ReconciliationDispositionRecord`: schema v4 (binds the exact obligation set and `VerifiedPublicationReceiptRecord` v5).
-- `ReconciliationPolicyContract`: schema v3 (adds exact approved-publication-tree and obligation-set closure requirements).
+- `ReconciliationPolicyContract`: schema v4 (adds the global-checkpoint rule that durable advance requires the complete outstanding obligation set, while retaining exact approved-tree and obligation matching).
 - `DurableReconciliationStateRecord`: schema v2 (requires the new completion evidence shape).
 
 Historical payloads are never silently reinterpreted. Durable schema v1 is fail-closed as active state and requires explicit supersession recovery: exact legacy bytes are archived under a hash-addressed local `reconciliation-history/` record with readback verification before the active legacy pathname is removed. The v2 writer also refuses to replace a detected v1 active file, so this recovery step cannot be bypassed by direct persistence. This preserves the historical receipt without allowing it to act as the current reconciliation baseline.

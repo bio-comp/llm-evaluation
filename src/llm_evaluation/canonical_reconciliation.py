@@ -417,7 +417,7 @@ class ReconciliationPolicyContract(_StrictFrozenProjectRecord):
     projection_type: Literal["llm_evaluation_reconciliation_policy"] = (
         "llm_evaluation_reconciliation_policy"
     )
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     dispositions: tuple[Literal["NONE", "REQUIRED", "BLOCKED", "COMPLETE"], ...]
     complete_requires_snapshot_match: bool
     complete_requires_contract_match: bool
@@ -429,6 +429,7 @@ class ReconciliationPolicyContract(_StrictFrozenProjectRecord):
     complete_requires_exact_required_job_identity: bool
     complete_requires_exact_publication_tree: bool
     complete_requires_obligation_set_match: bool
+    durable_advance_requires_complete_obligation_set: bool
 
 
 class ReviewedCanonicalImpact(_StrictFrozenProjectRecord):
@@ -493,6 +494,7 @@ def current_executable_policy_contract() -> ReconciliationPolicyContract:
         complete_requires_exact_required_job_identity=True,
         complete_requires_exact_publication_tree=True,
         complete_requires_obligation_set_match=True,
+        durable_advance_requires_complete_obligation_set=True,
     )
 
 
@@ -823,6 +825,188 @@ def supersede_legacy_reconciliation_state(
     return archive
 
 
+
+def supersede_invalid_durable_reconciliation_state(
+    *,
+    replacement: DurableReconciliationStateRecord,
+    expected_active_raw_sha256: str,
+    expected_active_canonical_sha256: str,
+    expected_replacement_raw_sha256: str,
+    expected_replacement_canonical_sha256: str,
+    path: Path | str | None = None,
+) -> DurableReconciliationStateRecord:
+    """Archive a known-invalid current v2 checkpoint and atomically restore verified v2 state."""
+    for label, value in (
+        ("active raw", expected_active_raw_sha256),
+        ("active canonical", expected_active_canonical_sha256),
+        ("replacement raw", expected_replacement_raw_sha256),
+        ("replacement canonical", expected_replacement_canonical_sha256),
+    ):
+        if _SHA256_RE.fullmatch(value) is None:
+            raise ReconciliationStateError(f"expected {label} identity must be lowercase SHA-256")
+    if not isinstance(replacement, DurableReconciliationStateRecord):
+        raise TypeError(
+            f"replacement must be DurableReconciliationStateRecord, got {type(replacement).__name__}"
+        )
+
+    target = resolve_reconciliation_state_path(path)
+    if target.is_symlink():
+        raise ReconciliationStateError(
+            f"durable reconciliation state target must not be a symlink: {target}"
+        )
+    if not target.exists() or not target.is_file():
+        raise ReconciliationStateError(
+            "active durable reconciliation state is unavailable for invalid-state supersession"
+        )
+    parent = target.parent
+    if parent.is_symlink():
+        raise ReconciliationStateError(
+            f"durable reconciliation state parent directory must not be a symlink: {parent}"
+        )
+
+    try:
+        active_bytes = target.read_bytes()
+        active_record = parse_canonical_record(
+            active_bytes, DurableReconciliationStateRecord
+        )
+    except Exception as exc:
+        raise ReconciliationStateError(
+            "active durable reconciliation state cannot be verified for supersession"
+        ) from exc
+    active_raw_sha256 = hashlib.sha256(active_bytes).hexdigest()
+    active_canonical_sha256 = canonical_record_hash(active_record)
+    if (
+        active_raw_sha256 != expected_active_raw_sha256
+        or active_canonical_sha256 != expected_active_canonical_sha256
+    ):
+        raise ReconciliationStateError(
+            "active durable reconciliation state hash/identity mismatch"
+        )
+
+    replacement_bytes = canonical_record_bytes(replacement)
+    replacement_raw_sha256 = hashlib.sha256(replacement_bytes).hexdigest()
+    replacement_canonical_sha256 = canonical_record_hash(replacement)
+    if (
+        replacement_raw_sha256 != expected_replacement_raw_sha256
+        or replacement_canonical_sha256 != expected_replacement_canonical_sha256
+    ):
+        raise ReconciliationStateError(
+            "replacement durable reconciliation state hash/identity mismatch"
+        )
+
+    history_dir = parent / "reconciliation-history"
+    if history_dir.is_symlink():
+        raise ReconciliationStateError(
+            "reconciliation history directory must not be a symlink"
+        )
+    try:
+        history_dir.mkdir(mode=0o700, parents=False, exist_ok=True)
+        try:
+            os.chmod(history_dir, 0o700)
+        except OSError:
+            pass
+    except OSError as exc:
+        raise ReconciliationStateError(
+            "failed to create reconciliation history directory"
+        ) from exc
+
+    archive = history_dir / f"superseded-invalid-v2-{active_raw_sha256}.json"
+    if archive.is_symlink():
+        raise ReconciliationStateError(
+            "invalid reconciliation history target must not be a symlink"
+        )
+    if archive.exists():
+        try:
+            existing = archive.read_bytes()
+        except OSError as exc:
+            raise ReconciliationStateError(
+                "failed to verify existing invalid-state history record"
+            ) from exc
+        if existing != active_bytes:
+            raise ReconciliationStateError(
+                "existing invalid-state history record does not match active state bytes"
+            )
+    else:
+        try:
+            fd = os.open(str(archive), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with open(fd, "wb", closefd=True) as f:
+                f.write(active_bytes)
+                f.flush()
+                os.fsync(f.fileno())
+        except OSError as exc:
+            raise ReconciliationStateError(
+                "failed to archive invalid durable reconciliation state"
+            ) from exc
+    try:
+        archived_bytes = archive.read_bytes()
+    except OSError as exc:
+        raise ReconciliationStateError(
+            "failed to read back archived invalid durable reconciliation state"
+        ) from exc
+    if archived_bytes != active_bytes or hashlib.sha256(archived_bytes).hexdigest() != active_raw_sha256:
+        raise ReconciliationStateError(
+            "invalid durable reconciliation history readback verification failed"
+        )
+    try:
+        history_fd = os.open(str(history_dir), os.O_RDONLY)
+        try:
+            os.fsync(history_fd)
+        finally:
+            os.close(history_fd)
+    except OSError as exc:
+        raise ReconciliationStateError(
+            "failed to durably synchronize reconciliation history before recovery"
+        ) from exc
+
+    temp_path = parent / f".last-reconciled-state.recovery.{os.getpid()}.{time.time_ns()}.json"
+    try:
+        fd = os.open(str(temp_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with open(fd, "wb", closefd=True) as f:
+            f.write(replacement_bytes)
+            f.flush()
+            os.fsync(f.fileno())
+        # Re-read immediately before replacement so a moved active checkpoint fails closed.
+        if target.read_bytes() != active_bytes:
+            raise ReconciliationStateError(
+                "active durable reconciliation state changed during recovery"
+            )
+        os.replace(str(temp_path), str(target))
+        dir_fd = os.open(str(parent), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except Exception as exc:
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+        if isinstance(exc, ReconciliationStateError):
+            raise
+        raise ReconciliationStateError(
+            "failed to atomically restore verified durable reconciliation state"
+        ) from exc
+
+    try:
+        readback_bytes = target.read_bytes()
+        readback = parse_canonical_record(
+            readback_bytes, DurableReconciliationStateRecord
+        )
+    except Exception as exc:
+        raise ReconciliationStateError(
+            "recovered durable reconciliation state readback failed"
+        ) from exc
+    if (
+        readback_bytes != replacement_bytes
+        or hashlib.sha256(readback_bytes).hexdigest() != expected_replacement_raw_sha256
+        or canonical_record_hash(readback) != expected_replacement_canonical_sha256
+    ):
+        raise ReconciliationStateError(
+            "recovered durable reconciliation state readback identity mismatch"
+        )
+    return readback
+
 def save_durable_reconciliation_state(
     record: DurableReconciliationStateRecord,
     path: Path | str | None = None,
@@ -928,9 +1112,114 @@ def save_durable_reconciliation_state(
     return target
 
 
+def persist_partial_reconciliation_receipt(
+    completed: ReconciliationDispositionRecord,
+    *,
+    reconciliation_state_path: Path | str | None = None,
+) -> Path:
+    """Archive verified subset completion without advancing the global snapshot baseline."""
+    if completed.disposition is not ReconciliationDisposition.COMPLETE:
+        raise ValueError(
+            f"only a COMPLETE disposition can be archived as a partial reconciliation receipt, got {completed.disposition.value}"
+        )
+    if completed.verified_publication is None:
+        raise ValueError("partial completion requires a verified_publication receipt")
+
+    state_target = resolve_reconciliation_state_path(reconciliation_state_path)
+    parent = state_target.parent
+    if parent.is_symlink():
+        raise ReconciliationStateError(
+            f"durable reconciliation state parent directory must not be a symlink: {parent}"
+        )
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(parent, 0o700)
+        except OSError:
+            pass
+    except OSError as exc:
+        raise ReconciliationStateError(
+            "failed to create reconciliation state parent for partial receipt"
+        ) from exc
+
+    history_dir = parent / "reconciliation-history"
+    if history_dir.is_symlink():
+        raise ReconciliationStateError(
+            "reconciliation history directory must not be a symlink"
+        )
+    try:
+        history_dir.mkdir(mode=0o700, parents=False, exist_ok=True)
+        try:
+            os.chmod(history_dir, 0o700)
+        except OSError:
+            pass
+    except OSError as exc:
+        raise ReconciliationStateError(
+            "failed to create reconciliation history directory"
+        ) from exc
+
+    payload = canonical_record_bytes(completed)
+    receipt_hash = canonical_record_hash(completed)
+    receipt_path = history_dir / (
+        f"partial-complete-{completed.current_snapshot_sha256}-{receipt_hash}.json"
+    )
+    if receipt_path.is_symlink():
+        raise ReconciliationStateError(
+            "partial reconciliation history target must not be a symlink"
+        )
+    if receipt_path.exists():
+        try:
+            existing = receipt_path.read_bytes()
+        except OSError as exc:
+            raise ReconciliationStateError(
+                "failed to verify existing partial reconciliation receipt"
+            ) from exc
+        if existing != payload:
+            raise ReconciliationStateError(
+                "existing partial reconciliation receipt does not match expected canonical bytes"
+            )
+        return receipt_path
+
+    try:
+        fd = os.open(str(receipt_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with open(fd, "wb", closefd=True) as f:
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+    except OSError as exc:
+        raise ReconciliationStateError(
+            "failed to persist partial reconciliation receipt"
+        ) from exc
+
+    try:
+        readback = receipt_path.read_bytes()
+        parsed = parse_canonical_record(readback, ReconciliationDispositionRecord)
+    except Exception as exc:
+        raise ReconciliationStateError(
+            "partial reconciliation receipt readback verification failed"
+        ) from exc
+    if readback != payload or canonical_record_hash(parsed) != receipt_hash:
+        raise ReconciliationStateError(
+            "partial reconciliation receipt readback verification failed"
+        )
+    try:
+        history_fd = os.open(str(history_dir), os.O_RDONLY)
+        try:
+            os.fsync(history_fd)
+        finally:
+            os.close(history_fd)
+    except OSError as exc:
+        raise ReconciliationStateError(
+            "failed to durably synchronize partial reconciliation history"
+        ) from exc
+    return receipt_path
+
+
 def persist_completed_reconciliation(
     completed: ReconciliationDispositionRecord,
     path: Path | str | None = None,
+    *,
+    expected_complete_obligation_ids: tuple[str, ...],
 ) -> DurableReconciliationStateRecord:
     if completed.disposition is not ReconciliationDisposition.COMPLETE:
         raise ValueError(
@@ -938,6 +1227,11 @@ def persist_completed_reconciliation(
         )
     if completed.verified_publication is None:
         raise ValueError("persisted completion requires a verified_publication receipt")
+    expected = _normalize_obligation_ids(expected_complete_obligation_ids)
+    if completed.obligation_ids != expected:
+        raise ValueError(
+            "global durable advance requires completion to cover the complete outstanding obligation set"
+        )
     state = LastReconciledStateRecord(
         snapshot_state_sha256=completed.current_snapshot_sha256
     )

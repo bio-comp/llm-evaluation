@@ -158,6 +158,7 @@ def test_counterfactual_authoritative_contract_fails_stale_executable_until_reco
         {"complete_requires_exact_required_job_identity": False},
         {"complete_requires_exact_publication_tree": False},
         {"complete_requires_obligation_set_match": False},
+        {"durable_advance_requires_complete_obligation_set": False},
         {"complete_requires_readback": False},
     ]
     for flag in stale_flags:
@@ -294,6 +295,7 @@ def test_public_contract_is_exactly_the_four_authorized_reconciliation_states() 
     assert contract.complete_requires_exact_required_job_identity is True
     assert contract.complete_requires_exact_publication_tree is True
     assert contract.complete_requires_obligation_set_match is True
+    assert contract.durable_advance_requires_complete_obligation_set is True
 
 
 def test_public_policy_fixture_is_canonical_and_matches_executable_contract() -> None:
@@ -690,7 +692,9 @@ def test_persist_completed_reconciliation_success_and_rejections(
     target = tmp_path / "persisted.json"
     comp = _make_valid_complete_disposition()
 
-    durable = persist_completed_reconciliation(comp, path=target)
+    durable = persist_completed_reconciliation(
+        comp, expected_complete_obligation_ids=comp.obligation_ids, path=target
+    )
     assert durable.state.snapshot_state_sha256 == comp.current_snapshot_sha256
     assert durable.disposition == comp
 
@@ -710,8 +714,212 @@ def test_persist_completed_reconciliation_success_and_rejections(
     with pytest.raises(
         ValueError, match="only a COMPLETE disposition can be durably persisted"
     ):
-        persist_completed_reconciliation(req, path=target)
+        persist_completed_reconciliation(
+            req, expected_complete_obligation_ids=req.obligation_ids, path=target
+        )
 
+
+
+def test_global_durable_advance_rejects_partial_obligation_completion(tmp_path: Path) -> None:
+    target = tmp_path / "last-reconciled-state.json"
+    completed = _make_valid_complete_disposition()
+    assert completed.obligation_ids == ("D-016:test-obligation",)
+
+    with pytest.raises(ValueError, match="complete outstanding obligation set"):
+        persist_completed_reconciliation(
+            completed,
+            expected_complete_obligation_ids=(
+                "D-016:test-obligation",
+                "METRIC-LAB:another-outstanding-obligation",
+            ),
+            path=target,
+        )
+    assert not target.exists()
+
+
+def test_partial_completion_receipt_is_append_only_and_does_not_advance_global_state(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "last-reconciled-state.json"
+    baseline = _make_valid_complete_disposition(snapshot_sha="4" * 64)
+    persist_completed_reconciliation(
+        baseline,
+        expected_complete_obligation_ids=baseline.obligation_ids,
+        path=state_path,
+    )
+    baseline_bytes = state_path.read_bytes()
+
+    partial = _make_valid_complete_disposition(snapshot_sha="5" * 64)
+    import llm_evaluation.canonical_reconciliation as reconciliation
+
+    receipt_path = reconciliation.persist_partial_reconciliation_receipt(
+        partial, reconciliation_state_path=state_path
+    )
+
+    assert state_path.read_bytes() == baseline_bytes
+    assert receipt_path.parent == tmp_path / "reconciliation-history"
+    assert receipt_path.name.startswith("partial-complete-")
+    payload = receipt_path.read_bytes()
+    parsed = ReconciliationDispositionRecord.model_validate_json(payload, strict=True)
+    assert parsed == partial
+    assert canonical_record_bytes(parsed) == payload
+
+    # Repeating the same verified completion is an idempotent readback, not an overwrite.
+    assert (
+        reconciliation.persist_partial_reconciliation_receipt(
+            partial, reconciliation_state_path=state_path
+        )
+        == receipt_path
+    )
+    assert receipt_path.read_bytes() == payload
+
+
+def test_partial_completion_receipt_rejects_non_complete_and_symlinked_history(
+    tmp_path: Path,
+) -> None:
+    import llm_evaluation.canonical_reconciliation as reconciliation
+
+    completed = _make_valid_complete_disposition()
+    required = completed.model_copy(
+        update={"disposition": ReconciliationDisposition.REQUIRED, "verified_publication": None}
+    )
+    with pytest.raises(ValueError, match="only a COMPLETE"):
+        reconciliation.persist_partial_reconciliation_receipt(
+            required, reconciliation_state_path=tmp_path / "state.json"
+        )
+
+    state_path = tmp_path / "state.json"
+    real_history = tmp_path / "real-history"
+    real_history.mkdir()
+    (tmp_path / "reconciliation-history").symlink_to(real_history)
+    with pytest.raises(ReconciliationStateError, match="history.*symlink"):
+        reconciliation.persist_partial_reconciliation_receipt(
+            completed, reconciliation_state_path=state_path
+        )
+
+
+def test_invalid_v2_state_supersession_archives_exact_bytes_and_restores_exact_replacement(
+    tmp_path: Path,
+) -> None:
+    import hashlib
+    import llm_evaluation.canonical_reconciliation as reconciliation
+
+    target = tmp_path / "last-reconciled-state.json"
+    invalid_complete = _make_valid_complete_disposition(snapshot_sha="7" * 64)
+    invalid = DurableReconciliationStateRecord(
+        state=LastReconciledStateRecord(snapshot_state_sha256="7" * 64),
+        disposition=invalid_complete,
+    )
+    replacement_complete = _make_valid_complete_disposition(snapshot_sha="6" * 64)
+    replacement = DurableReconciliationStateRecord(
+        state=LastReconciledStateRecord(snapshot_state_sha256="6" * 64),
+        disposition=replacement_complete,
+    )
+    invalid_bytes = canonical_record_bytes(invalid)
+    replacement_bytes = canonical_record_bytes(replacement)
+    target.write_bytes(invalid_bytes)
+
+    restored = reconciliation.supersede_invalid_durable_reconciliation_state(
+        replacement=replacement,
+        expected_active_raw_sha256=hashlib.sha256(invalid_bytes).hexdigest(),
+        expected_active_canonical_sha256=canonical_record_hash(invalid),
+        expected_replacement_raw_sha256=hashlib.sha256(replacement_bytes).hexdigest(),
+        expected_replacement_canonical_sha256=canonical_record_hash(replacement),
+        path=target,
+    )
+
+    assert restored == replacement
+    assert target.read_bytes() == replacement_bytes
+    history = tmp_path / "reconciliation-history"
+    archived = list(history.glob("superseded-invalid-v2-*.json"))
+    assert len(archived) == 1
+    assert archived[0].read_bytes() == invalid_bytes
+    assert hashlib.sha256(archived[0].read_bytes()).hexdigest() == hashlib.sha256(
+        invalid_bytes
+    ).hexdigest()
+
+
+def test_invalid_v2_state_supersession_fails_closed_on_active_or_replacement_identity_mismatch(
+    tmp_path: Path,
+) -> None:
+    import hashlib
+    import llm_evaluation.canonical_reconciliation as reconciliation
+
+    target = tmp_path / "last-reconciled-state.json"
+    invalid_complete = _make_valid_complete_disposition(snapshot_sha="7" * 64)
+    invalid = DurableReconciliationStateRecord(
+        state=LastReconciledStateRecord(snapshot_state_sha256="7" * 64),
+        disposition=invalid_complete,
+    )
+    replacement_complete = _make_valid_complete_disposition(snapshot_sha="6" * 64)
+    replacement = DurableReconciliationStateRecord(
+        state=LastReconciledStateRecord(snapshot_state_sha256="6" * 64),
+        disposition=replacement_complete,
+    )
+    invalid_bytes = canonical_record_bytes(invalid)
+    replacement_bytes = canonical_record_bytes(replacement)
+    target.write_bytes(invalid_bytes)
+
+    with pytest.raises(ReconciliationStateError, match="active.*hash|active.*identity"):
+        reconciliation.supersede_invalid_durable_reconciliation_state(
+            replacement=replacement,
+            expected_active_raw_sha256="0" * 64,
+            expected_active_canonical_sha256=canonical_record_hash(invalid),
+            expected_replacement_raw_sha256=hashlib.sha256(replacement_bytes).hexdigest(),
+            expected_replacement_canonical_sha256=canonical_record_hash(replacement),
+            path=target,
+        )
+    assert target.read_bytes() == invalid_bytes
+    assert not (tmp_path / "reconciliation-history").exists()
+
+    with pytest.raises(ReconciliationStateError, match="replacement.*hash|replacement.*identity"):
+        reconciliation.supersede_invalid_durable_reconciliation_state(
+            replacement=replacement,
+            expected_active_raw_sha256=hashlib.sha256(invalid_bytes).hexdigest(),
+            expected_active_canonical_sha256=canonical_record_hash(invalid),
+            expected_replacement_raw_sha256="0" * 64,
+            expected_replacement_canonical_sha256=canonical_record_hash(replacement),
+            path=target,
+        )
+    assert target.read_bytes() == invalid_bytes
+    assert not (tmp_path / "reconciliation-history").exists()
+
+
+def test_invalid_v2_state_supersession_rejects_symlink_history_without_mutation(
+    tmp_path: Path,
+) -> None:
+    import hashlib
+    import llm_evaluation.canonical_reconciliation as reconciliation
+
+    target = tmp_path / "last-reconciled-state.json"
+    invalid_complete = _make_valid_complete_disposition(snapshot_sha="7" * 64)
+    invalid = DurableReconciliationStateRecord(
+        state=LastReconciledStateRecord(snapshot_state_sha256="7" * 64),
+        disposition=invalid_complete,
+    )
+    replacement_complete = _make_valid_complete_disposition(snapshot_sha="6" * 64)
+    replacement = DurableReconciliationStateRecord(
+        state=LastReconciledStateRecord(snapshot_state_sha256="6" * 64),
+        disposition=replacement_complete,
+    )
+    invalid_bytes = canonical_record_bytes(invalid)
+    replacement_bytes = canonical_record_bytes(replacement)
+    target.write_bytes(invalid_bytes)
+    real_history = tmp_path / "real-history"
+    real_history.mkdir()
+    (tmp_path / "reconciliation-history").symlink_to(real_history)
+
+    with pytest.raises(ReconciliationStateError, match="history.*symlink"):
+        reconciliation.supersede_invalid_durable_reconciliation_state(
+            replacement=replacement,
+            expected_active_raw_sha256=hashlib.sha256(invalid_bytes).hexdigest(),
+            expected_active_canonical_sha256=canonical_record_hash(invalid),
+            expected_replacement_raw_sha256=hashlib.sha256(replacement_bytes).hexdigest(),
+            expected_replacement_canonical_sha256=canonical_record_hash(replacement),
+            path=target,
+        )
+    assert target.read_bytes() == invalid_bytes
+    assert not list(real_history.iterdir())
 
 def test_legacy_state_supersession_rejects_symlinked_history_without_removing_active_state(
     tmp_path: Path,
