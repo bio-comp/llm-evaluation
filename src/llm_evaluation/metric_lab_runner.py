@@ -217,11 +217,13 @@ def _wilson_binomial_interval(successes: int, trials: int) -> MeanInterval:
         )
         / denominator
     )
+    lower = min(estimate, max(0.0, center - half_width))
+    upper = max(estimate, min(1.0, center + half_width))
     return MeanInterval(
         estimate=estimate,
         se=None,
-        lower=max(0.0, center - half_width),
-        upper=min(1.0, center + half_width),
+        lower=lower,
+        upper=upper,
     )
 
 

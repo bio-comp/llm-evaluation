@@ -553,3 +553,17 @@ def test_ambiguity_soft_label_does_not_apply_bernoulli_l2_debiaser() -> None:
     assert "debiased_l2" not in soft_metrics
     rater_metrics = summary.targets[TargetKind.RATER_DISTRIBUTION].metrics
     assert "debiased_squared_l2" in rater_metrics
+
+
+def test_wilson_interval_contains_boundary_estimates_exactly() -> None:
+    from llm_evaluation.metric_lab_runner import _wilson_binomial_interval
+
+    all_success = _wilson_binomial_interval(2000, 2000)
+    assert all_success.estimate == 1.0
+    assert all_success.lower <= 1.0 <= all_success.upper
+    assert all_success.upper == 1.0
+
+    no_success = _wilson_binomial_interval(0, 2000)
+    assert no_success.estimate == 0.0
+    assert no_success.lower <= 0.0 <= no_success.upper
+    assert no_success.lower == 0.0

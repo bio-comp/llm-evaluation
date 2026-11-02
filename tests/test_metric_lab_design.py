@@ -171,7 +171,7 @@ def test_design_hash_changes_when_auxiliary_or_operational_policy_changes() -> N
 
 def test_candidate_operational_and_sampling_policies_are_explicit() -> None:
     design = MetricLabDesign()
-    assert design.schema_version == 2
+    assert design.schema_version == 3
     assert design.l2_debias_method == "kumar-unbiased-squared-l2-v1"
     assert (
         design.l2_presentation_method
@@ -245,5 +245,30 @@ def test_negative_control_versions_are_identity_bearing() -> None:
     baseline = canonical_record_hash(design)
     changed = design.model_copy(
         update={"positive_class_inversion_control_version": "different-control"}
+    )
+    assert canonical_record_hash(changed) != baseline
+
+
+def test_acceptance_policy_is_explicit_and_identity_bearing() -> None:
+    design = MetricLabDesign()
+    criteria = design.acceptance
+    assert design.schema_version == 3
+    assert criteria.schema_version == 1
+    assert criteria.analytic_bias_mcse_multiplier == "4"
+    assert criteria.analytic_bias_absolute_floor == "1e-10"
+    assert criteria.population_squared_l2_bias_mcse_multiplier == "4"
+    assert criteria.shared_cluster_coverage_mean_min == "0.94"
+    assert criteria.shared_cluster_coverage_mean_max == "0.98"
+    assert criteria.shared_cluster_coverage_cell_min == "0.90"
+    assert criteria.shared_naive_cluster_coverage_gap_min == "0.10"
+    assert criteria.hoeffding_coverage_mean_min == "0.99"
+    assert criteria.cluster_to_hoeffding_width_ratio_max == "0.50"
+    baseline = canonical_record_hash(design)
+    changed = design.model_copy(
+        update={
+            "acceptance": criteria.model_copy(
+                update={"analytic_bias_mcse_multiplier": "5"}
+            )
+        }
     )
     assert canonical_record_hash(changed) != baseline

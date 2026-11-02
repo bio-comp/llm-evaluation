@@ -35,6 +35,81 @@ class _StrictFrozenRecord(BaseModel):
         return value
 
 
+class MetricLabAcceptanceCriteria(_StrictFrozenRecord):
+    """Predeclared promotion tolerances bound into the frozen design identity."""
+
+    record_type: Literal["known_truth_metric_lab_acceptance_criteria"] = (
+        "known_truth_metric_lab_acceptance_criteria"
+    )
+    schema_version: Literal[1] = 1
+    analytic_bias_mcse_multiplier: str = "4"
+    analytic_bias_absolute_floor: str = "1e-10"
+    population_squared_l2_bias_mcse_multiplier: str = "4"
+    shared_cluster_coverage_mean_min: str = "0.94"
+    shared_cluster_coverage_mean_max: str = "0.98"
+    shared_cluster_coverage_cell_min: str = "0.90"
+    shared_naive_cluster_coverage_gap_min: str = "0.10"
+    independent_cluster_coverage_mean_min: str = "0.94"
+    independent_cluster_coverage_mean_max: str = "0.99"
+    question_population_cluster_coverage_mean_min: str = "0.94"
+    question_population_cluster_coverage_mean_max: str = "0.99"
+    hoeffding_coverage_mean_min: str = "0.99"
+    cluster_to_hoeffding_width_ratio_max: str = "0.50"
+
+    @field_validator(
+        "analytic_bias_mcse_multiplier",
+        "analytic_bias_absolute_floor",
+        "population_squared_l2_bias_mcse_multiplier",
+        "shared_cluster_coverage_mean_min",
+        "shared_cluster_coverage_mean_max",
+        "shared_cluster_coverage_cell_min",
+        "shared_naive_cluster_coverage_gap_min",
+        "independent_cluster_coverage_mean_min",
+        "independent_cluster_coverage_mean_max",
+        "question_population_cluster_coverage_mean_min",
+        "question_population_cluster_coverage_mean_max",
+        "hoeffding_coverage_mean_min",
+        "cluster_to_hoeffding_width_ratio_max",
+    )
+    @classmethod
+    def _decimal_text(cls, value: str) -> str:
+        if not value or value != value.strip():
+            raise ValueError("acceptance criteria must be non-empty trimmed decimal text")
+        try:
+            parsed = Decimal(value)
+        except InvalidOperation as exc:
+            raise ValueError("acceptance criteria must be decimal values") from exc
+        if not parsed.is_finite() or parsed < 0:
+            raise ValueError("acceptance criteria must be finite and non-negative")
+        return value
+
+    @model_validator(mode="after")
+    def _ordered_bounds(self) -> Self:
+        for low_name, high_name in (
+            ("shared_cluster_coverage_mean_min", "shared_cluster_coverage_mean_max"),
+            ("independent_cluster_coverage_mean_min", "independent_cluster_coverage_mean_max"),
+            ("question_population_cluster_coverage_mean_min", "question_population_cluster_coverage_mean_max"),
+        ):
+            if Decimal(getattr(self, low_name)) > Decimal(getattr(self, high_name)):
+                raise ValueError("coverage acceptance lower bound must not exceed upper bound")
+        for name in (
+            "shared_cluster_coverage_mean_min",
+            "shared_cluster_coverage_mean_max",
+            "shared_cluster_coverage_cell_min",
+            "shared_naive_cluster_coverage_gap_min",
+            "independent_cluster_coverage_mean_min",
+            "independent_cluster_coverage_mean_max",
+            "question_population_cluster_coverage_mean_min",
+            "question_population_cluster_coverage_mean_max",
+            "hoeffding_coverage_mean_min",
+            "cluster_to_hoeffding_width_ratio_max",
+        ):
+            if Decimal(getattr(self, name)) > Decimal("1"):
+                raise ValueError(f"{name} must lie in [0, 1]")
+        return self
+
+
+
 class MetricLabDesign(_StrictFrozenRecord):
     """Candidate/frozen scientific design parameters that affect interpretation."""
 
@@ -43,7 +118,8 @@ class MetricLabDesign(_StrictFrozenRecord):
     record_type: Literal["known_truth_metric_lab_design"] = (
         "known_truth_metric_lab_design"
     )
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
+    acceptance: MetricLabAcceptanceCriteria = Field(default_factory=MetricLabAcceptanceCriteria)
 
     p_values: tuple[str, ...] = ("0.01", "0.1", "0.3", "0.5", "0.7", "0.9", "0.99")
     forecast_kinds: tuple[ForecastKind, ...] = (
