@@ -494,3 +494,41 @@ def test_ambiguity_summary_reports_raw_squared_l2_and_hoeffding_interval() -> No
     assert abs(metrics["debiased_squared_l2"].bias) < 0.01
     assert "brier_cluster_hoeffding_interval" in metrics
     assert metrics["brier_cluster_hoeffding_interval"].interval_coverage is not None
+
+
+def test_ambiguity_soft_label_does_not_apply_bernoulli_l2_debiaser() -> None:
+    from llm_evaluation.metric_lab_design import AmbiguityCellSpec
+    from llm_evaluation.metric_lab_runner import (
+        evaluate_ambiguity_replicate,
+        summarize_ambiguity_cell,
+    )
+
+    design = MetricLabDesign(
+        ambiguity_theta_values=("0.1", "0.5", "0.9"),
+        ambiguity_n_items=(50,),
+        ambiguity_raters_per_item=(3,),
+        fixed_bin_count=2,
+        equal_mass_bin_count=2,
+    )
+    cell = AmbiguityCellSpec(forecast_kind="oracle", n_items=50, raters_per_item=3)
+    rep = evaluate_ambiguity_replicate(
+        design=design,
+        cell=cell,
+        phase=MetricLabPhase.DEVELOPMENT,
+        replicate_index=0,
+    )
+    soft = rep.targets[TargetKind.SOFT_LABEL]
+    assert soft.debiased_squared_l2 is None
+    assert soft.debiased_l2 is None
+
+    summary = summarize_ambiguity_cell(
+        design=design,
+        cell=cell,
+        phase=MetricLabPhase.DEVELOPMENT,
+        num_replicates=20,
+    )
+    soft_metrics = summary.targets[TargetKind.SOFT_LABEL].metrics
+    assert "debiased_squared_l2" not in soft_metrics
+    assert "debiased_l2" not in soft_metrics
+    rater_metrics = summary.targets[TargetKind.RATER_DISTRIBUTION].metrics
+    assert "debiased_squared_l2" in rater_metrics

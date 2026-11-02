@@ -831,8 +831,8 @@ class AmbiguityTargetReplicateResult:
     log_score: float
     fixed_bin_ece: float
     equal_mass_ece: float
-    debiased_squared_l2: float
-    debiased_l2: float
+    debiased_squared_l2: float | None
+    debiased_l2: float | None
     classification_error: float
     aurc: float
     brier_intervals: MeanLossIntervals
@@ -1015,9 +1015,16 @@ def _evaluate_ambiguity_target(
     fixed = fixed_bin_ece(forecasts, outcomes, num_bins=design.fixed_bin_count)[0]
     equal = equal_mass_ece(forecasts, outcomes, num_bins=design.equal_mass_bin_count)[0]
     risk_curve = risk_coverage_tie_blocks(confidences=confidences, errors=errors)
-    squared_l2 = debiased_squared_l2_calibration_error(
-        forecasts, outcomes, num_bins=design.fixed_bin_count
-    )
+    squared_l2: float | None
+    l2_presentation: float | None
+    if target is TargetKind.SOFT_LABEL:
+        squared_l2 = None
+        l2_presentation = None
+    else:
+        squared_l2 = debiased_squared_l2_calibration_error(
+            forecasts, outcomes, num_bins=design.fixed_bin_count
+        )
+        l2_presentation = math.sqrt(max(squared_l2, 0.0))
     return AmbiguityTargetReplicateResult(
         target=target,
         evaluation_count=len(outcomes),
@@ -1026,7 +1033,7 @@ def _evaluate_ambiguity_target(
         fixed_bin_ece=fixed,
         equal_mass_ece=equal,
         debiased_squared_l2=squared_l2,
-        debiased_l2=math.sqrt(max(squared_l2, 0.0)),
+        debiased_l2=l2_presentation,
         classification_error=sum(errors) / len(errors),
         aurc=compute_aurc(
             confidences, errors, tie_convention=design.aurc_tie_convention
@@ -1144,20 +1151,27 @@ def summarize_ambiguity_cell(
                 tuple(value.equal_mass_ece for value in values),
                 truth.equal_mass_calibration,
             ),
-            "debiased_squared_l2": (
-                tuple(value.debiased_squared_l2 for value in values),
-                truth.l2_calibration**2,
-            ),
-            "debiased_l2": (
-                tuple(value.debiased_l2 for value in values),
-                truth.l2_calibration,
-            ),
             "classification_error": (
                 tuple(value.classification_error for value in values),
                 truth.classification_error,
             ),
             "aurc": (tuple(value.aurc for value in values), truth.aurc),
         }
+        if target is not TargetKind.SOFT_LABEL:
+            squared_values = tuple(value.debiased_squared_l2 for value in values)
+            l2_values = tuple(value.debiased_l2 for value in values)
+            squared_numeric = tuple(value for value in squared_values if value is not None)
+            l2_numeric = tuple(value for value in l2_values if value is not None)
+            if len(squared_numeric) != len(values) or len(l2_numeric) != len(values):
+                raise AssertionError("Bernoulli L2 diagnostics unexpectedly missing")
+            metric_specs["debiased_squared_l2"] = (
+                squared_numeric,
+                truth.l2_calibration**2,
+            )
+            metric_specs["debiased_l2"] = (
+                l2_numeric,
+                truth.l2_calibration,
+            )
         for index, requested in enumerate(design.operational_coverage_floats):
             metric_specs[f"risk_at_coverage_{requested:g}"] = (
                 tuple(value.operational_risk[index].risk for value in values),

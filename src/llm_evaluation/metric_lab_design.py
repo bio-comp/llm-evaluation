@@ -117,6 +117,9 @@ class MetricLabDesign(_StrictFrozenRecord):
     fixed_case_l2_debias_role: Literal["stress-diagnostic-not-unbiased-v1"] = (
         "stress-diagnostic-not-unbiased-v1"
     )
+    soft_label_l2_debias_policy: Literal["inapplicable-bernoulli-correction-v1"] = (
+        "inapplicable-bernoulli-correction-v1"
+    )
 
     @staticmethod
     def _validate_probability_text(value: str, *, label: str) -> str:

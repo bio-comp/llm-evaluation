@@ -217,3 +217,13 @@ def test_question_population_stress_inventory_is_exact_and_identity_bearing() ->
         update={"question_population_stress_policy": "different-policy"}
     )
     assert canonical_record_hash(changed) != baseline
+
+
+def test_soft_label_bernoulli_debias_inapplicability_is_identity_bearing() -> None:
+    design = MetricLabDesign()
+    assert design.soft_label_l2_debias_policy == "inapplicable-bernoulli-correction-v1"
+    baseline = canonical_record_hash(design)
+    changed = design.model_copy(
+        update={"soft_label_l2_debias_policy": "different-policy"}
+    )
+    assert canonical_record_hash(changed) != baseline
