@@ -145,7 +145,7 @@ def test_auxiliary_grid_parameters_are_identity_bearing_and_enumerable() -> None
     prevalence = prevalence_grid_cells(design)
     assert len(ambiguity) == 4 * 3 * 3 == 36
     assert len({cell.cell_key for cell in ambiguity}) == 36
-    assert {cell.raters_per_item for cell in ambiguity} == {3, 9, 25}
+    assert {cell.raters_per_item for cell in ambiguity} == {1, 3, 5}
     assert {cell.n_items for cell in ambiguity} == {50, 200, 1000}
     assert {cell.forecast_kind for cell in ambiguity} == set(design.forecast_kinds)
     assert [cell.prevalence for cell in prevalence] == [0.01, 0.1, 0.5]

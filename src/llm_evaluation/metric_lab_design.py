@@ -74,7 +74,7 @@ class MetricLabDesign(_StrictFrozenRecord):
         "0.99",
     )
     ambiguity_n_items: tuple[int, ...] = (50, 200, 1000)
-    ambiguity_raters_per_item: tuple[int, ...] = (3, 9, 25)
+    ambiguity_raters_per_item: tuple[int, ...] = (1, 3, 5)
     prevalence_values: tuple[str, ...] = ("0.01", "0.1", "0.5")
     prevalence_tpr: str = "0.9"
     prevalence_fpr: str = "0.01"
