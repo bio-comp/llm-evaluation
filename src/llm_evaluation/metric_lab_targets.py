@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Sequence
 
 from llm_evaluation.metric_lab_design import balanced_probability_schedule
-from llm_evaluation.metric_laboratory import fixed_bin_ece, noisy_target_probability
+from llm_evaluation.metric_laboratory import (
+    brier_score,
+    fixed_bin_ece,
+    noisy_target_probability,
+)
 
 
 class TargetKind(StrEnum):
@@ -49,6 +54,55 @@ class SubgroupCalibrationControl:
     pooled_ece: float
     subgroup_ece: dict[str, float]
     max_subgroup_ece: float
+
+
+@dataclass(frozen=True, slots=True)
+class PositiveClassInversionControl:
+    correct_brier: float
+    inverted_brier: float
+    inversion_detected: bool
+
+
+@dataclass(frozen=True, slots=True)
+class LabelNoiseNonidentifiabilityControl:
+    observed_reference_probability: float
+    candidate_clean_probabilities: tuple[float, float]
+    candidate_flip_rates: tuple[float, float]
+    distinct_parameterizations_match_observed: bool
+
+
+def positive_class_inversion_control() -> PositiveClassInversionControl:
+    """Expose the effect of silently reversing the positive-label meaning."""
+    forecasts = (0.9, 0.8, 0.2, 0.1)
+    correct_outcomes = (1, 1, 0, 0)
+    inverted_outcomes = tuple(1 - outcome for outcome in correct_outcomes)
+    correct = brier_score(forecasts, correct_outcomes)
+    inverted = brier_score(forecasts, inverted_outcomes)
+    return PositiveClassInversionControl(
+        correct_brier=correct,
+        inverted_brier=inverted,
+        inversion_detected=inverted > correct,
+    )
+
+
+def label_noise_nonidentifiability_control() -> LabelNoiseNonidentifiabilityControl:
+    """Show two clean/flip parameterizations with the same observed reference rate."""
+    clean_probabilities = (0.8, 0.9)
+    flip_rates = (0.1, 0.2)
+    observed = tuple(
+        noisy_target_probability(clean_probability, flip_rate)
+        for clean_probability, flip_rate in zip(
+            clean_probabilities, flip_rates, strict=True
+        )
+    )
+    return LabelNoiseNonidentifiabilityControl(
+        observed_reference_probability=observed[0],
+        candidate_clean_probabilities=clean_probabilities,
+        candidate_flip_rates=flip_rates,
+        distinct_parameterizations_match_observed=math.isclose(
+            observed[0], observed[1], rel_tol=0.0, abs_tol=1e-12
+        ),
+    )
 
 
 def binary_reference_targets(

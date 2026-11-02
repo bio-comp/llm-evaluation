@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -195,6 +196,8 @@ def test_preview_records_base_ambiguity_and_auxiliary_controls() -> None:
         phase=MetricLabPhase.DEVELOPMENT,
         cell_summaries=(base, ambiguity),
     )
+    assert preview.schema_version == 3
+    assert preview.auxiliary_controls.schema_version == 2
     assert preview.cell_count == 2
     assert {cell.cell_kind for cell in preview.cells} == {"base", "ambiguity"}
     assert preview.realized_budget_by_unit == {"ratings": 48, "rows": 32}
@@ -204,3 +207,18 @@ def test_preview_records_base_ambiguity_and_auxiliary_controls() -> None:
     assert preview.auxiliary_controls.aurc_upstream_negative_control == 0.5
     assert preview.auxiliary_controls.aurc_prefix_oracle == 0.75
     assert preview.auxiliary_controls.aurc_defect_detected is True
+    assert math.isclose(
+        preview.auxiliary_controls.positive_class_correct_brier, 0.025, rel_tol=1e-12
+    )
+    assert math.isclose(
+        preview.auxiliary_controls.positive_class_inverted_brier, 0.725, rel_tol=1e-12
+    )
+    assert preview.auxiliary_controls.positive_class_inversion_detected is True
+    assert math.isclose(
+        preview.auxiliary_controls.label_noise_observed_reference_probability,
+        0.74,
+        rel_tol=1e-12,
+    )
+    assert preview.auxiliary_controls.label_noise_candidate_clean_probabilities == (0.8, 0.9)
+    assert preview.auxiliary_controls.label_noise_candidate_flip_rates == (0.1, 0.2)
+    assert preview.auxiliary_controls.label_noise_nonidentifiable is True

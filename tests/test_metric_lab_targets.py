@@ -129,3 +129,23 @@ def test_fixed_case_and_population_sampling_are_different_uncertainty_targets() 
     assert population_a != population_b
     assert set(population_a).issubset(set(p_values))
     assert set(population_b).issubset(set(p_values))
+
+
+def test_positive_class_inversion_control_detects_mislabeled_target() -> None:
+    from llm_evaluation.metric_lab_targets import positive_class_inversion_control
+
+    control = positive_class_inversion_control()
+    assert math.isclose(control.correct_brier, 0.025, rel_tol=1e-12)
+    assert math.isclose(control.inverted_brier, 0.725, rel_tol=1e-12)
+    assert control.inverted_brier > control.correct_brier
+    assert control.inversion_detected is True
+
+
+def test_single_reference_cannot_identify_clean_probability_and_symmetric_flip_rate() -> None:
+    from llm_evaluation.metric_lab_targets import label_noise_nonidentifiability_control
+
+    control = label_noise_nonidentifiability_control()
+    assert math.isclose(control.observed_reference_probability, 0.74, rel_tol=1e-12)
+    assert control.candidate_clean_probabilities == (0.8, 0.9)
+    assert control.candidate_flip_rates == (0.1, 0.2)
+    assert control.distinct_parameterizations_match_observed is True

@@ -120,6 +120,12 @@ class MetricLabDesign(_StrictFrozenRecord):
     soft_label_l2_debias_policy: Literal["inapplicable-bernoulli-correction-v1"] = (
         "inapplicable-bernoulli-correction-v1"
     )
+    positive_class_inversion_control_version: Literal["brier-label-inversion-v1"] = (
+        "brier-label-inversion-v1"
+    )
+    label_noise_identifiability_control_version: Literal[
+        "symmetric-flip-two-solution-v1"
+    ] = "symmetric-flip-two-solution-v1"
 
     @staticmethod
     def _validate_probability_text(value: str, *, label: str) -> str:

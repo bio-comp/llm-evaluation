@@ -197,7 +197,7 @@ class AuxiliaryControlsRecord(_StrictFrozenRecord):
     record_type: Literal["metric_lab_auxiliary_controls"] = (
         "metric_lab_auxiliary_controls"
     )
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     prevalence: tuple[PrevalenceControlRecord, ...]
     subgroup_pooled_ece: float
     subgroup_ece: dict[str, float]
@@ -205,18 +205,43 @@ class AuxiliaryControlsRecord(_StrictFrozenRecord):
     aurc_upstream_negative_control: float
     aurc_prefix_oracle: float
     aurc_defect_detected: bool
+    positive_class_correct_brier: float
+    positive_class_inverted_brier: float
+    positive_class_inversion_detected: bool
+    label_noise_observed_reference_probability: float
+    label_noise_candidate_clean_probabilities: tuple[float, float]
+    label_noise_candidate_flip_rates: tuple[float, float]
+    label_noise_nonidentifiable: bool
 
     @field_validator(
         "subgroup_pooled_ece",
         "subgroup_max_ece",
         "aurc_upstream_negative_control",
         "aurc_prefix_oracle",
+        "positive_class_correct_brier",
+        "positive_class_inverted_brier",
+        "label_noise_observed_reference_probability",
     )
     @classmethod
     def _finite_controls(cls, value: float) -> float:
         result = _finite(value, label="auxiliary control value")
         assert result is not None
         return result
+
+    @field_validator(
+        "label_noise_candidate_clean_probabilities",
+        "label_noise_candidate_flip_rates",
+    )
+    @classmethod
+    def _finite_probability_pairs(
+        cls, value: tuple[float, float]
+    ) -> tuple[float, float]:
+        for item in value:
+            if _finite(item, label="label-noise control probability") is None:
+                raise ValueError("invalid label-noise control probability")
+            if not 0.0 <= item <= 1.0:
+                raise ValueError("label-noise control probabilities must lie in [0, 1]")
+        return value
 
     @field_validator("subgroup_ece")
     @classmethod
@@ -233,7 +258,7 @@ class MetricLabRunRecord(_StrictFrozenRecord):
     canonical_identity_domain: ClassVar[str] = "llm-evaluation.metric-lab-run"
     canonical_identity_version: ClassVar[int] = 1
     record_type: Literal["known_truth_metric_lab_run"] = "known_truth_metric_lab_run"
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     phase: MetricLabPhase
     design_sha256: str
     frozen_design_record_sha256: str | None = None
@@ -432,6 +457,21 @@ def _auxiliary_record(design: MetricLabDesign) -> AuxiliaryControlsRecord:
         aurc_upstream_negative_control=controls.aurc_upstream_negative_control,
         aurc_prefix_oracle=controls.aurc_prefix_oracle,
         aurc_defect_detected=controls.aurc_defect_detected,
+        positive_class_correct_brier=controls.positive_class_inversion.correct_brier,
+        positive_class_inverted_brier=controls.positive_class_inversion.inverted_brier,
+        positive_class_inversion_detected=controls.positive_class_inversion.inversion_detected,
+        label_noise_observed_reference_probability=(
+            controls.label_noise_nonidentifiability.observed_reference_probability
+        ),
+        label_noise_candidate_clean_probabilities=(
+            controls.label_noise_nonidentifiability.candidate_clean_probabilities
+        ),
+        label_noise_candidate_flip_rates=(
+            controls.label_noise_nonidentifiability.candidate_flip_rates
+        ),
+        label_noise_nonidentifiable=(
+            controls.label_noise_nonidentifiability.distinct_parameterizations_match_observed
+        ),
     )
 
 

@@ -19,11 +19,15 @@ from llm_evaluation.metric_lab_design import (
     prevalence_grid_cells,
 )
 from llm_evaluation.metric_lab_targets import (
+    LabelNoiseNonidentifiabilityControl,
+    PositiveClassInversionControl,
     SamplingUnit,
     SubgroupCalibrationControl,
     TargetKind,
     generate_item_probabilities,
     generate_rater_ambiguity_items,
+    label_noise_nonidentifiability_control,
+    positive_class_inversion_control,
     prevalence_precision,
     subgroup_calibration_cancellation_control,
 )
@@ -95,6 +99,8 @@ class AuxiliaryDeterministicControls:
     aurc_upstream_negative_control: float
     aurc_prefix_oracle: float
     aurc_defect_detected: bool
+    positive_class_inversion: PositiveClassInversionControl
+    label_noise_nonidentifiability: LabelNoiseNonidentifiabilityControl
 
 
 @dataclass(frozen=True, slots=True)
@@ -807,6 +813,8 @@ def run_auxiliary_deterministic_controls(
         aurc_defect_detected=not math.isclose(
             upstream, oracle, rel_tol=0.0, abs_tol=0.0
         ),
+        positive_class_inversion=positive_class_inversion_control(),
+        label_noise_nonidentifiability=label_noise_nonidentifiability_control(),
     )
 
 

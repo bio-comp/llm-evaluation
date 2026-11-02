@@ -227,3 +227,17 @@ def test_soft_label_bernoulli_debias_inapplicability_is_identity_bearing() -> No
         update={"soft_label_l2_debias_policy": "different-policy"}
     )
     assert canonical_record_hash(changed) != baseline
+
+
+def test_negative_control_versions_are_identity_bearing() -> None:
+    design = MetricLabDesign()
+    assert design.positive_class_inversion_control_version == "brier-label-inversion-v1"
+    assert (
+        design.label_noise_identifiability_control_version
+        == "symmetric-flip-two-solution-v1"
+    )
+    baseline = canonical_record_hash(design)
+    changed = design.model_copy(
+        update={"positive_class_inversion_control_version": "different-control"}
+    )
+    assert canonical_record_hash(changed) != baseline

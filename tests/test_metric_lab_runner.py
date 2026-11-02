@@ -334,6 +334,15 @@ def test_auxiliary_deterministic_controls_include_prevalence_subgroup_and_aurc_n
     assert controls.aurc_upstream_negative_control == 0.5
     assert controls.aurc_prefix_oracle == 0.75
     assert controls.aurc_defect_detected is True
+    assert math.isclose(controls.positive_class_inversion.correct_brier, 0.025, rel_tol=1e-12)
+    assert math.isclose(controls.positive_class_inversion.inverted_brier, 0.725, rel_tol=1e-12)
+    assert controls.positive_class_inversion.inversion_detected is True
+    assert math.isclose(
+        controls.label_noise_nonidentifiability.observed_reference_probability,
+        0.74,
+        rel_tol=1e-12,
+    )
+    assert controls.label_noise_nonidentifiability.distinct_parameterizations_match_observed is True
 
 
 def test_independent_unit_debiased_squared_l2_is_invariant_to_shared_row_duplication() -> (
