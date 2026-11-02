@@ -211,3 +211,75 @@ def test_path_statistics_preserve_distribution_vs_adjusted_process_separation() 
     assert stats.max_adjusted_ewma == pytest.approx(0.0, abs=1e-15)
     assert stats.max_adjusted_cusum == pytest.approx(0.0, abs=1e-15)
     assert stats.max_adjusted_shewhart == pytest.approx(0.0, abs=1e-15)
+
+
+def test_development_calibration_is_deterministic_and_respects_family_budget_on_tiny_grid() -> None:
+    from llm_evaluation.drift_lab_runner import run_development_calibration
+
+    design = DriftLabDesign()
+    first = run_development_calibration(design, path_count=100)
+    second = run_development_calibration(design, path_count=100)
+    assert first == second
+    assert first.path_count == 100
+    assert set(first.development_family_false_alarm) == {
+        "psi_only",
+        "pearson_only",
+        "spc_only_ewma",
+        "spc_only_cusum",
+        "layered_raw",
+        "layered_adjusted_ewma",
+        "layered_adjusted_cusum",
+    }
+    assert all(rate <= 0.05 for rate in first.development_family_false_alarm.values())
+    assert set(first.psi_null_thresholds) == {100, 200, 1000}
+    assert set(first.layered_component_tail_probability) == {
+        "layered_raw",
+        "layered_adjusted_ewma",
+        "layered_adjusted_cusum",
+    }
+
+
+def test_tiny_final_summary_is_deterministic_and_reports_every_frozen_gate_dimension() -> None:
+    from llm_evaluation.drift_lab_runner import run_development_calibration, run_final_summary
+
+    design = DriftLabDesign()
+    calibration = run_development_calibration(design, path_count=80)
+    first = run_final_summary(design, calibration=calibration, path_count=80)
+    second = run_final_summary(design, calibration=calibration, path_count=80)
+    assert first == second
+    assert set(first.matched_policy_false_alarm) == {
+        "psi_only",
+        "pearson_only",
+        "spc_only_ewma",
+        "spc_only_cusum",
+        "layered_raw",
+        "layered_adjusted_ewma",
+        "layered_adjusted_cusum",
+    }
+    assert set(first.psi_heuristic_null_false_alarm) == {"100", "200", "1000"}
+    assert set(first.psi_calibrated_null_false_alarm) == {"100", "200", "1000"}
+    assert set(first.adjusted_typed_accuracy) == set(design.primary_truth_states)
+    assert set(first.raw_typed_accuracy) == set(design.primary_truth_states)
+    assert 0.0 <= float(first.localized_aggregate_detection) <= 1.0
+    assert 0.0 <= float(first.localized_b_detection) <= 1.0
+
+
+def test_tiny_scenario_policy_reporting_includes_temporal_stresses_and_wilson_bounds() -> None:
+    from llm_evaluation.drift_lab_runner import (
+        run_development_calibration,
+        run_scenario_policy_reporting,
+    )
+
+    design = DriftLabDesign()
+    calibration = run_development_calibration(design, path_count=30)
+    outcomes = run_scenario_policy_reporting(design, calibration=calibration, path_count=30)
+    keys = {(item.scenario, item.policy) for item in outcomes}
+    assert ("gradual_process", "spc_only_ewma") in keys
+    assert ("temporary_process", "spc_only_cusum") in keys
+    assert ("localized_b_process", "b_stratum_ewma") in keys
+    assert len(keys) == len(outcomes)
+    for item in outcomes:
+        estimate = float(item.horizon_alarm_probability)
+        lower = float(item.horizon_alarm_wilson_lower)
+        upper = float(item.horizon_alarm_wilson_upper)
+        assert 0.0 <= lower <= estimate <= upper <= 1.0

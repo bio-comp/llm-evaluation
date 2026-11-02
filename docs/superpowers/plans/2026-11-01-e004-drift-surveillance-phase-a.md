@@ -8,12 +8,11 @@
 
 **Tech Stack:** Python 3.11.13, standard library, Pydantic/canonical-sync records already in the repo, pytest, Ruff, mypy.
 
-**Spec:** Live Drive `EXPERIMENTS.md`, section `E-004 — AR-11 drift-surveillance Phase A implementation freeze (2026-11-01)`, persistence-verified at revision `AHj4eMRhwaRpdwriY6hEI8peemBTpSotM8Oyv1SJC7ZuwOQC2_40KMqCiEysR4NKTJluv30txoGIYUN-9qutOFbWsOQvnJgJ-Nja-xM0DII`.
+**Spec:** Live canonical `EXPERIMENTS.md`, section `E-004 — AR-11 drift-surveillance Phase A implementation freeze (2026-11-01)`, verified before implementation.
 
 ## Global Constraints
 
 - Branch starts from exact merged `main` `24f5b9f4cc824b1b35839bd087cf7d331bad1f70`.
-- Current registered Drive source-state identity is `9199e8c51509a8ea9bf7ecffff5f1e47310b843acefc98bbe1b44991c418c5e7`.
 - DEVELOPMENT and FINAL use disjoint purpose-separated deterministic seed namespaces.
 - No E-004 DEVELOPMENT or FINAL scientific run before repository reconciliation completes; tests may use tiny deterministic grids.
 - No subject-model/API calls, private production/customer data, `packages/canonical-sync`, ADC-helper, or Prompt Research changes.
