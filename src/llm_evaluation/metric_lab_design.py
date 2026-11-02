@@ -43,7 +43,7 @@ class MetricLabDesign(_StrictFrozenRecord):
     record_type: Literal["known_truth_metric_lab_design"] = (
         "known_truth_metric_lab_design"
     )
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
 
     p_values: tuple[str, ...] = ("0.01", "0.1", "0.3", "0.5", "0.7", "0.9", "0.99")
     forecast_kinds: tuple[ForecastKind, ...] = (
@@ -98,7 +98,10 @@ class MetricLabDesign(_StrictFrozenRecord):
     calibration_independent_unit_policy: Literal["first-row-per-item-v1"] = (
         "first-row-per-item-v1"
     )
-    l2_debias_method: Literal["kumar-unbiased-l2-v1"] = "kumar-unbiased-l2-v1"
+    l2_debias_method: Literal["kumar-unbiased-squared-l2-v1"] = "kumar-unbiased-squared-l2-v1"
+    l2_presentation_method: Literal[
+        "sqrt-positive-part-of-debiased-squared-l2-v1"
+    ] = "sqrt-positive-part-of-debiased-squared-l2-v1"
     l1_debias_method: Literal["kumar-normal-resampling-l1-v1"] = (
         "kumar-normal-resampling-l1-v1"
     )

@@ -171,6 +171,12 @@ def test_design_hash_changes_when_auxiliary_or_operational_policy_changes() -> N
 
 def test_candidate_operational_and_sampling_policies_are_explicit() -> None:
     design = MetricLabDesign()
+    assert design.schema_version == 2
+    assert design.l2_debias_method == "kumar-unbiased-squared-l2-v1"
+    assert (
+        design.l2_presentation_method
+        == "sqrt-positive-part-of-debiased-squared-l2-v1"
+    )
     assert design.operational_coverage_floats == (0.1, 0.5, 0.9, 1.0)
     assert design.sampling_units == ("fixed_case", "question_population")
     assert design.brier_interval_methods == (
