@@ -9,7 +9,11 @@ from typing import Sequence
 
 from canonical_sync.codec import canonical_record_hash, parse_canonical_record
 from llm_evaluation.drift_lab_acceptance import evaluate_drift_lab_acceptance
-from llm_evaluation.drift_lab_design import FrozenDriftLabDesignRecord
+from llm_evaluation.drift_lab_design import (
+    DriftLabDesign,
+    FrozenDriftLabDesignRecord,
+    freeze_drift_lab_design,
+)
 from llm_evaluation.drift_lab_records import (
     finalize_drift_calibration,
     finalize_drift_final_run,
@@ -24,8 +28,6 @@ from llm_evaluation.drift_lab_runner import (
     run_scenario_policy_reporting,
 )
 from llm_evaluation.records import software_identity
-
-_DEFAULT_FROZEN_DESIGN = Path("fixtures/e004_drift_surveillance_phase_a_design.json")
 
 
 def _decimal(value: float) -> str:
@@ -53,7 +55,7 @@ def _realized_final_cases(frozen: FrozenDriftLabDesignRecord) -> int:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--phase", choices=("smoke", "development", "final"), required=True)
-    parser.add_argument("--frozen-design", type=Path, default=_DEFAULT_FROZEN_DESIGN)
+    parser.add_argument("--frozen-design", type=Path)
     parser.add_argument("--calibration", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--smoke-paths", type=int, default=20)
@@ -62,7 +64,13 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    frozen = _load_frozen_design(args.frozen_design)
+    if args.frozen_design is None:
+        if args.phase == "smoke":
+            frozen = freeze_drift_lab_design(DriftLabDesign())
+        else:
+            raise SystemExit("--frozen-design is required for scientific DEVELOPMENT/FINAL execution")
+    else:
+        frozen = _load_frozen_design(args.frozen_design)
     design = frozen.design
 
     if args.phase == "smoke":
