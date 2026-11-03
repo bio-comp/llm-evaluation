@@ -23,14 +23,14 @@ jobs:
         run: |
           python -m pip install uv==0.8.4
           uv lock --check
-          uv sync --frozen --all-packages --group dev --extra drive --extra local-auth
+          uv sync --frozen --group dev --extra drive --extra local-auth
       - name: Static checks and branch coverage
         run: |
-          uv run --frozen --all-packages --extra drive --extra local-auth ruff check src tests scripts packages/canonical-sync/src packages/canonical-sync/tests
-          uv run --frozen --all-packages --extra drive --extra local-auth mypy --python-version 3.11 src packages/canonical-sync/src scripts/refresh_google_drive_adc.py
-          uv run --frozen --all-packages --extra drive --extra local-auth coverage erase
-          uv run --frozen --all-packages --extra drive --extra local-auth coverage run --branch -m pytest -m 'not live_drive' -q
-          uv run --frozen --all-packages --extra drive --extra local-auth coverage report --include='src/*,packages/canonical-sync/src/*' --fail-under=80
+          uv run --frozen --extra drive --extra local-auth ruff check src tests
+          uv run --frozen --extra drive --extra local-auth mypy --python-version 3.11 src
+          uv run --frozen --extra drive --extra local-auth coverage erase
+          uv run --frozen --extra drive --extra local-auth coverage run --branch -m pytest -m 'not live_drive' -q
+          uv run --frozen --extra drive --extra local-auth coverage report --include='src/llm_evaluation/*' --fail-under=80
       - name: Build and exercise installed entrypoints in isolated venvs
         shell: bash
         run: |
@@ -38,40 +38,33 @@ jobs:
           build_dir="$(mktemp -d)"
           trap 'rm -rf "$build_dir"' EXIT
           python -m pip install build==1.3.0
-          mkdir -p "$build_dir/dist/canonical" "$build_dir/dist/root" "$build_dir/wheelhouse"
-          python -m build packages/canonical-sync --sdist --wheel --outdir "$build_dir/dist/canonical"
+          mkdir -p "$build_dir/dist/root"
           python -m build --sdist --wheel --outdir "$build_dir/dist/root"
 
-          # 1. Isolated fresh venv for canonical-sync
-          python -m venv "$build_dir/venv-canonical"
-          "$build_dir/venv-canonical/bin/pip" wheel --wheel-dir="$build_dir/wheelhouse" "$build_dir"/dist/canonical/*.whl
-          "$build_dir/venv-canonical/bin/pip" install --no-index --find-links="$build_dir/wheelhouse" canonical-sync
-          "$build_dir/venv-canonical/bin/python" - <<'PY_CANONICAL'
-          from importlib.metadata import PackageNotFoundError, version
-          import canonical_sync.records
-          for distribution in ("google-api-python-client", "google-auth", "llm-evaluation"):
-              try:
-                  version(distribution)
-              except PackageNotFoundError:
-                  continue
-              raise AssertionError(f"canonical-sync unexpectedly installed {distribution}")
-          PY_CANONICAL
-
-          # 2. Isolated fresh venv for llm-evaluation (resolving canonical-sync from built wheel)
+          # Isolated fresh venv for llm-evaluation. The wheel pins canonical-sync
+          # to an immutable public Git commit; verify that exact provenance after install.
           python -m venv "$build_dir/venv-root"
-          "$build_dir/venv-root/bin/pip" wheel --wheel-dir="$build_dir/wheelhouse" --find-links="$build_dir/wheelhouse" "$build_dir"/dist/root/*.whl
-          "$build_dir/venv-root/bin/pip" install --no-index --find-links="$build_dir/wheelhouse" "$build_dir"/dist/root/*.whl
+          "$build_dir/venv-root/bin/pip" install "$build_dir"/dist/root/*.whl
           "$build_dir/venv-root/bin/python" - <<'PY_BASE'
-          from importlib.metadata import PackageNotFoundError, version
+          import json
+          from importlib.metadata import PackageNotFoundError, distribution, version
           import canonical_sync.records
           import llm_evaluation.canonical_authority
           import llm_evaluation.canonical_reconciliation
-          for distribution in ("google-api-python-client", "google-auth"):
+
+          expected = "a157898a4c2fd56984afb410d426f913ae7b2f09"
+          direct_url = distribution("canonical-sync").read_text("direct_url.json")
+          assert direct_url is not None
+          provenance = json.loads(direct_url)
+          assert provenance["url"] == "https://github.com/bio-comp/canonical-sync.git"
+          assert provenance["vcs_info"]["commit_id"] == expected
+          assert provenance["vcs_info"]["requested_revision"] == expected
+          for package in ("google-api-python-client", "google-auth"):
               try:
-                  version(distribution)
+                  version(package)
               except PackageNotFoundError:
                   continue
-              raise AssertionError(f"base wheel unexpectedly installed {distribution}")
+              raise AssertionError(f"base wheel unexpectedly installed {package}")
           PY_BASE
           (unset PYTHONPATH; "$build_dir/venv-root/bin/llm-evaluation" fixtures/e002_synthetic.json --k 2 > "$build_dir/preview.json")
           python -c 'import json,sys; assert json.load(open(sys.argv[1]))["macro"]["marginal"] == 0.5' "$build_dir/preview.json"

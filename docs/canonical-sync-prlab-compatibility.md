@@ -1,5 +1,7 @@
 # canonical-sync second-consumer check: Prompt Research / prlab
 
+> **2026-11-03 extraction amendment:** The predeclared extraction gate is satisfied. Standalone public `bio-comp/canonical-sync` now exists; `v0.1.0` preserves the extracted baseline and `v0.2.0` adds an explicit `google-drive-file-download-v1` stored-file representation plus shared ADC operator CLI. The raw-file adapter uses exact `get_media()` bytes, verifies declared size and provider SHA-256 when present, rejects Google-native files under the raw contract, and never falls back between export and raw representations. `v0.2.1` carries the same package behavior with corrected hosted-CI dependency setup and is the current consumer pin. Prompt Research full acquisition migration remains separate and must retain `prlab` as the comparator until parity is proven.
+
 ## Purpose
 
 This note checks the incubated `canonical_sync` API against the current Prompt Research/prlab acquisition and mirror implementation. Prompt Research remains read-only reference material here: this work does not modify prlab and does not make prlab an authority over `llm_evaluation`.
@@ -24,11 +26,11 @@ The question is narrow: which prlab behaviors are genuinely reusable mechanics, 
 | Approved Git projection over verified base, expected-base/race checks, fast-forward-only push, remote readback | `GitPublisher` | Common mechanical primitive represented. It overlays only caller-approved paths/bytes; unrelated base paths survive and omission is not deletion. |
 | prlab mirror branch naming, scheduling, mirror-state lifecycle, and public mirror shape | prlab project layer | Intentionally **not** generic. These are Prompt Research publication semantics and policy, and the mirror shape is not copied into the public `llm_evaluation` design. |
 
-## Important second-consumer gap: stored-file/raw-byte acquisition
+## Resolved extraction requirement: stored-file/raw-byte acquisition
 
 prlab also acquires stored Drive blobs and verifies provider checksums where the provider exposes a meaningful checksum. The first `llm_evaluation` consumer currently needs native Google Docs only, and its proven representation is exact `text/markdown` bytes from Drive `files.export`.
 
-Therefore the current generic package does **not** yet have a demonstrated raw stored-file/download representation adapter. This is not a defect in the `llm_evaluation` consumer and should not be added speculatively before extraction. It is, however, a concrete second-consumer requirement to implement during or immediately before prlab migration:
+At the time of this compatibility review the incubated package did **not** yet have a demonstrated raw stored-file/download representation adapter. That gap became a concrete extraction requirement and is now implemented in standalone `canonical-sync` `v0.2.0` under tests:
 
 - add a versioned stored-file/raw-byte representation;
 - use Drive download bytes exactly;
@@ -55,4 +57,4 @@ Those changes improve the generic seam for both consumers and are now tested in 
 
 The API has now survived a real `llm_evaluation` local OAuth acquisition and a prlab second-consumer behavior mapping. The original technical extraction criteria are therefore substantially exercised locally: stable acquisition, `llm_evaluation`'s four project-owned reconciliation dispositions, a discriminating canonical-to-executable contract test, verified private snapshot publication, and second-consumer gaps are known.
 
-**Recommended operational gate:** do not extract the package before this `llm-evaluation` branch has completed normal public Git review/CI and D-016 can be closed as `COMPLETE`. After that, propose a standalone `canonical-sync` repository/package, add the raw stored-file representation required by prlab under tests, and migrate prlab incrementally while retaining its current implementation as the behavioral comparator until parity is demonstrated.
+**Gate resolution (2026-11-03):** D-016 had already reached verified `COMPLETE`, the real consumer path and second-consumer mapping were established, and the remaining raw-file requirement was explicit. Standalone extraction has therefore proceeded. `llm-evaluation` migration and Prompt Research helper retirement are consumer transactions; full `prlab` acquisition migration remains incremental and must retain the current implementation as the behavioral comparator until parity is demonstrated.

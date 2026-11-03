@@ -6,12 +6,6 @@ resolution-markers = [
     "python_full_version < '3.14'",
 ]
 
-[manifest]
-members = [
-    "canonical-sync",
-    "llm-evaluation",
-]
-
 [[package]]
 name = "annotated-types"
 version = "0.8.0"
@@ -50,8 +44,8 @@ wheels = [
 
 [[package]]
 name = "canonical-sync"
-version = "0.1.0"
-source = { editable = "packages/canonical-sync" }
+version = "0.2.1"
+source = { git = "https://github.com/bio-comp/canonical-sync.git?rev=a157898a4c2fd56984afb410d426f913ae7b2f09#a157898a4c2fd56984afb410d426f913ae7b2f09" }
 dependencies = [
     { name = "pydantic" },
 ]
@@ -61,14 +55,10 @@ drive = [
     { name = "google-api-python-client" },
     { name = "google-auth" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "google-api-python-client", marker = "extra == 'drive'", specifier = "==2.201.0" },
-    { name = "google-auth", marker = "extra == 'drive'", specifier = "==2.62.0" },
-    { name = "pydantic", specifier = "==2.14.1" },
+local-auth = [
+    { name = "google-auth" },
+    { name = "google-auth-oauthlib" },
 ]
-provides-extras = ["drive"]
 
 [[package]]
 name = "certifi"
@@ -787,7 +777,7 @@ drive = [
     { name = "canonical-sync", extra = ["drive"] },
 ]
 local-auth = [
-    { name = "google-auth-oauthlib" },
+    { name = "canonical-sync", extra = ["local-auth"] },
 ]
 
 [package.dev-dependencies]
@@ -804,9 +794,9 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "canonical-sync", editable = "packages/canonical-sync" },
-    { name = "canonical-sync", extras = ["drive"], marker = "extra == 'drive'", editable = "packages/canonical-sync" },
-    { name = "google-auth-oauthlib", marker = "extra == 'local-auth'", specifier = "==1.5.0" },
+    { name = "canonical-sync", git = "https://github.com/bio-comp/canonical-sync.git?rev=a157898a4c2fd56984afb410d426f913ae7b2f09" },
+    { name = "canonical-sync", extras = ["drive"], marker = "extra == 'drive'", git = "https://github.com/bio-comp/canonical-sync.git?rev=a157898a4c2fd56984afb410d426f913ae7b2f09" },
+    { name = "canonical-sync", extras = ["local-auth"], marker = "extra == 'local-auth'", git = "https://github.com/bio-comp/canonical-sync.git?rev=a157898a4c2fd56984afb410d426f913ae7b2f09" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "pydantic", specifier = "==2.14.1" },
 ]

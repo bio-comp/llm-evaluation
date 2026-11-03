@@ -1,6 +1,6 @@
 # canonical-sync in-repository incubation design
 
-**Status:** implementation design for D-016; Google Drive remains the sole mutable `llm_evaluation` methodological authority.
+**Status:** HISTORICAL incubation design for D-016. The predeclared extraction gate was satisfied and standalone `bio-comp/canonical-sync` was created on 2026-11-03; this document preserves the original in-repository design and gate criteria rather than rewriting that history. Google Drive remains the sole mutable `llm_evaluation` methodological authority.
 
 **Scope:** replace the branch's first project-specific `llm_evaluation.authority_store` prototype with a reusable in-repository package named `canonical-sync` / import namespace `canonical_sync`, then consume it through thin `llm_evaluation` adapters. Prompt Research/prlab is prior art and a future second-consumer check, not an implementation dependency or authority.
 

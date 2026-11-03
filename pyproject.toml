@@ -8,16 +8,14 @@ version = "0.1.0"
 description = "Public, reproducible evaluation-methodology diagnostics"
 requires-python = ">=3.11"
 dependencies = [
-    "canonical-sync",
+    "canonical-sync @ git+https://github.com/bio-comp/canonical-sync.git@a157898a4c2fd56984afb410d426f913ae7b2f09",
     "httpx>=0.28,<1",
     "pydantic==2.14.1",
 ]
 
 [project.optional-dependencies]
-drive = ["canonical-sync[drive]"]
-local-auth = [
-    "google-auth-oauthlib==1.5.0",
-]
+drive = ["canonical-sync[drive] @ git+https://github.com/bio-comp/canonical-sync.git@a157898a4c2fd56984afb410d426f913ae7b2f09"]
+local-auth = ["canonical-sync[local-auth] @ git+https://github.com/bio-comp/canonical-sync.git@a157898a4c2fd56984afb410d426f913ae7b2f09"]
 
 [project.scripts]
 llm-evaluation = "llm_evaluation.cli:main"
@@ -27,6 +25,9 @@ llm-evaluation-drift-lab = "llm_evaluation.drift_lab_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/llm_evaluation"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [dependency-groups]
 dev = [
@@ -39,12 +40,6 @@ dev = [
     "pytest-randomly>=3.15.0",
     "ruff==0.14.4",
 ]
-
-[tool.uv.sources]
-canonical-sync = { workspace = true }
-
-[tool.uv.workspace]
-members = ["packages/canonical-sync"]
 
 [tool.pytest.ini_options]
 pythonpath = ["tests"]

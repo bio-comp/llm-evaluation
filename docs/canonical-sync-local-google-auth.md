@@ -141,15 +141,15 @@ mkdir -p "$CLOUDSDK_CONFIG"
 chmod 0700 "$CLOUDSDK_CONFIG"
 ```
 
-### 4.1 Supported Repository Helper
+### 4.1 Supported Shared Operator Command
 
-During the current `canonical-sync` incubation period, the supported local provisioning and renewal path is the tested repository helper:
+After standalone extraction, the supported local provisioning and renewal path is the tested `canonical-sync` operator command pinned by the consumer:
 
 ```bash
-uv sync --frozen --all-packages --group dev --extra drive --extra local-auth
+uv sync --frozen --group dev --extra drive --extra local-auth
 
-uv run --all-packages --extra local-auth \
-  python scripts/refresh_google_drive_adc.py \
+uv run --extra local-auth \
+  canonical-sync refresh-google-drive-adc \
   --client-secrets ~/.config/llm-evaluation/llm-evaluation-oauth.json \
   --cloud-sdk-config ~/.config/gcloud-llm-evaluation
 ```
@@ -182,7 +182,7 @@ gcloud auth application-default login \
   --scopes=https://www.googleapis.com/auth/drive.readonly
 ```
 
-failed because that `gcloud` path demanded `cloud-platform`. **Do not broaden the credential merely to satisfy tooling.** Use the tested repository helper instead. This is an observed compatibility fact for that SDK condition, not a universal statement about every Cloud SDK release.
+failed because that `gcloud` path demanded `cloud-platform`. **Do not broaden the credential merely to satisfy tooling.** Use the tested shared `canonical-sync` operator command instead. This is an observed compatibility fact for that SDK condition, not a universal statement about every Cloud SDK release.
 
 ### 4.3 Valid ADC Representation and Loader Compatibility Check
 
@@ -240,14 +240,14 @@ Before treating the credential context as operational, verify it mechanically:
    CLOUDSDK_CONFIG="$HOME/.config/gcloud-llm-evaluation" \
    LLM_EVALUATION_LIVE_DRIVE=1 \
    LLM_EVALUATION_DRIVE_PROFILE="$HOME/.config/llm-evaluation/llm-evaluation-d016.toml" \
-   uv run --all-packages --extra drive pytest -m live_drive tests/test_canonical_drive_live.py -q
+   uv run --extra drive pytest -m live_drive tests/test_canonical_drive_live.py -q
    ```
    Confirm that the test passes (`1 passed`), verifies the state and receipt hashes, and produces no Drive mutations.
 
 ---
 
-## 7. Temporary Duplication Exit Condition
+## 7. Standalone Extraction and Remaining Cross-Project Migration
 
-The repo-local helper is intentional temporary migration debt while `canonical-sync` remains incubating. Prompt Research carries the same behavioral implementation without a cross-repository runtime dependency. Keep both copies mechanically synchronized unless a divergence is explicitly justified.
+The shared operator tool is now implemented in standalone `bio-comp/canonical-sync` `v0.2.1`. This `llm-evaluation` consumer no longer owns a repo-local helper; its dependency is pinned to exact commit `a157898a4c2fd56984afb410d426f913ae7b2f09`. Consumer-specific authority semantics remain outside the shared tool.
 
-Standalone extraction is complete only after a shared operator tool is separately authorized and validated, both consumers migrate their runbooks/invocations to it, both repo-local helper copies are deleted, consumer-specific authority semantics remain outside the shared tool, parity with this verified contract is demonstrated, and each consumer's relevant deterministic/live verification still passes. Do not retain the repo-local copies as fallback implementations without a new explicit architecture decision.
+The original cross-project retirement condition is not globally complete until Prompt Research also migrates its runbook/invocation, deletes its duplicate repo-local helper after parity verification, and passes its relevant deterministic/live checks. The later full `prlab` acquisition migration is a separate parity transaction: keep the current `prlab` acquisition implementation as behavioral comparator until that migration is independently verified.
