@@ -2,9 +2,13 @@
 
 `llm-evaluation` treats Google Drive as the sole mutable authority for methodology and reconciliation state. The public repository contains executable code, tests, schemas, public-safe contracts, and deliberately published artifacts; it does not mirror private canonical bodies or Drive metadata.
 
-The reusable mechanics are incubated in the workspace package `packages/canonical-sync` (import namespace `canonical_sync`). The governing boundary is: `canonical_sync` owns verified acquisition/snapshot mechanics and mechanical Git application/readback of an already-approved path/byte projection over an exact verified base; omitted base paths are preserved and are not implicit deletion authorization. `llm_evaluation` owns authority-role interpretation, material significance, public-safe projection construction, repository/ref/review/CI completion semantics, and the `NONE` / `REQUIRED` / `BLOCKED` / `COMPLETE` governance state machine. A `VerifiedSnapshot` is evidence, not authorization to mutate Git.
+The reusable mechanics now live in the standalone public `bio-comp/canonical-sync` repository (import namespace `canonical_sync`). This consumer pins the exact standalone `v0.2.1` implementation commit `a157898a4c2fd56984afb410d426f913ae7b2f09`; it no longer carries an active nested workspace copy. The governing boundary is unchanged: `canonical_sync` owns verified acquisition/snapshot mechanics and mechanical Git application/readback of an already-approved path/byte projection over an exact verified base; omitted base paths are preserved and are not implicit deletion authorization. `llm_evaluation` owns authority-role interpretation, material significance, public-safe projection construction, repository/ref/review/CI completion semantics, and the `NONE` / `REQUIRED` / `BLOCKED` / `COMPLETE` governance state machine. A `VerifiedSnapshot` is evidence, not authorization to mutate Git.
 
 The acquisition vertical slice in `llm_evaluation` is intentionally narrow: it acquires the four configured root governance roles (`README.md`, `DECISIONS.md`, `EXPERIMENTS.md`, and `REVIEW_LEDGER.md`) rather than mirroring the entire evaluation methodology. The public policy fixture (`fixtures/reconciliation_policy_contract.json`) is a mandatory component of a public-change projection, but it is not a substitute for the exact project-reviewed implementation/documentation files required by a specific reconciliation obligation.
+
+### Standalone extraction status — 2026-11-03
+
+The standalone package was extracted after the D-016/prlab predeclared gate was satisfied. Public `bio-comp/canonical-sync` `v0.1.0` preserves the extraction baseline; `v0.2.0` introduced the predeclared raw stored-file representation and shared ADC operator CLI; `v0.2.1` fixes the hosted-CI dependency declaration and is the current consumer pin. This `llm-evaluation` branch removes the nested workspace package and duplicated ADC helper and pins the exact `v0.2.1` commit. Cross-project migration is not globally complete until Prompt Research also retires its duplicate helper and later proves full acquisition parity before deleting its existing `prlab` implementation.
 
 ## Identity and canonical serialization
 
@@ -25,13 +29,13 @@ Live Drive acquisition is opt-in and is never part of ordinary PR CI. It uses Go
 For the current `llm-evaluation` consumer, provision, renew, or validate the isolated authorized-user ADC with the tested operator helper rather than an ad-hoc serialization recipe:
 
 ```bash
-uv run --all-packages --extra local-auth \
-  python scripts/refresh_google_drive_adc.py \
+uv run --extra local-auth \
+  canonical-sync refresh-google-drive-adc \
   --client-secrets ~/.config/llm-evaluation/llm-evaluation-oauth.json \
   --cloud-sdk-config ~/.config/gcloud-llm-evaluation
 ```
 
-Use `--check` for noninteractive validation and `--force` only for deliberate replacement of an existing destination. This repo-local helper is temporary migration debt pending separately authorized standalone `canonical-sync` extraction; it is not part of the acquisition runtime API.
+Use `--check` for noninteractive validation and `--force` only for deliberate replacement of an existing destination. The command is provided by standalone `canonical-sync` operator tooling; it is deliberately separate from the core acquisition runtime API, which consumes already-valid credentials.
 
 Keep the authority profile outside the repository. It is a private TOML file containing the exact registered object and parent identities for the D-016 roles `README.md`, `DECISIONS.md`, `EXPERIMENTS.md`, and `REVIEW_LEDGER.md`. A schematic profile entry is:
 
@@ -56,7 +60,7 @@ With already-authorized local ADC credentials and the private profile available,
 ```bash
 export LLM_EVALUATION_LIVE_DRIVE=1
 export LLM_EVALUATION_DRIVE_PROFILE=/absolute/private/path/llm-evaluation-d016.toml
-uv run --all-packages --extra drive pytest -m live_drive tests/test_canonical_drive_live.py -q
+uv run --extra drive pytest -m live_drive tests/test_canonical_drive_live.py -q
 ```
 
 Without both environment variables the live test skips before credential discovery or network access. The test performs only read operations, acquires a stable multi-object snapshot into a temporary private store, reopens and verifies it, and checks a controlled authority-mismatch failure.

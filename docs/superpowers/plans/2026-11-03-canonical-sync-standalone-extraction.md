@@ -4,7 +4,7 @@
 
 **Goal:** Extract the verified `canonical-sync` package from `llm-evaluation` into a standalone public `bio-comp/canonical-sync` repository, add the already-identified Prompt Research raw-file and shared ADC-CLI capabilities, then migrate `llm-evaluation` and the duplicated Prompt Research ADC helper to the standalone release without changing project-specific authority semantics.
 
-**Architecture:** Preserve the embedded `canonical_sync` API as the extraction baseline. The standalone package owns provider-neutral acquisition/snapshot/publication mechanics and operator ADC tooling only; consumer authority selection, reconciliation/scientific policy, mirror semantics, and publication authorization remain in their projects. Release `v0.1.0` as the extraction-equivalent baseline and `v0.2.0` after the additive raw-file representation and ADC CLI are verified.
+**Architecture:** Preserve the embedded `canonical_sync` API as the extraction baseline. The standalone package owns provider-neutral acquisition/snapshot/publication mechanics and operator ADC tooling only; consumer authority selection, reconciliation/scientific policy, mirror semantics, and publication authorization remain in their projects. Release `v0.1.0` as the extraction-equivalent baseline, `v0.2.0` for the additive raw-file/ADC capability, and use `v0.2.1` as the consumer pin after correcting the hosted-CI local-auth dependency declaration.
 
 **Tech Stack:** Python >=3.11, Pydantic 2.14.1, uv, hatchling, pytest, Google Drive API/google-auth optional dependency, Git/GitHub Actions.
 
@@ -83,7 +83,7 @@
 - Delete: `packages/canonical-sync/**`, `scripts/refresh_google_drive_adc.py`, its duplicate helper test after equivalent standalone coverage is bound.
 
 **Interfaces:**
-- Consumes: standalone `canonical-sync` `v0.2.0`.
+- Consumes: standalone `canonical-sync` `v0.2.1`.
 - Produces: `llm-evaluation` imports external `canonical_sync`; no nested package/workspace source remains.
 
 - [ ] Add a migration test/check that fails while the root still resolves `canonical-sync` from `packages/canonical-sync`.
@@ -98,11 +98,11 @@
 - Prompt Research: modify `pyproject.toml`, `uv.lock`, local-auth runbook/test wiring; delete `scripts/refresh_google_drive_adc.py` after shared CLI parity is proven.
 
 **Interfaces:**
-- Consumes: standalone `canonical-sync` `v0.2.0` operator CLI.
+- Consumes: standalone `canonical-sync` `v0.2.1` operator CLI.
 - Produces: no duplicated ADC helper implementation; current `prlab` acquisition remains the behavioral comparator for a later full acquisition migration.
 
 - [ ] Add dependency/CLI parity test that initially fails because Prompt Research still targets the repo-local helper.
-- [ ] Pin `canonical-sync` `v0.2.0`, point runbook/verification at the shared CLI, and delete the duplicate helper/test implementation only after equivalent standalone tests are established.
+- [ ] Pin `canonical-sync` `v0.2.1`, point runbook/verification at the shared CLI, and delete the duplicate helper/test implementation only after equivalent standalone tests are established.
 - [ ] Run Prompt Research deterministic gates relevant to local auth plus its full suite if practical; record any unrelated failures explicitly.
 - [ ] Commit and open a separate Prompt Research PR; do not claim full prlab acquisition migration yet.
 
