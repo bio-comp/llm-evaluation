@@ -189,7 +189,7 @@ class StructuredDiagnosticRecord(ClosedRecord):
     artifact: ArtifactIdentity | None
     status: Literal["passed", "failed", "incomplete"]
     failure_stage: Literal["identity", "external_conflict", "launch", "qualification", "structured_generation", "cleanup", "deadline"] | None
-    failure_code: Literal["http_status", "invalid_json", "invalid_response", "structured_parse", "structured_validation", "model_binding", "output_exhausted", "empty_visible_output", "deadline", "resource_busy", "startup_failure", "unknown_safe_failure"] | None
+    failure_code: Literal["http_status", "invalid_json", "invalid_response", "structured_parse", "structured_validation", "model_binding", "output_exhausted", "empty_visible_output", "reasoning_semantics", "deadline", "resource_busy", "startup_failure", "unknown_safe_failure"] | None
     cleanup_status: Literal["verified", "failed", "unverified"]
     server_launches: int = Field(ge=0, le=1)
     generation_submissions: int = Field(ge=0, le=1)

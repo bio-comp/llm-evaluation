@@ -266,3 +266,23 @@ def test_historical_passed_gate_shape_reads_without_new_v2_gates(fake, tmp_path)
     old = read_preflight_record(path)
     assert old.status == "passed"
     assert not hasattr(old.gates, "listener_loopback")
+
+
+def test_reasoning_off_rejects_reasoning_with_valid_visible_answer(fake):
+    from llm_evaluation.local_runtime_preflight import run_structured_diagnostic
+
+    executable = Path(fake["executable"])
+    original = executable.read_text()
+    changed = original.replace(
+        "'content':'{\"value\":1}'",
+        "'content':'{\"value\":1}','reasoning_content':'private reasoning'",
+    )
+    assert changed != original  # control must actually affect the synthetic server
+    executable.write_text(changed)
+    result = run_structured_diagnostic(**fake, reasoning_mode="off")
+    assert result.status == "failed"
+    assert result.failure_stage == "structured_generation"
+    assert result.failure_code == "reasoning_semantics"
+    assert result.summary is not None and result.summary.reasoning_present
+    assert result.cleanup_status == "verified"
+    assert "private reasoning" not in fake["output"].read_text()

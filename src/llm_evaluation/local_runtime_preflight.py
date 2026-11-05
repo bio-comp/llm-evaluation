@@ -790,6 +790,9 @@ def run_structured_diagnostic(
             state["summary"] = summarize_generation(
                 execution.observation, execution.evidence.body
             )
+            if reasoning_mode == "off" and state["summary"].reasoning_bytes:
+                state["failure_code"] = "reasoning_semantics"
+                raise ValueError("reasoning observed under disabled profile")
             observation = execution.observation
             if observation.reported_model_matches_condition is not True:
                 state["failure_code"] = "model_binding"

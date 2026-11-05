@@ -248,7 +248,9 @@ def probe_known_external_conflicts(
 async def qualify_llama_server(
     probe: JsonProbe, *, artifact: Path | str, alias: str
 ) -> LlamaQualification:
-    await probe.request_json("GET", "/health")
+    health, _, _ = await probe.request_json("GET", "/health")
+    if not isinstance(health, dict) or health.get("status") != "ok":
+        raise ValueError("llama.cpp health response is invalid")
     props, _, _ = await probe.request_json("GET", "/props")
     slots, _, _ = await probe.request_json("GET", "/slots")
     models, _, _ = await probe.request_json("GET", "/v1/models")
@@ -269,9 +271,12 @@ async def qualify_llama_server(
     if (
         not isinstance(models, dict)
         or not isinstance(models.get("data"), list)
-        or not any(isinstance(m, dict) and m.get("id") == alias for m in models["data"])
+        or sum(
+            isinstance(m, dict) and m.get("id") == alias
+            for m in models["data"]
+        ) != 1
     ):
-        raise ValueError("model alias mismatch")
+        raise ValueError("model alias missing or ambiguous")
     template = props.get("chat_template")
     if not isinstance(template, str) or not template or len(template.encode("utf-8")) > 65536:
         raise ValueError("bounded exact chat template required")
