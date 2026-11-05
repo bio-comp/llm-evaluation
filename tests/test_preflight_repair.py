@@ -394,3 +394,104 @@ def test_formal_jinja_template_engine_is_in_qualified_condition(fake, monkeypatc
     assert result.status == "passed"
     assert observed
     assert all(env.get("jinja") is True for env in observed)
+
+@pytest.mark.parametrize(
+    "missing_field",
+    (
+        "executable",
+        "artifact",
+        "structured_domain_sha256",
+        "structured_effective_sha256",
+    ),
+)
+def test_structured_success_readback_requires_provenance(fake, tmp_path, missing_field):
+    """Start from genuine synthetic success and remove exactly one datum."""
+    import json
+    from llm_evaluation.local_runtime_preflight import run_structured_diagnostic
+    from llm_evaluation.local_runtime_preflight_records import StructuredDiagnosticRecord
+
+    record = run_structured_diagnostic(**fake, reasoning_mode="auto")
+    assert record.status == "passed"
+    assert StructuredDiagnosticRecord.model_validate_json(fake["output"].read_bytes()) == record
+    corrupted = record.model_dump(mode="json")
+    assert corrupted[missing_field] is not None
+    corrupted[missing_field] = None
+    path = tmp_path / f"missing-{missing_field}.json"
+    path.write_text(json.dumps(corrupted))
+    with pytest.raises(ValidationError, match="passed structured diagnostic"):
+        StructuredDiagnosticRecord.model_validate_json(path.read_bytes())
+
+
+def test_structured_success_readback_rejects_reasoning_presence_conflict(fake, tmp_path):
+    """auto reasoning mode cannot excuse contradictory observed-byte metadata."""
+    import json
+    from llm_evaluation.local_runtime_preflight import run_structured_diagnostic
+    from llm_evaluation.local_runtime_preflight_records import StructuredDiagnosticRecord
+
+    record = run_structured_diagnostic(**fake, reasoning_mode="auto")
+    assert record.status == "passed"
+    assert record.summary is not None
+    assert record.summary.reasoning_present is False
+    assert record.summary.reasoning_bytes == 0
+    corrupted = record.model_dump(mode="json")
+    corrupted["summary"]["reasoning_bytes"] = 7
+    path = tmp_path / "reasoning-contradiction.json"
+    path.write_text(json.dumps(corrupted))
+    with pytest.raises(ValidationError, match="reasoning"):
+        StructuredDiagnosticRecord.model_validate_json(path.read_bytes())
+
+
+def test_structured_status_boundaries_preserve_real_success_failure_and_incomplete(
+    fake, monkeypatch, tmp_path
+):
+    """Failed/incomplete observations need not invent absent identity evidence."""
+    from llm_evaluation.local_runtime_preflight import run_structured_diagnostic
+    from llm_evaluation.local_runtime_preflight_records import StructuredDiagnosticRecord
+    from llm_evaluation.runtime.llamacpp.qualification import ExternalConflictStatus
+
+    passed = run_structured_diagnostic(**fake, reasoning_mode="auto")
+    assert passed.status == "passed"
+    assert StructuredDiagnosticRecord.model_validate_json(fake["output"].read_bytes()) == passed
+
+    failed_output = tmp_path / "failed.json"
+    failed = run_structured_diagnostic(
+        **(fake | {
+            "executable": str(tmp_path / "missing-executable"),
+            "output": failed_output,
+        }),
+        reasoning_mode="auto",
+    )
+    assert failed.status == "failed"
+    assert failed.executable is None and failed.artifact is None
+    assert failed.summary is None
+    assert StructuredDiagnosticRecord.model_validate_json(failed_output.read_bytes()) == failed
+
+    monkeypatch.setattr(
+        "llm_evaluation.local_runtime_preflight.probe_known_external_conflicts",
+        lambda: ExternalConflictStatus.CONFLICT_DETECTED,
+    )
+    incomplete_output = tmp_path / "incomplete.json"
+    incomplete = run_structured_diagnostic(
+        **(fake | {"output": incomplete_output}), reasoning_mode="auto",
+    )
+    assert incomplete.status == "incomplete"
+    assert incomplete.summary is None
+    assert StructuredDiagnosticRecord.model_validate_json(incomplete_output.read_bytes()) == incomplete
+
+    # The v1 schema permits absent schema observations on failed/incomplete runs.
+    import json
+    for unfinished in (failed, incomplete):
+        historical = unfinished.model_dump(mode="json")
+        historical["structured_domain_sha256"] = None
+        historical["structured_effective_sha256"] = None
+        restored = StructuredDiagnosticRecord.model_validate_json(json.dumps(historical))
+        assert restored.status == unfinished.status
+        assert restored.summary is None
+
+    # An observed but empty reasoning field is not contradictory.
+    empty_reasoning = passed.model_dump(mode="json")
+    empty_reasoning["summary"]["reasoning_present"] = True
+    empty_reasoning["summary"]["reasoning_bytes"] = 0
+    assert StructuredDiagnosticRecord.model_validate_json(
+        json.dumps(empty_reasoning)
+    ).status == "passed"
