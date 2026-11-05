@@ -294,3 +294,24 @@ def test_qualification_requires_healthy_endpoint_and_unambiguous_model(tmp_path)
     for invalid in (Unhealthy, DuplicateAlias):
         with pytest.raises(ValueError):
             asyncio.run(qualify_llama_server(invalid(str(p)), artifact=p, alias="alias"))
+
+
+
+def test_formal_launch_pins_jinja_even_when_build_has_a_default(tmp_path):
+    """A reasoning-relevant template engine setting must be explicit on the wire."""
+    from llm_evaluation.runtime.llamacpp.lifecycle import (
+        ManagedServerDeclaration, ManagedServerMode, ReasoningMode, build_launch,
+    )
+
+    executable = tmp_path / "fake-server"
+    artifact = tmp_path / "model.gguf"
+    executable.write_bytes(b"fixture executable")
+    artifact.write_bytes(b"fixture weights")
+    declaration = ManagedServerDeclaration(
+        executable=str(executable), artifact=str(artifact),
+        alias="fixture", mode=ManagedServerMode.FORMAL,
+        reasoning_mode=ReasoningMode.OFF,
+    )
+    argv, _, _ = build_launch(declaration, 30099)
+    assert argv.count("--jinja") == 1
+    assert "--no-jinja" not in argv

@@ -313,6 +313,7 @@ async def _live_checks(
                     "parallel": 1,
                     "ctx_size": 2048,
                     "output_limit": 128,
+                    "jinja": True,
                 },
             )
             binding = RuntimeBinding(
@@ -373,6 +374,7 @@ async def _live_checks(
                 "runtime_environment": {
                     "parallel": 1, "ctx_size": qualification.context_tokens,
                     "output_limit": 128, "reasoning": progress["reasoning_profile"],
+                    "jinja": True,
                     "cache_prompt": FORMAL_CACHE_PROMPT,
                 },
             })
@@ -751,6 +753,7 @@ def run_structured_diagnostic(
                 runtime_environment={
                     "parallel": 1, "ctx_size": qualification.context_tokens,
                     "output_limit": 128, "reasoning": reasoning_mode,
+                    "jinja": True,
                     "cache_prompt": FORMAL_CACHE_PROMPT,
                 },
             )
@@ -791,8 +794,23 @@ def run_structured_diagnostic(
                 execution.observation, execution.evidence.body
             )
             if reasoning_mode == "off" and state["summary"].reasoning_bytes:
-                state["failure_code"] = "reasoning_semantics"
+                # Keep the published schema-v1 failure vocabulary stable. The
+                # retained summary distinguishes observed reasoning from other
+                # invalid responses without inventing a new v1 enum member.
+                state["failure_code"] = "invalid_response"
                 raise ValueError("reasoning observed under disabled profile")
+            if state["summary"].termination_reason != "stop":
+                state["failure_code"] = (
+                    "output_exhausted"
+                    if state["summary"].termination_reason == "length"
+                    else "invalid_response"
+                )
+                raise ValueError("structured output has unreliable termination")
+            if not state["summary"].within_reported_budget(
+                context_tokens=2048, output_tokens=128
+            ):
+                state["failure_code"] = "invalid_response"
+                raise ValueError("reported token usage exceeds qualified budget")
             observation = execution.observation
             if observation.reported_model_matches_condition is not True:
                 state["failure_code"] = "model_binding"

@@ -189,7 +189,7 @@ def test_generic_transport_leaves_provider_specific_timings_untrusted(server):
     binding, request = native_binding()
     Handler.payload = json.dumps({
         "model": binding.backend.model_id,
-        "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+        "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
         "timings": {"prompt_ms": 12.5, "predicted_ms": 20},
     }).encode()
     execution = asyncio.run(AsyncOpenAICompatibleTransport(

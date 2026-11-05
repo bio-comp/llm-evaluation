@@ -161,3 +161,36 @@ def test_unrequested_tool_or_nonassistant_response_fails_closed(tmp_path, mutati
         server.shutdown()
         server.server_close()
         thread.join(2)
+
+
+
+@pytest.mark.parametrize("role", [None, "tool", "user"])
+def test_chat_message_requires_explicit_assistant_role(role):
+    """An otherwise valid text response must not acquire assistant identity by default."""
+    from llm_evaluation.runtime.transport.response_models import ProviderParser
+
+    payload = {
+        "model": "approved-fixture",
+        "choices": [{
+            "message": {"content": "OK", **({} if role is None else {"role": role})},
+            "finish_reason": "stop",
+        }],
+    }
+    with pytest.raises(ValueError, match="role"):
+        ProviderParser._parse_chat(payload)
+
+
+def test_v1_structured_failure_codes_remain_old_reader_compatible():
+    """A schema-v1 writer must not emit values rejected by an existing v1 reader."""
+    from typing import get_args
+    from llm_evaluation.local_runtime_preflight_records import StructuredDiagnosticRecord
+
+    original_v1_codes = {
+        "http_status", "invalid_json", "invalid_response", "structured_parse",
+        "structured_validation", "model_binding", "output_exhausted",
+        "empty_visible_output", "deadline", "resource_busy", "startup_failure",
+        "unknown_safe_failure",
+    }
+    annotation = StructuredDiagnosticRecord.model_fields["failure_code"].annotation
+    code_literal = next(arg for arg in get_args(annotation) if arg is not type(None))
+    assert set(get_args(code_literal)) == original_v1_codes

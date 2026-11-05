@@ -106,6 +106,7 @@ def build_launch(
         "128",
         "--reasoning",
         (declaration.reasoning_mode or ReasoningMode.AUTO).value,
+        "--jinja",  # Pin the documented llama-server v0.7.0 enabled default.
         "--no-webui",
         "--no-agent",
         "--no-ui-mcp-proxy",

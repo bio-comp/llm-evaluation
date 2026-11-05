@@ -61,7 +61,7 @@ class ProviderParser:
             raise ValueError("invalid Chat Completions response shape")
         # Tools are not part of this text-generation contract. Never silently
         # accept their calls as an ordinary visible completion.
-        if message.get("role") not in (None, "assistant"):
+        if message.get("role") != "assistant":
             raise ValueError("unexpected Chat Completions message role")
         if message.get("tool_calls") not in (None, []) or message.get("function_call") is not None:
             raise ValueError("unexpected Chat Completions tool/function call")
