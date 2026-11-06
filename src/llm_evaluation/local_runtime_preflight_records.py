@@ -147,6 +147,22 @@ class GenerationProbeSummary(ClosedRecord):
     reasoning_present: bool
     reasoning_bytes: int = Field(ge=0, le=2 * 1024 * 1024)
 
+    @model_validator(mode="after")
+    def reasoning_presence_consistent(self) -> "GenerationProbeSummary":
+        if self.reasoning_bytes > 0 and not self.reasoning_present:
+            raise ValueError("positive reasoning bytes require reasoning presence")
+        return self
+
+    def within_reported_budget(self, *, context_tokens: int, output_tokens: int) -> bool:
+        """Only reported token counts can establish a measured budget violation."""
+        prompt, completion, total = self.prompt_tokens, self.completion_tokens, self.total_tokens
+        return (
+            (prompt is None or prompt <= context_tokens)
+            and (completion is None or completion <= output_tokens)
+            and (total is None or total <= context_tokens)
+            and (prompt is None or completion is None or prompt + completion <= context_tokens)
+        )
+
 
 def summarize_generation(observation: "GenerationObservation", evidence: bytes) -> GenerationProbeSummary:
     from .runtime.codec import parse_json_unique
@@ -211,7 +227,11 @@ class StructuredDiagnosticRecord(ClosedRecord):
     @model_validator(mode="after")
     def passed_requires_evidence(self) -> "StructuredDiagnosticRecord":
         if self.status == "passed" and (
-            self.structured_generation is not True
+            self.executable is None
+            or self.artifact is None
+            or self.structured_domain_sha256 is None
+            or self.structured_effective_sha256 is None
+            or self.structured_generation is not True
             or self.summary is None
             or self.chat_template_sha256 is None
             or self.qualified_condition_sha256 is None
@@ -219,6 +239,16 @@ class StructuredDiagnosticRecord(ClosedRecord):
             or self.server_launches != 1
             or self.generation_submissions != 1
             or self.failure_stage is not None
+            or self.failure_code is not None
+            or self.remote_completion_unknown
+            or self.summary.reported_model_matches_condition is not True
+            or self.summary.finish_reason != "stop"
+            or self.summary.termination_reason != "stop"
+            or self.summary.visible_output_bytes == 0
+            or not self.summary.within_reported_budget(
+                context_tokens=self.context_tokens, output_tokens=self.output_tokens
+            )
+            or (self.reasoning_profile == "off" and self.summary.reasoning_bytes > 0)
         ):
             raise ValueError("passed structured diagnostic requires measured success and cleanup")
         return self

@@ -36,7 +36,7 @@ class Handler(BaseHTTPRequestHandler):
   if self.path=='/': self.send_response(404);self.end_headers();return
   payload={'/health':{'status':'ok'},'/props':{'total_slots':1,'model_path':opt('--model'),\n      'chat_template':'synthetic-template','chat_template_caps':{'supports_tools':False},\n      'build_info':'synthetic-build',\n      'default_generation_settings':{'n_ctx':2048}},
     '/slots':[{'id':0,'is_processing':False}],'/v1/models':{'data':[{'id':opt('--alias')}]}}.get(self.path,
-    {'model':opt('--alias'),'choices':[{'message':{'content':'{"value":1}'},'finish_reason':'stop'}]})
+    {'model':opt('--alias'),'choices':[{'message':{'content':'{"value":1}','role':'assistant'},'finish_reason':'stop'}]})
   self.send_response(200);self.end_headers();self.wfile.write(json.dumps(payload).encode())
 HTTPServer(('127.0.0.1',int(opt('--port'))),Handler).serve_forever()
 """

@@ -123,7 +123,7 @@ class ModelRunnerTests(unittest.TestCase):
     def test_same_sync_facade_can_generate_twice_then_list_models(self):
         _FakeHandler.response_payload = {
             "model": "m",
-            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
         }
         config = BackendConfig("fake", self.base_url, "m", "chat_completions", self.profile)
         transport = self._transport(config)
@@ -157,7 +157,7 @@ class ModelRunnerTests(unittest.TestCase):
 
         _FakeHandler.response_payload = {
             "id": "id", "model": "m",
-            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
         }
         result = OpenAICompatibleTransport(config, condition=matching).generate(request)
         self.assertEqual(result.raw_output, "ok")
@@ -166,7 +166,7 @@ class ModelRunnerTests(unittest.TestCase):
     def test_reasoning_configuration_is_condition_bound_capability_gated_and_transmitted(self):
         _FakeHandler.response_payload = {
             "id": "id", "model": "m",
-            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
         }
         chat_profile = CapabilityProfile({
             **self.profile.statuses,
@@ -228,7 +228,7 @@ class ModelRunnerTests(unittest.TestCase):
     def test_reported_backend_model_mismatch_is_preserved_but_cannot_enter_sample(self):
         _FakeHandler.response_payload = {
             "id": "id", "model": "other-model",
-            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
         }
         config = BackendConfig(
             "fake", self.base_url, "m", "chat_completions", self.profile,
@@ -245,7 +245,7 @@ class ModelRunnerTests(unittest.TestCase):
 
         _FakeHandler.response_payload = {
             "id": "id",
-            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
         }
         missing = attempt_generation(self._transport(config), request, attempt_index=2)
         self.assertIsNone(missing.result.reported_model_matches_condition if missing.result else None)
@@ -303,7 +303,7 @@ class ModelRunnerTests(unittest.TestCase):
             "id": "chatcmpl-response-object",
             "request_id": "req-explicit-body",
             "model": "m",
-            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
         }
         config = BackendConfig("fake", self.base_url, "m", "chat_completions", self.profile)
         result = self._transport(config, condition_id="c").generate(
@@ -320,7 +320,7 @@ class ModelRunnerTests(unittest.TestCase):
 
     def test_credential_env_is_used_without_entering_config_or_effective_body(self):
         _FakeHandler.response_payload = {
-            "id": "id", "model": "m", "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]
+            "id": "id", "model": "m", "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}]
         }
         config = BackendConfig("hosted-fake", self.base_url, "m", "chat_completions", self.profile,
                                credential_env="FAKE_E002_KEY")
@@ -352,7 +352,7 @@ class ModelRunnerTests(unittest.TestCase):
     def test_sensitive_provider_metadata_is_rejected_before_result_persistence(self):
         _FakeHandler.response_payload = {
             "id": "id", "model": "m",
-            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
             "debug": {"Authorization": "Bearer echoed-secret"},
         }
         config = BackendConfig("fake", self.base_url, "m", "chat_completions", self.profile)
@@ -366,7 +366,7 @@ class ModelRunnerTests(unittest.TestCase):
         secret = "credential-sentinel-7e1c48b34cb4"
         _FakeHandler.response_payload = {
             "id": "id", "model": "m",
-            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
             "debug": f"request used Bearer {secret}",
         }
         config = BackendConfig(
@@ -384,7 +384,7 @@ class ModelRunnerTests(unittest.TestCase):
         secret = "credential-sentinel-589cbe8a15f0"
         _FakeHandler.response_payload = {
             "id": "id", "model": "m",
-            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
         }
         _FakeHandler.response_request_id = f"trace-Bearer {secret}"
         config = BackendConfig(
@@ -447,7 +447,7 @@ class ModelRunnerTests(unittest.TestCase):
     def test_backend_can_translate_internal_max_output_tokens_to_effective_wire_name(self):
         _FakeHandler.response_payload = {
             "id": "id", "model": "m",
-            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
         }
         config = BackendConfig(
             "hosted-fake", self.base_url, "m", "chat_completions", self.profile,
@@ -493,7 +493,7 @@ class ModelRunnerTests(unittest.TestCase):
 
     def test_none_and_unsupported_unrequested_parameters_are_omitted(self):
         _FakeHandler.response_payload = {
-            "id": "id", "model": "m", "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]
+            "id": "id", "model": "m", "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}]
         }
         config = BackendConfig("fake", self.base_url, "m", "chat_completions", self.profile)
         self._transport(config, condition_id="test-condition").generate(GenerationRequest(condition_id="test-condition", messages=(("user", "x"),)))
@@ -568,10 +568,10 @@ class ModelRunnerTests(unittest.TestCase):
     def test_response_parsers_reject_ambiguous_shapes_and_invalid_usage(self):
         chat_bad = (
             {"choices": []},
-            {"choices": [{"message": {"content": "a"}}, {"message": {"content": "b"}}]},
-            {"choices": [{"message": {"content": "ok"}}], "usage": {"prompt_tokens": -1}},
-            {"choices": [{"message": {"content": "ok"}}], "usage": {"completion_tokens": True}},
-            {"choices": [{"message": {"content": "ok"}}], "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 6}},
+            {"choices": [{"message": {"role": "assistant", "content": "a"}}, {"message": {"role": "assistant", "content": "b"}}]},
+            {"choices": [{"message": {"role": "assistant", "content": "ok"}}], "usage": {"prompt_tokens": -1}},
+            {"choices": [{"message": {"role": "assistant", "content": "ok"}}], "usage": {"completion_tokens": True}},
+            {"choices": [{"message": {"role": "assistant", "content": "ok"}}], "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 6}},
         )
         for payload in chat_bad:
             with self.subTest(payload=payload), self.assertRaises(ProviderRuntimeFailure):
@@ -607,7 +607,7 @@ class ModelRunnerTests(unittest.TestCase):
 
     def test_condition_identity_changes_normalized_request_hash_not_wire_body(self):
         _FakeHandler.response_payload = {
-            "id": "id", "model": "m", "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]
+            "id": "id", "model": "m", "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}]
         }
         config = BackendConfig("fake", self.base_url, "m", "chat_completions", self.profile)
         first = self._transport(config, condition_id="condition-a").generate(
@@ -670,7 +670,7 @@ class ModelRunnerTests(unittest.TestCase):
 
         _FakeHandler.response_payload = {
             "id": "id", "model": "m",
-            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
             "runtime": {"hardware": {"gpu": "A"}, "devices": ["gpu0"]},
         }
         config = BackendConfig("fake", self.base_url, "m", "chat_completions", self.profile)
@@ -791,7 +791,7 @@ class ModelRunnerTests(unittest.TestCase):
 
     def test_generation_and_oracle_state_are_separate_before_sample_inclusion(self):
         _FakeHandler.response_payload = {
-            "id": "id", "model": "m", "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]
+            "id": "id", "model": "m", "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}]
         }
         config = BackendConfig(
             "fake", self.base_url, "m", "chat_completions", self.profile,

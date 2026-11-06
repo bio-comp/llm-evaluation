@@ -59,7 +59,15 @@ class ProviderParser:
         message = choice.get("message")
         if not isinstance(message, dict) or not isinstance(message.get("content"), str):
             raise ValueError("invalid Chat Completions response shape")
+        # Tools are not part of this text-generation contract. Never silently
+        # accept their calls as an ordinary visible completion.
+        if message.get("role") != "assistant":
+            raise ValueError("unexpected Chat Completions message role")
+        if message.get("tool_calls") not in (None, []) or message.get("function_call") is not None:
+            raise ValueError("unexpected Chat Completions tool/function call")
         finish_reason = choice.get("finish_reason")
+        if finish_reason in ("tool_calls", "function_call"):
+            raise ValueError("unexpected tool/function termination")
         if finish_reason is not None and not isinstance(finish_reason, str):
             raise ValueError("Chat Completions finish_reason is not a string")
         model = payload.get("model")

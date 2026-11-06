@@ -463,20 +463,6 @@ def _single_family_rate(values: list[float], threshold: float) -> float:
     return _rate([value > threshold for value in values])
 
 
-def _layered_family_rate(
-    distribution: list[float],
-    process: list[float],
-    distribution_threshold: float,
-    process_threshold: float,
-) -> float:
-    return _rate(
-        [
-            d_value > distribution_threshold or p_value > process_threshold
-            for d_value, p_value in zip(distribution, process, strict=True)
-        ]
-    )
-
-
 def run_development_calibration(
     design: DriftLabDesign, *, path_count: int
 ) -> DevelopmentCalibrationSummary:
