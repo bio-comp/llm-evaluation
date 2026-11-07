@@ -18,6 +18,9 @@ The private Drive canonicals are continuously improvable scientific knowledge an
 
 A frozen design, fixture, held-out criterion, or immutable result binds **one specific executed scientific condition**, not all future work. Iterate on a prospective design and give new conditions distinct versioned identities without retroactively changing old evidence. Production-policy promotion still requires task-relevant validation and measured error/uncertainty.
 
+Historical experiments can be reconstructed from **GitHub's versioned package code and public-safe artifacts** where those exact records exist: source commit, checked package digest, design/fixture/schema hashes, scorer/oracle identity, runtime/model condition, and finalized run outputs/readback. The current Drive experiment text is free to evolve. A package-source hash proves an implementation identity within its verified scope, not the historical text of a private Drive canonical. If a historical run relied on private canonical wording, preserve or cite its exact revision/content hash and an access-controlled, retrievable representation where available; if it was not retained, mark that portion of provenance incomplete. Never infer old document bytes from present-day Drive contents or publish private documents merely for versioning.
+
+
 Under Drive decision D-020, Drive-to-Git reconciliation tracks **actual** public/executable mismatches; it does not suspend unrelated engineering. `NONE` requires no code action; `REQUIRED` identifies a bounded implementation obligation; `BLOCKED` is reserved for a concrete missing dependency of that obligation; `COMPLETE` is verified closure. New Drive changes do not invalidate historical D-016 closure. Keep normal PR/CI safety, publication review, and credential-free public CI. Obtain explicit authorization for paid provider usage, sensitive data disclosure, privilege/network exposure, or destructive actions.
 
 ## Run the initial diagnostic
