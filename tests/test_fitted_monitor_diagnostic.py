@@ -7,6 +7,7 @@ conditionally independent monitoring looks. This is not a production gate.
 from __future__ import annotations
 
 import math
+from dataclasses import FrozenInstanceError
 from fractions import Fraction
 from functools import lru_cache
 
@@ -18,6 +19,7 @@ from llm_evaluation.fitted_monitor_diagnostic import (  # type: ignore[import-un
     _central_reference_bounds,
     _horizon_false_alarm,
     _strict_alarm,
+    evaluate_detection_power,
     evaluate_margin,
     select_margin,
 )
@@ -232,3 +234,150 @@ def test_select_margin_rejects_malformed_candidates(invalid: object) -> None:
 def test_select_margin_requires_boolean_conditional_policy(invalid: object) -> None:
     with pytest.raises(TypeError):
         select_margin(_MARGINS, require_conditional=invalid)  # type: ignore[arg-type]
+
+
+def _rational_alternative_weekly_pmf() -> tuple[Fraction, ...]:
+    """Independent Binomial(20, 3/10) oracle using integer arithmetic."""
+    return tuple(
+        Fraction(math.comb(20, k) * 3**k * 7 ** (20 - k), 10**20) for k in range(21)
+    )
+
+
+@lru_cache(maxsize=None)
+def _rational_detection_power(
+    margin_40ths: int,
+) -> tuple[Fraction, tuple[Fraction, ...], Fraction]:
+    """Enumerate over the same frozen reference for all six monitoring looks."""
+    reference = _rational_binomial_pmf(40)
+    weekly = _rational_alternative_weekly_pmf()
+    weekly_rates = tuple(
+        sum(
+            (mass for k, mass in enumerate(weekly) if 2 * k > b + margin_40ths),
+            Fraction(),
+        )
+        for b in range(41)
+    )
+    six_look_by_reference = tuple(1 - (1 - q) ** 6 for q in weekly_rates)
+    marginal = sum(
+        (reference[b] * six_look_by_reference[b] for b in range(41)),
+        Fraction(),
+    )
+    # Deliberately incorrect: redraw or average the reference before
+    # applying the nonlinear six-look transformation.
+    averaged_weekly = sum(
+        (reference[b] * weekly_rates[b] for b in range(41)), Fraction()
+    )
+    wrong_order = 1 - (1 - averaged_weekly) ** 6
+    return marginal, six_look_by_reference, wrong_order
+
+
+@pytest.mark.parametrize("margin", _MARGINS)
+def test_detection_power_matches_independent_fraction_oracle(margin: int) -> None:
+    result = evaluate_detection_power(margin)
+    exact_marginal, exact_conditional, _ = _rational_detection_power(margin)
+    assert result.margin_40ths == margin
+    assert result.protected_reference_count_bounds == (3, 13)
+    assert len(result.conditional_family_detection_probability_by_reference_count) == 41
+
+    for b, expected in enumerate(exact_conditional):
+        assert result.conditional_family_detection_probability_by_reference_count[
+            b
+        ] == pytest.approx(float(expected), rel=1e-12, abs=1e-15)
+    assert result.marginal_family_detection_probability == pytest.approx(
+        float(exact_marginal), rel=1e-12, abs=1e-15
+    )
+    assert result.min_protected_conditional_family_detection_probability == (
+        pytest.approx(float(min(exact_conditional[3:14])), rel=1e-12, abs=1e-15)
+    )
+    assert result.max_protected_conditional_family_detection_probability == (
+        pytest.approx(float(max(exact_conditional[3:14])), rel=1e-12, abs=1e-15)
+    )
+
+
+@pytest.mark.parametrize("margin", _MARGINS)
+def test_alternative_strict_threshold_ties_do_not_alarm(margin: int) -> None:
+    weekly = _rational_alternative_weekly_pmf()
+    for b in range(41):
+        candidate = b + margin
+        if candidate % 2 or not 0 <= candidate // 2 <= 20:
+            continue
+        tie_k = candidate // 2
+        assert _strict_alarm(b, tie_k, margin) is False
+        if tie_k < 20:
+            assert _strict_alarm(b, tie_k + 1, margin) is True
+        rate_excluding_tie = sum((weekly[k] for k in range(tie_k + 1, 21)), Fraction())
+        rate_including_tie = rate_excluding_tie + weekly[tie_k]
+        assert rate_including_tie > rate_excluding_tie
+        _, conditional, _ = _rational_detection_power(margin)
+        assert conditional[b] == 1 - (1 - rate_excluding_tie) ** 6
+
+
+def test_detection_power_is_nonincreasing_with_margin_for_each_frozen_fit() -> None:
+    rows = [evaluate_detection_power(margin) for margin in _MARGINS]
+    for low, high in zip(rows, rows[1:]):
+        assert (
+            low.marginal_family_detection_probability
+            >= high.marginal_family_detection_probability
+        )
+        assert all(
+            a >= b
+            for a, b in zip(
+                low.conditional_family_detection_probability_by_reference_count,
+                high.conditional_family_detection_probability_by_reference_count,
+            )
+        )
+        assert (
+            low.min_protected_conditional_family_detection_probability
+            >= high.min_protected_conditional_family_detection_probability
+        )
+        assert (
+            low.max_protected_conditional_family_detection_probability
+            >= high.max_protected_conditional_family_detection_probability
+        )
+
+
+@pytest.mark.parametrize("margin", _MARGINS)
+def test_detection_power_wrong_order_negative_control(margin: int) -> None:
+    result = evaluate_detection_power(margin)
+    correct, _, wrong = _rational_detection_power(margin)
+    assert wrong > correct
+    assert result.marginal_family_detection_probability == pytest.approx(
+        float(correct), rel=1e-12, abs=1e-15
+    )
+    # A mutant using 1-(1-E[q])**6 would fail this discrimination.
+    assert result.marginal_family_detection_probability != pytest.approx(
+        float(wrong), rel=1e-12, abs=1e-15
+    )
+
+
+def test_detection_power_is_immutable_and_does_not_change_null_selection() -> None:
+    result = evaluate_detection_power(12)
+    assert isinstance(
+        result.conditional_family_detection_probability_by_reference_count, tuple
+    )
+    with pytest.raises(FrozenInstanceError):
+        result.margin_40ths = 14  # type: ignore[misc]
+
+    # Pre-extension null OC and both selector paths retain their exact reference rows.
+    for margin, false_alarm, protected_max in _REFERENCES:
+        original = evaluate_margin(margin)
+        assert original.marginal_family_false_alarm == pytest.approx(
+            false_alarm, rel=1e-10, abs=0.0
+        )
+        assert original.max_protected_conditional_family_false_alarm == pytest.approx(
+            protected_max, rel=1e-10, abs=0.0
+        )
+    assert (
+        select_margin(_MARGINS, require_conditional=False).selected_margin_40ths == 12
+    )
+    assert select_margin(_MARGINS, require_conditional=True).selected_margin_40ths == 16
+    assert (
+        select_margin((10, 12, 14), require_conditional=True).status
+        is SelectionStatus.NO_METHOD_PASSES
+    )
+
+
+@pytest.mark.parametrize("invalid", (True, 10.0, "10", -1, None))
+def test_detection_power_rejects_invalid_margin(invalid: object) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        evaluate_detection_power(invalid)  # type: ignore[arg-type]
