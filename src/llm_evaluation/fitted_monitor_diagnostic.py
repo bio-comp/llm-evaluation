@@ -1,8 +1,9 @@
 """Exact synthetic fitted-monitor operating-characteristic diagnostic (D-019).
 
 A reference Binomial(40, 0.20) count is fitted once, then frozen before
-six independent Binomial(20, 0.20) monitoring weeks. This exploratory model
-is not a production threshold, an acceptance gate, or an E-004 amendment.
+six independent Binomial(20, 0.20) monitoring weeks for null false alarms.
+A separate Binomial(20, 0.30) synthetic alternative measures detection power.
+Neither is a production threshold, acceptance gate, or E-004 amendment.
 """
 
 from __future__ import annotations
@@ -43,6 +44,22 @@ class MarginEvaluation:
     conditional_family_false_alarm_by_reference_count: tuple[float, ...]
     protected_reference_count_bounds: tuple[int, int]
     max_protected_conditional_family_false_alarm: float
+
+
+@dataclass(frozen=True, slots=True)
+class DetectionPowerEvaluation:
+    """Detection under p=0.30 with one shared frozen reference across six looks.
+
+    The conditional tuple is indexed by reference count b=0,...,40; the
+    protected interval includes both endpoints. No acceptance gate is implied.
+    """
+
+    margin_40ths: int
+    marginal_family_detection_probability: float
+    conditional_family_detection_probability_by_reference_count: tuple[float, ...]
+    protected_reference_count_bounds: tuple[int, int]
+    min_protected_conditional_family_detection_probability: float
+    max_protected_conditional_family_detection_probability: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +144,47 @@ def evaluate_margin(margin_40ths: int) -> MarginEvaluation:
         conditional_family_false_alarm_by_reference_count=conditional,
         protected_reference_count_bounds=bounds,
         max_protected_conditional_family_false_alarm=protected_max,
+    )
+
+
+@lru_cache(maxsize=None)
+def evaluate_detection_power(margin_40ths: int) -> DetectionPowerEvaluation:
+    """Exact six-look detection probability for a synthetic p=0.30 alternative.
+
+    The reference count is still drawn from Binomial(40, 0.20) and frozen
+    for all six independently sampled Binomial(20, 0.30) monitoring weeks.
+    This is exploratory power, not a validated degradation threshold.
+    """
+    # Reuse the existing validation and protected-region definition without
+    # changing the null evaluation, thresholds, or selection semantics.
+    bounds = evaluate_margin(margin_40ths).protected_reference_count_bounds
+    reference = _binomial_pmf(_REFERENCE_N)
+    alternative_rate = 0.30
+    weekly = tuple(
+        math.comb(_WEEKLY_N, k)
+        * alternative_rate**k
+        * (1.0 - alternative_rate) ** (_WEEKLY_N - k)
+        for k in range(_WEEKLY_N + 1)
+    )
+    conditional = tuple(
+        _horizon_false_alarm(
+            math.fsum(
+                weight
+                for k, weight in enumerate(weekly)
+                if _strict_alarm(b, k, margin_40ths)
+            )
+        )
+        for b in range(_REFERENCE_N + 1)
+    )
+    marginal = math.fsum(weight * conditional[b] for b, weight in enumerate(reference))
+    protected = conditional[bounds[0] : bounds[1] + 1]
+    return DetectionPowerEvaluation(
+        margin_40ths=margin_40ths,
+        marginal_family_detection_probability=marginal,
+        conditional_family_detection_probability_by_reference_count=conditional,
+        protected_reference_count_bounds=bounds,
+        min_protected_conditional_family_detection_probability=min(protected),
+        max_protected_conditional_family_detection_probability=max(protected),
     )
 
 
