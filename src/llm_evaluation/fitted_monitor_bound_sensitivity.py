@@ -15,10 +15,10 @@ tested p values alone is not a proof of this coverage statement.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from fractions import Fraction
-from functools import lru_cache
-from typing import Sequence
+from functools import cache, lru_cache
 
 from .fitted_monitor_diagnostic import (
     SelectionStatus,
@@ -80,7 +80,7 @@ class FiniteReferenceBoundEvaluation:
     violating_reference_condition_count: int
 
 
-@lru_cache(maxsize=None)
+@lru_cache(maxsize=512)
 def _binomial_pmf(n: int, probability: Fraction) -> tuple[Fraction, ...]:
     """Exact independent Bernoulli count probabilities, including endpoints."""
     return tuple(
@@ -93,13 +93,15 @@ def _lower_tail_cdf(b: int, probability: Fraction) -> Fraction:
     return sum(_binomial_pmf(_REFERENCE_N, probability)[: b + 1], Fraction())
 
 
-@lru_cache(maxsize=None)
+@cache
 def _upper_confidence_bound(b: int) -> Fraction:
     """Smallest one-thousandth with P_j(X <= b) <= 0.05; b=40 -> 1.
 
     The lower-tail CDF is nonincreasing in j; binary search preserves
     a failing lower index and a passing upper index at each iteration.
     """
+    if type(b) is not int:
+        raise TypeError("reference count must be an exact integer")
     if not 0 <= b <= _REFERENCE_N:
         raise ValueError("reference count must lie in [0, 40]")
     if b == _REFERENCE_N:

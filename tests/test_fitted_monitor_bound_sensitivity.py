@@ -34,7 +34,7 @@ _LIMIT = Fraction(1, 20)
 _GRID = 1000
 
 
-@lru_cache(maxsize=None)
+@lru_cache(maxsize=512)
 def _independent_binomial(n: int, p: Fraction) -> tuple[Fraction, ...]:
     return tuple(
         Fraction(math.comb(n, k)) * p**k * (1 - p) ** (n - k) for k in range(n + 1)
@@ -93,7 +93,7 @@ class _Oracle:
     wrong_average_first_null: Fraction
 
 
-@lru_cache(maxsize=None)
+@lru_cache(maxsize=128)
 def _independent_oracle(
     candidates: tuple[int, ...],
     p0: Fraction,
@@ -157,7 +157,8 @@ def _independent_oracle(
         Fraction(),
     )
     mean_weekly_null = sum(
-        (weight * q for weight, q in zip(reference, weekly_actual_null)), Fraction()
+        (weight * q for weight, q in zip(reference, weekly_actual_null, strict=True)),
+        Fraction(),
     )
     return _Oracle(
         bounds=bounds,
@@ -228,7 +229,10 @@ def _assert_matches_independent_oracle(
                 for margin in _CANDIDATES
             )
     for mass, margin, expected in zip(
-        result.decision_probability_masses, (None, *_CANDIDATES), oracle.masses
+        result.decision_probability_masses,
+        (None, *_CANDIDATES),
+        oracle.masses,
+        strict=True,
     ):
         assert mass.selected_margin_40ths == margin
         assert mass.status is (
@@ -276,6 +280,43 @@ def test_upper_bound_inversion_is_exact_grid_minimum_for_every_b(b: int) -> None
         assert _independent_cdf(b, u - Fraction(1, _GRID)) > _LIMIT
     if b:
         assert bounds[b - 1] <= u
+
+
+@pytest.mark.parametrize(
+    ("invalid", "exception_type"),
+    (
+        (True, TypeError),
+        (False, TypeError),
+        (0.5, TypeError),
+        (-1, ValueError),
+        (41, ValueError),
+    ),
+)
+def test_upper_bound_rejects_invalid_reference_counts(
+    invalid: object, exception_type: type[Exception]
+) -> None:
+    # Exercise valid cached integer keys before invalid bool/float inputs.
+    assert 0 <= bound._upper_confidence_bound(0) <= 1
+    assert 0 <= bound._upper_confidence_bound(1) <= 1
+    with pytest.raises(exception_type):
+        bound._upper_confidence_bound(invalid)
+
+
+def test_production_binomial_cache_has_bounded_retention() -> None:
+    bound._binomial_pmf.cache_clear()
+    try:
+        for numerator in range(600):
+            p = Fraction(numerator, 601)
+            assert bound._binomial_pmf(1, p) == (1 - p, p)
+        info = bound._binomial_pmf.cache_info()
+        assert info.maxsize == 512
+        assert info.currsize == 512
+        assert info.misses == 600
+        # Oldest value was evicted; recomputation preserves its exact PMF.
+        assert bound._binomial_pmf(1, Fraction(0)) == (Fraction(1), Fraction(0))
+        assert bound._binomial_pmf.cache_info().misses == 601
+    finally:
+        bound._binomial_pmf.cache_clear()
 
 
 def test_primary_condition_all_reference_rows_and_crosschecks() -> None:
