@@ -10,11 +10,15 @@ import math
 import platform
 import random
 from collections.abc import Sequence, Set
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Literal
 
-CovarianceFamily = Literal["independent_standard_gaussian"]
+CovarianceFamily = Literal[
+    "independent_standard_gaussian",
+    "equicorrelated_gaussian",
+    "block_correlated_gaussian",
+]
 NoiseLaw = Literal["gaussian"]
 ResponseFamily = Literal["continuous_linear"]
 
@@ -54,12 +58,41 @@ class LinearGaussianDesign:
     noise_law: NoiseLaw = "gaussian"
     noise_scale: float = 1.0
     response_family: ResponseFamily = "continuous_linear"
+    # repr=False preserves the Phase 0A design representation and fingerprints.
+    rho: float | None = field(default=None, repr=False)
+    block_size: int | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         _exact_nonnegative_int(self.n, "n", positive=True)
         _exact_nonnegative_int(self.p, "p", positive=True)
         _exact_nonnegative_int(self.seed, "seed")
-        if self.covariance_family != "independent_standard_gaussian":
+        if self.covariance_family == "independent_standard_gaussian":
+            if self.rho is not None or self.block_size is not None:
+                raise ValueError(
+                    "independent covariance does not accept rho or block_size"
+                )
+        elif self.covariance_family in (
+            "equicorrelated_gaussian",
+            "block_correlated_gaussian",
+        ):
+            if self.rho is None:
+                raise ValueError("correlated covariance requires rho")
+            rho = _finite_real(self.rho, "rho")
+            if not 0.0 <= rho < 1.0:
+                raise ValueError("rho must satisfy 0 <= rho < 1")
+            object.__setattr__(self, "rho", rho)
+            if self.covariance_family == "equicorrelated_gaussian":
+                if self.block_size is not None:
+                    raise ValueError("equicorrelated covariance rejects block_size")
+            else:
+                if self.block_size is None:
+                    raise ValueError("block covariance requires block_size")
+                block_size = _exact_nonnegative_int(
+                    self.block_size, "block_size", positive=True
+                )
+                if not 2 <= block_size <= self.p:
+                    raise ValueError("block_size must satisfy 2 <= block_size <= p")
+        else:
             raise ValueError("unsupported covariance family")
         if self.noise_law != "gaussian":
             raise ValueError("unsupported noise law")
@@ -107,10 +140,24 @@ def _dataset_fingerprint(
     y: tuple[float, ...],
 ) -> str:
     """Existing in-runtime fingerprint, shared by generation and verification."""
-    digest = hashlib.sha256(
-        repr(("trex-known-truth-v1", design, x, y)).encode("utf-8")
-    ).hexdigest()
-    return f"trex0a:{digest}"
+    payload: tuple[object, ...]
+    if design.covariance_family == "independent_standard_gaussian":
+        # Historical serialization domain: do not change its bytes.
+        payload = ("trex-known-truth-v1", design, x, y)
+        prefix = "trex0a"
+    else:
+        # Explicitly bind the correlated parameters omitted from design repr.
+        payload = (
+            "trex-known-truth-correlated-v1",
+            design,
+            design.rho,
+            design.block_size,
+            x,
+            y,
+        )
+        prefix = "trex0b1"
+    digest = hashlib.sha256(repr(payload).encode("utf-8")).hexdigest()
+    return f"{prefix}:{digest}"
 
 
 def _response_value(
@@ -127,8 +174,37 @@ def _response_value(
     )
 
 
+def _gaussian_row(
+    design: LinearGaussianDesign, rng: random.Random
+) -> tuple[float, ...]:
+    """One independently drawn Gaussian row with the declared covariance."""
+    if design.covariance_family == "independent_standard_gaussian":
+        # Preserve the Phase 0A RNG call order exactly.
+        return tuple(rng.gauss(0.0, 1.0) for _ in range(design.p))
+
+    rho = design.rho
+    assert rho is not None  # validated by LinearGaussianDesign
+    block_size = (
+        design.p
+        if design.covariance_family == "equicorrelated_gaussian"
+        else design.block_size
+    )
+    assert block_size is not None
+    shared_weight = math.sqrt(rho)
+    individual_weight = math.sqrt(1.0 - rho)
+    row: list[float] = []
+    for block_start in range(0, design.p, block_size):
+        shared = rng.gauss(0.0, 1.0)
+        count = min(block_size, design.p - block_start)
+        row.extend(
+            shared_weight * shared + individual_weight * rng.gauss(0.0, 1.0)
+            for _ in range(count)
+        )
+    return tuple(row)
+
+
 def generate_linear_dataset(design: LinearGaussianDesign) -> KnownTruthDataset:
-    """Draw independent N(0,1) columns and independent N(0,scale**2) noise.
+    """Draw independent Gaussian rows and independent N(0,scale**2) noise.
 
     Every observation is its own independent sampling group; no cluster model
     is simulated. A dataset_id fingerprints the realized data and condition.
@@ -136,9 +212,7 @@ def generate_linear_dataset(design: LinearGaussianDesign) -> KnownTruthDataset:
     if not isinstance(design, LinearGaussianDesign):
         raise TypeError("design must be a LinearGaussianDesign")
     rng = random.Random(design.seed)
-    x = tuple(
-        tuple(rng.gauss(0.0, 1.0) for _ in range(design.p)) for _ in range(design.n)
-    )
+    x = tuple(_gaussian_row(design, rng) for _ in range(design.n))
     errors = (
         tuple(0.0 for _ in range(design.n))
         if design.noise_scale == 0.0
@@ -325,6 +399,8 @@ class LinearGaussianCondition:
     noise_law: NoiseLaw
     noise_scale: float
     response_family: ResponseFamily
+    rho: float | None = field(default=None, repr=False)
+    block_size: int | None = field(default=None, repr=False)
 
     @classmethod
     def from_design(cls, design: LinearGaussianDesign) -> LinearGaussianCondition:
@@ -336,6 +412,8 @@ class LinearGaussianCondition:
             noise_law=design.noise_law,
             noise_scale=design.noise_scale,
             response_family=design.response_family,
+            rho=design.rho,
+            block_size=design.block_size,
         )
 
     def __post_init__(self) -> None:
@@ -350,6 +428,8 @@ class LinearGaussianCondition:
             noise_law=self.noise_law,
             noise_scale=self.noise_scale,
             response_family=self.response_family,
+            rho=self.rho,
+            block_size=self.block_size,
         )
 
 
