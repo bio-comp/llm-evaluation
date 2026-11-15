@@ -195,3 +195,30 @@ def test_unqualified_runtime_rejects_before_artifact_access(tmp_path: Path):
 
     with pytest.raises(ValueError, match="not qualified"):
         resolve_approved_model(registry, "approved-fixture", runtime="lm_studio")
+
+
+def test_overloaded_str_equality_cannot_bypass_runtime_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from typing import cast
+
+    from llm_evaluation import model_registry
+
+    class SpoofedRuntime(str):
+        def __eq__(self, other: object) -> bool:
+            return True
+
+        __hash__ = str.__hash__
+
+    def forbidden_registry_load(_path: Path | str) -> None:
+        pytest.fail("runtime validation was bypassed: registry accessed")
+
+    monkeypatch.setattr(model_registry, "load_model_registry", forbidden_registry_load)
+
+    for value in ("unsupported", "llamacpp"):
+        with pytest.raises(TypeError, match="runtime must be a string"):
+            model_registry.resolve_approved_model(
+                tmp_path / "missing-registry.json",
+                "approved-fixture",
+                runtime=cast(model_registry.RuntimeName, SpoofedRuntime(value)),
+            )
