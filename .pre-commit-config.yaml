@@ -1,6 +1,32 @@
+# Run "uv run --locked prek install --hook-type pre-commit" via the safe installer.
+# The native pre-push hook (in .githooks/) handles all Git stdin ref updates.
+default_install_hook_types: [pre-commit]
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.4
+  - repo: local
     hooks:
-      - id: ruff
-        args: [--exit-non-zero-on-fix]
+      - id: staged-whitespace
+        name: Reject staged whitespace errors
+        entry: git diff --cached --check
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+      - id: ruff-lint
+        name: Ruff lint without fixes
+        entry: uv run --locked ruff check --no-fix
+        language: system
+        types_or: [python, pyi]
+        stages: [pre-commit]
+      - id: ruff-format
+        name: Ruff changed-file format check
+        entry: uv run --locked ruff format --check
+        language: system
+        types_or: [python, pyi]
+        stages: [pre-commit]
+      - id: validate-hook-config
+        name: Validate tracked hook config
+        entry: uv run --locked prek validate-config .pre-commit-config.yaml
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
