@@ -267,6 +267,10 @@ def test_actual_installed_hook_noop_push_is_not_a_qualification(
 
     bare = tmp_path / "no-op-remote.git"
     subprocess.run(("git", "init", "--bare", "-q", str(bare)), check=True)
+    # GitHub Actions uses a depth-1 synthetic-merge checkout; local clones
+    # inherit its shallow boundary. Only this disposable receiver accepts the
+    # initial shallow push. Do not modify real Git remote/server policy.
+    git(bare, "config", "receive.shallowUpdate", "true")
     git(clone, "remote", "set-url", "origin", str(bare))
     git(clone, "push", "--set-upstream", "origin", "HEAD:refs/heads/noop-proof")
 
