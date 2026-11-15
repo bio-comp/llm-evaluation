@@ -1,0 +1,5 @@
+#!/bin/sh
+# Stable pre-commit wrapper; the installed version remains uv-lock pinned.
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+exec uv run --locked prek run --hook-stage pre-commit

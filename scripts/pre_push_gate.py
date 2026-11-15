@@ -70,6 +70,89 @@ def require_exact_clean_head(root: Path, sha: str) -> None:
         raise RuntimeError("dirty worktree: qualify a clean exact HEAD")
 
 
+def check_outgoing_commits(update: PushUpdate) -> tuple[str, ...]:
+    """Reject whitespace introduced in ANY outgoing commit, not only the final diff.
+
+    The Git pre-push stream supplies the remote ref's exact old SHA. New remote
+    branches are bounded by an existing, ancestral main baseline; unknown or
+    divergent histories cannot be qualified.
+    """
+    if not re.fullmatch(r"[0-9a-f]{40}", update.local_sha):
+        raise ValueError("outgoing commit is not a supported Git SHA-1 object")
+    if not re.fullmatch(r"[0-9a-f]{40}", update.remote_sha):
+        raise ValueError("remote reference SHA is malformed")
+
+    if update.remote_sha == "0" * 40:
+        base = ""
+        for ref in ("refs/remotes/origin/main", "refs/heads/main"):
+            try:
+                candidate = git("rev-parse", "--verify", f"{ref}^{{commit}}")
+                subprocess.run(
+                    ("git", "merge-base", "--is-ancestor", candidate, update.local_sha),
+                    check=True,
+                    capture_output=True,
+                )
+            except subprocess.CalledProcessError:
+                continue
+            if candidate != update.local_sha:
+                base = candidate
+                break
+        if not base:
+            raise ValueError(
+                "initial publication lacks a trustworthy ancestral main base"
+            )
+        source = "main"
+    else:
+        try:
+            git("cat-file", "-e", f"{update.remote_sha}^{{commit}}")
+            subprocess.run(
+                (
+                    "git",
+                    "merge-base",
+                    "--is-ancestor",
+                    update.remote_sha,
+                    update.local_sha,
+                ),
+                check=True,
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise ValueError(
+                "remote SHA unavailable or not an ancestor; fetch/reconcile before push"
+            ) from exc
+        base = update.remote_sha
+        source = "remote"
+
+    history = git("rev-list", "--reverse", "--parents", f"{base}..{update.local_sha}")
+    commits = [entry.split() for entry in history.splitlines() if entry.strip()]
+    if not commits:
+        raise ValueError("no outgoing commits to qualify")
+    if len(commits) > 2000:
+        raise ValueError("outgoing history exceeds bounded local gate (2000 commits)")
+    print(
+        f"OUTGOING_RANGE_BASE={base} SOURCE={source} COMMITS={len(commits)}", flush=True
+    )
+    for entry in commits:
+        sha = entry[0]
+        if len(entry) < 2:
+            raise ValueError(
+                "outgoing history includes a root commit without known base"
+            )
+        parent = entry[1]
+        result = subprocess.run(
+            ("git", "diff", "--check", "--no-ext-diff", parent, sha),
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"committed whitespace/check failure at {sha}: "
+                f"{(result.stdout + result.stderr).strip()}"
+            )
+    return tuple(entry[0] for entry in commits)
+
+
 def changed_python_files(sha: str) -> tuple[str, ...]:
     # Explicit transitional baseline: whole-repository formatter debt belongs to #37.
     for ref in ("refs/remotes/origin/main", "refs/heads/main"):
@@ -215,8 +298,9 @@ def run_source_immutable_check(temp: Path) -> None:
         raise RuntimeError("E-002 no-overwrite negative control did not discriminate")
 
 
-def qualify(root: Path, sha: str) -> None:
+def qualify(root: Path, sha: str, update: PushUpdate) -> None:
     require_exact_clean_head(root, sha)
+    check_outgoing_commits(update)
     print(f"LOCAL_GATE_TARGET_SHA={sha}", flush=True)
     print(f"LOCAL_GATE_TARGET_TREE={git('rev-parse', 'HEAD^{tree}')}", flush=True)
     print(f"LOCAL_GATE_PYTHON_FLOOR={python_floor(root)}", flush=True)
@@ -234,7 +318,6 @@ def qualify(root: Path, sha: str) -> None:
         "local-auth",
     )
     run("uv", "run", "--locked", "prek", "validate-config", ".pre-commit-config.yaml")
-    run("git", "diff", "--check")
     run("uv", "run", "--locked", "ruff", "check", "--no-fix", "src", "tests", "scripts")
     changed = changed_python_files(sha)
     print(
@@ -289,7 +372,7 @@ def main() -> int:
         branch = git("symbolic-ref", "HEAD")
         update = parse_single_update(sys.stdin, head=head, branch_ref=branch)
         print(f"OUTGOING_REF={update.local_ref} TO={update.remote_ref}", flush=True)
-        qualify(root, update.local_sha)
+        qualify(root, update.local_sha, update)
         return 0
     except (
         OSError,

@@ -73,3 +73,102 @@ def test_unknown_python_minimum_requires_gate_review(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text('[project]\nrequires-python = ">=3.15"\n')
     with pytest.raises(RuntimeError, match="unsupported Python minimum"):
         python_floor(tmp_path)
+
+
+def _git(root: Path, *args: str) -> str:
+    import subprocess
+
+    return subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()
+
+
+def _commit(root: Path, text: str) -> str:
+    (root / "document.md").write_text(text)
+    _git(root, "add", "document.md")
+    _git(root, "commit", "-qm", "fixture")
+    return _git(root, "rev-parse", "HEAD")
+
+
+def test_committed_whitespace_in_intermediate_outgoing_commit_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts.pre_push_gate import PushUpdate, check_outgoing_commits
+
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.name", "fixture")
+    _git(tmp_path, "config", "user.email", "fixture@example.invalid")
+    _commit(tmp_path, "clean\n")
+    _git(tmp_path, "checkout", "-qb", "feature")
+    _commit(tmp_path, "bad trailing   \n")
+    head = _commit(tmp_path, "clean again\n")
+    monkeypatch.chdir(tmp_path)
+    update = PushUpdate("refs/heads/feature", head, "refs/heads/feature", "0" * 40)
+    with pytest.raises(RuntimeError, match="committed whitespace"):
+        check_outgoing_commits(update)
+
+
+def test_committed_whitespace_on_existing_remote_ref_update_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts.pre_push_gate import PushUpdate, check_outgoing_commits
+
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.name", "fixture")
+    _git(tmp_path, "config", "user.email", "fixture@example.invalid")
+    base = _commit(tmp_path, "clean\n")
+    _git(tmp_path, "checkout", "-qb", "feature")
+    head = _commit(tmp_path, "bad trailing   \n")
+    monkeypatch.chdir(tmp_path)
+    update = PushUpdate("refs/heads/feature", head, "refs/heads/feature", base)
+    with pytest.raises(RuntimeError, match="committed whitespace"):
+        check_outgoing_commits(update)
+
+
+def test_clean_multiple_outgoing_commits_are_qualified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts.pre_push_gate import PushUpdate, check_outgoing_commits
+
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.name", "fixture")
+    _git(tmp_path, "config", "user.email", "fixture@example.invalid")
+    _commit(tmp_path, "clean\n")
+    _git(tmp_path, "checkout", "-qb", "feature")
+    first = _commit(tmp_path, "clean again\n")
+    second = _commit(tmp_path, "clean third\n")
+    monkeypatch.chdir(tmp_path)
+    ref = PushUpdate("refs/heads/feature", second, "refs/heads/feature", "0" * 40)
+    assert check_outgoing_commits(ref) == (first, second)
+
+
+@pytest.mark.parametrize("invalid", ("f" * 40, "not-a-sha"))
+def test_unavailable_remote_reference_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid: str
+) -> None:
+    from scripts.pre_push_gate import PushUpdate, check_outgoing_commits
+
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.name", "fixture")
+    _git(tmp_path, "config", "user.email", "fixture@example.invalid")
+    head = _commit(tmp_path, "clean\n")
+    monkeypatch.chdir(tmp_path)
+    ref = PushUpdate("refs/heads/main", head, "refs/heads/main", invalid)
+    with pytest.raises(ValueError, match="remote SHA|remote reference SHA"):
+        check_outgoing_commits(ref)
+
+
+def test_non_fast_forward_remote_reference_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts.pre_push_gate import PushUpdate, check_outgoing_commits
+
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.name", "fixture")
+    _git(tmp_path, "config", "user.email", "fixture@example.invalid")
+    _commit(tmp_path, "base\n")
+    old_remote = _commit(tmp_path, "remote later\n")
+    _git(tmp_path, "checkout", "-qb", "feature", "HEAD^")
+    outgoing = _commit(tmp_path, "different branch\n")
+    monkeypatch.chdir(tmp_path)
+    ref = PushUpdate("refs/heads/feature", outgoing, "refs/heads/feature", old_remote)
+    with pytest.raises(ValueError, match="not an ancestor"):
+        check_outgoing_commits(ref)

@@ -6,19 +6,42 @@ This repository keeps GitHub Public CI as the independent required exact-merge g
 
 No scientific-method, persisted-artifact, data schema, or historical Python 3.11 identity is changed by this slice. GitHub Issues #36–#39 remain the owners of historical assertions, formatting, strict typing, and Pydantic/settings work.
 
-## Install and activate in a standalone clone
+## Safe per-worktree activation
 
-1. Install the project uv version and confirm the lock with: uv --version; uv lock --check; uv sync --locked --group dev --extra drive --extra local-auth.
-2. Confirm the lock-managed hook binary with: uv run --locked prek --version (expected 0.5.10).
-3. Install using: bash scripts/install_local_hooks.sh.
-4. Inspect: git rev-parse --git-path hooks/pre-commit; git rev-parse --git-path hooks/pre-push. The native pre-push hook should match .githooks/pre-push.
+Each worktree uses its own hooks directory under its private Git directory,
+selected through per-worktree core.hooksPath. The installer never writes into
+the shared Git hooks directory and never implicitly activates this new gate
+for older linked branches. Those branches remain independently usable, but
+are NOT protected by the new gate; required GitHub CI remains independent.
 
-The installer **refuses linked worktrees**, configured core.hooksPath, or existing pre-commit/pre-push hooks. This is deliberate: existing Git hooks can be shared by worktrees and must not be overwritten. Do not bypass the installer just to make the hook appear installed. The isolated Mac Issue #40 worktree is not used for shared hook installation; proof occurs in a disposable standalone clone.
+1. Verify the locked environment and pinned prek 0.5.10.
+2. In a standalone clone with no existing hook manager, run:
+   bash scripts/install_local_hooks.sh
+3. With multiple worktrees, inspect the existing Git configuration and all
+   existing hooks first. An authorized operator explicitly opts into
+   worktree-specific Git configuration by running:
+   git config --local extensions.worktreeConfig true
+   The installer will NEVER enable that shared extension automatically with
+   multiple worktrees. Verify core.worktree migration requirements before
+   enabling it.
+4. Run the installer within each checkout that has the new gate script and
+   is meant to be protected. Inspect the result with:
+   git config --worktree --get core.hooksPath
+5. Repeat installation is a no-op only when the original hooks exactly match.
+   Existing other hook managers, core.hooksPath, or changed installed hooks
+   require explicit reconciliation; no silent overwrite is performed.
+
+The installer validates configuration, builds executable hooks in a private
+staging directory, and switches worktree-specific core.hooksPath LAST. It
+cleans up only its own staged files if activation fails. The tracked hook
+source files remain mode 100644 to preserve the repository GitPublisher
+contract. Worktree hook configuration is not shared with other developers.
 
 ## Enforced checks
 
 - Pre-commit through pinned prek 0.5.10: non-mutating staged-file Ruff lint, changed-file Ruff formatting, staged whitespace check, and explicit validation of the actual .pre-commit-config.yaml file. Ordinary pre-commit execution proves activation; a YAML file alone is not an installed hook.
-- Pre-push through native Git stdin ref inspection: **only one updated branch, exactly matching the checked-out clean HEAD, is supported**. Multi-ref pushes, other-branch pushes and branch deletion are rejected instead of being called qualified. This is an intentional fail-closed response to prek 0.5.10's first-ref/current-working-tree limitation.
+- Pre-push through native Git stdin ref inspection: **only one updated branch, exactly matching the checked-out clean HEAD, is supported**. Multi-ref pushes, other-branch pushes, branch deletion and unavailable/divergent remote history are rejected.
+- Existing-branch pushes use Git's remote-old SHA as the lower bound; initial publication requires a trustworthy ancestral main reference. Every outgoing commit is checked separately with git diff --check against its parent. This detects defects introduced and later removed in different commits. Clean worktree diff checks are not evidence of clean committed history.
 - For the exact pushed SHA: uv lock --check, locked dev/drive/local-auth synchronization, validated hook configuration, Ruff across src/tests/scripts, Ruff formatting on changed Python files relative to main, applicable source mypy, strict mypy on the gate script, seeded full pytest (excluding only live_drive), nonvacuous JUnit test count, branch coverage >=80%, sdist and wheel builds, fresh installed-wheel CLI smoke and refusal of wheel finalization, and source E-002 no-overwrite verification. HEAD and clean-tree identity are checked before and after.
 - Required stdout provenance includes outgoing ref, exact target HEAD/tree, Python minimum, executed/skipped tests, and exact passing SHA. A nonzero subprocess exit blocks the push.
 
