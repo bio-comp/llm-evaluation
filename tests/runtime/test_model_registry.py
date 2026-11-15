@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from llm_evaluation.model_registry import RuntimeName
+
 
 def _entry(model: Path) -> dict[str, object]:
     return {
@@ -118,24 +120,18 @@ def _both_qualified_registry(tmp_path: Path) -> tuple[Path, Path]:
 
 
 @pytest.mark.parametrize("runtime", ("llamacpp", "lm_studio"))
-def test_registry_resolves_each_qualified_runtime(tmp_path: Path, runtime: str):
-    from typing import cast
-
-    from llm_evaluation.model_registry import RuntimeName, resolve_approved_model
+def test_registry_resolves_each_qualified_runtime(tmp_path: Path, runtime: RuntimeName):
+    from llm_evaluation.model_registry import resolve_approved_model
 
     model, registry = _both_qualified_registry(tmp_path)
 
-    result = resolve_approved_model(
-        registry, "approved-fixture", runtime=cast(RuntimeName, runtime)
-    )
+    result = resolve_approved_model(registry, "approved-fixture", runtime=runtime)
     assert result.logical_id == "approved-fixture"
     assert result.sha256 == hashlib.sha256(model.read_bytes()).hexdigest()
 
     model.write_bytes(b"GGUFchanged")
     with pytest.raises(ValueError, match="digest mismatch"):
-        resolve_approved_model(
-            registry, "approved-fixture", runtime=cast(RuntimeName, runtime)
-        )
+        resolve_approved_model(registry, "approved-fixture", runtime=runtime)
 
 
 @pytest.mark.parametrize("runtime", ("unknown", "", "LM_STUDIO", "llama.cpp"))
