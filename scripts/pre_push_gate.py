@@ -366,11 +366,19 @@ def qualify(root: Path, sha: str, update: PushUpdate) -> None:
 
 def main() -> int:
     try:
+        records = tuple(sys.stdin)
+        if not records:
+            print(
+                "LOCAL_GATE_NOOP: zero outgoing ref updates; "
+                "no revision published or qualified",
+                flush=True,
+            )
+            return 0
         root = Path(git("rev-parse", "--show-toplevel")).resolve()
         os.chdir(root)
         head = git("rev-parse", "HEAD")
         branch = git("symbolic-ref", "HEAD")
-        update = parse_single_update(sys.stdin, head=head, branch_ref=branch)
+        update = parse_single_update(records, head=head, branch_ref=branch)
         print(f"OUTGOING_REF={update.local_ref} TO={update.remote_ref}", flush=True)
         qualify(root, update.local_sha, update)
         return 0

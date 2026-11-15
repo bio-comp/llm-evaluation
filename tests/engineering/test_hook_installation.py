@@ -230,3 +230,111 @@ def test_changed_installed_hook_refuses_silent_upgrade(
     assert refusal.returncode != 0
     assert "REFUSED" in refusal.stderr
     assert prepush.read_text() == "# changed by another manager\n"
+
+
+def test_actual_installed_hook_noop_push_is_not_a_qualification(
+    tmp_path: Path,
+) -> None:
+    """Exercise a real installed Git hook and pinned uv, not the fast fake shim."""
+    clone = tmp_path / "real-checkout"
+    subprocess.run(
+        (
+            "git",
+            "clone",
+            "--no-hardlinks",
+            "--no-checkout",
+            "-q",
+            str(SOURCE),
+            str(clone),
+        ),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    source_head = sha(SOURCE)
+    git(clone, "checkout", "-qb", "noop-proof", source_head)
+    git(clone, "config", "user.name", "Gate fixture")
+    git(clone, "config", "user.email", "fixture@example.invalid")
+
+    # Before this change is committed, overlay the candidate implementation onto
+    # a disposable clone so the test can distinguish red and corrected behavior.
+    shutil.copyfile(
+        SOURCE / "scripts/pre_push_gate.py", clone / "scripts/pre_push_gate.py"
+    )
+    git(clone, "add", "scripts/pre_push_gate.py")
+    if git(clone, "diff", "--cached", "--quiet", check=False).returncode != 0:
+        git(clone, "commit", "-qm", "candidate gate")
+
+    bare = tmp_path / "no-op-remote.git"
+    subprocess.run(("git", "init", "--bare", "-q", str(bare)), check=True)
+    git(clone, "remote", "set-url", "origin", str(bare))
+    git(clone, "push", "--set-upstream", "origin", "HEAD:refs/heads/noop-proof")
+
+    installed = install(clone, os.environ.copy())
+    assert installed.returncode == 0, installed.stderr
+    path = Path(hooks_path(clone))
+    assert (path / "pre-push").is_file()
+    assert (path / "pre-push").stat().st_mode & 0o111
+    before = git(clone, "ls-remote", "origin", "refs/heads/noop-proof").stdout
+
+    noop = subprocess.run(
+        ("git", "-C", str(clone), "push", "origin", "HEAD:refs/heads/noop-proof"),
+        check=False,
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert noop.returncode == 0, noop.stderr
+    combined = noop.stdout + noop.stderr
+    assert "Everything up-to-date" in combined
+    assert "LOCAL_GATE_NOOP" in combined
+    assert "no revision published or qualified" in combined
+    assert "LOCAL_GATE_PASS_SHA" not in combined
+    assert "LOCAL_GATE_TARGET_SHA" not in combined
+    assert "OUTGOING_RANGE_BASE" not in combined
+    assert git(clone, "ls-remote", "origin", "refs/heads/noop-proof").stdout == before
+    # The developer's everyday push with an upstream is also a true no-op.
+    ordinary = subprocess.run(
+        ("git", "-C", str(clone), "push"),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert ordinary.returncode == 0, ordinary.stderr
+    assert "LOCAL_GATE_NOOP" in ordinary.stdout + ordinary.stderr
+    assert "LOCAL_GATE_PASS_SHA" not in ordinary.stdout + ordinary.stderr
+
+    # Actual installed hooks still reject two published refs and a tag update.
+    multiple = subprocess.run(
+        (
+            "git",
+            "-C",
+            str(clone),
+            "push",
+            "origin",
+            "HEAD:refs/heads/multi-first",
+            "HEAD:refs/heads/multi-second",
+        ),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert multiple.returncode != 0
+    assert "push must contain exactly one outgoing ref" in multiple.stderr
+    assert git(clone, "ls-remote", "origin", "refs/heads/multi-first").stdout == ""
+    assert git(clone, "ls-remote", "origin", "refs/heads/multi-second").stdout == ""
+
+    tag = subprocess.run(
+        ("git", "-C", str(clone), "push", "origin", "HEAD:refs/tags/unsupported"),
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert tag.returncode != 0
+    assert "only a single branch update is supported" in tag.stderr
+    assert git(clone, "ls-remote", "origin", "refs/tags/unsupported").stdout == ""
+    assert git(clone, "ls-remote", "origin", "refs/heads/noop-proof").stdout == before

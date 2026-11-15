@@ -172,3 +172,55 @@ def test_non_fast_forward_remote_reference_is_rejected(
     ref = PushUpdate("refs/heads/feature", outgoing, "refs/heads/feature", old_remote)
     with pytest.raises(ValueError, match="not an ancestor"):
         check_outgoing_commits(ref)
+
+
+def test_empty_push_stream_is_noop_without_git_or_qualification(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import io
+    import sys
+
+    import scripts.pre_push_gate as gate
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+
+    def unexpected_git(*args: str) -> str:
+        raise AssertionError(f"no-op must not query Git or qualify: {args}")
+
+    monkeypatch.setattr(gate, "git", unexpected_git)
+    assert gate.main() == 0
+    output = capsys.readouterr()
+    assert "LOCAL_GATE_NOOP" in output.out
+    assert "no revision published or qualified" in output.out
+    assert "LOCAL_GATE_PASS_SHA" not in output.out
+    assert "LOCAL_GATE_TARGET_SHA" not in output.out
+    assert output.err == ""
+
+
+def test_blank_record_is_malformed_not_noop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import io
+    import sys
+
+    import scripts.pre_push_gate as gate
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("\n"))
+
+    def fake_git(*args: str) -> str:
+        if args == ("rev-parse", "--show-toplevel"):
+            return str(tmp_path)
+        if args == ("rev-parse", "HEAD"):
+            return HEAD
+        if args == ("symbolic-ref", "HEAD"):
+            return BRANCH
+        raise AssertionError(f"unexpected Git call: {args}")
+
+    monkeypatch.setattr(gate, "git", fake_git)
+    assert gate.main() == 1
+    output = capsys.readouterr()
+    assert "push must contain exactly one outgoing ref" in output.err
+    assert "LOCAL_GATE_NOOP" not in output.out
