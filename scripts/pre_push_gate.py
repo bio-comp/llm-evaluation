@@ -247,7 +247,7 @@ def qualify(root: Path, sha: str) -> None:
     # Newly added gate script is held to strict typing even while #38 is open.
     run("uv", "run", "--locked", "mypy", "--strict", "scripts/pre_push_gate.py")
     with tempfile.TemporaryDirectory(prefix="llm-eval-local-gate-") as folder:
-        temp = Path(folder)
+        temp = Path(folder).resolve()
         report = temp / "pytest.xml"
         run(
             "uv",
