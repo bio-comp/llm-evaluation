@@ -94,9 +94,8 @@ def check_outgoing_commits(update: PushUpdate) -> tuple[str, ...]:
                 )
             except subprocess.CalledProcessError:
                 continue
-            if candidate != update.local_sha:
-                base = candidate
-                break
+            base = candidate
+            break
         if not base:
             raise ValueError(
                 "initial publication lacks a trustworthy ancestral main base"
@@ -125,8 +124,14 @@ def check_outgoing_commits(update: PushUpdate) -> tuple[str, ...]:
 
     history = git("rev-list", "--reverse", "--parents", f"{base}..{update.local_sha}")
     commits = [entry.split() for entry in history.splitlines() if entry.strip()]
-    if not commits:
+    if not commits and not (source == "main" and base == update.local_sha):
         raise ValueError("no outgoing commits to qualify")
+    if not commits:
+        print(
+            "NEW_BRANCH_AT_TRUSTED_MAIN_HEAD: zero outgoing commits; "
+            "full exact-HEAD qualification still required",
+            flush=True,
+        )
     if len(commits) > 2000:
         raise ValueError("outgoing history exceeds bounded local gate (2000 commits)")
     print(

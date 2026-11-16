@@ -224,3 +224,95 @@ def test_blank_record_is_malformed_not_noop(
     output = capsys.readouterr()
     assert "push must contain exactly one outgoing ref" in output.err
     assert "LOCAL_GATE_NOOP" not in output.out
+
+
+def test_initial_remote_branch_at_trusted_origin_main_head_has_no_new_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Actual ref update at a trusted equal baseline is NOT a no-op push."""
+    from scripts.pre_push_gate import PushUpdate, check_outgoing_commits
+
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.name", "fixture")
+    _git(tmp_path, "config", "user.email", "fixture@example.invalid")
+    head = _commit(tmp_path, "clean baseline\n")
+    _git(tmp_path, "update-ref", "refs/remotes/origin/main", head)
+    _git(tmp_path, "checkout", "-qb", "new-branch")
+    monkeypatch.chdir(tmp_path)
+    ref = PushUpdate("refs/heads/new-branch", head, "refs/heads/new-branch", ZERO)
+    assert check_outgoing_commits(ref) == ()
+    output = capsys.readouterr().out
+    assert f"OUTGOING_RANGE_BASE={head} SOURCE=main COMMITS=0" in output
+
+
+def test_initial_remote_branch_without_trusted_main_baseline_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts.pre_push_gate import PushUpdate, check_outgoing_commits
+
+    _git(tmp_path, "init", "-q", "-b", "feature")
+    _git(tmp_path, "config", "user.name", "fixture")
+    _git(tmp_path, "config", "user.email", "fixture@example.invalid")
+    head = _commit(tmp_path, "isolated root\n")
+    monkeypatch.chdir(tmp_path)
+    ref = PushUpdate("refs/heads/feature", head, "refs/heads/feature", ZERO)
+    with pytest.raises(ValueError, match="trustworthy ancestral main base"):
+        check_outgoing_commits(ref)
+
+
+def test_initial_remote_branch_with_divergent_main_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts.pre_push_gate import PushUpdate, check_outgoing_commits
+
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.name", "fixture")
+    _git(tmp_path, "config", "user.email", "fixture@example.invalid")
+    _commit(tmp_path, "shared ancestor\n")
+    main_head = _commit(tmp_path, "only on main\n")
+    _git(tmp_path, "checkout", "-qb", "feature", "HEAD^")
+    feature_head = _commit(tmp_path, "only on feature\n")
+    _git(tmp_path, "update-ref", "refs/remotes/origin/main", main_head)
+    monkeypatch.chdir(tmp_path)
+    ref = PushUpdate("refs/heads/feature", feature_head, "refs/heads/feature", ZERO)
+    with pytest.raises(ValueError, match="trustworthy ancestral main base"):
+        check_outgoing_commits(ref)
+
+
+def test_equal_main_new_ref_dispatches_full_qualification_not_noop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Lightweight dispatch assertion; real expensive gate is checked externally."""
+    import io
+    import sys
+
+    import scripts.pre_push_gate as gate
+
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.name", "fixture")
+    _git(tmp_path, "config", "user.email", "fixture@example.invalid")
+    head = _commit(tmp_path, "clean baseline\n")
+    _git(tmp_path, "update-ref", "refs/remotes/origin/main", head)
+    _git(tmp_path, "checkout", "-qb", "new-branch")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO(f"refs/heads/new-branch {head} refs/heads/new-branch {ZERO}\n"),
+    )
+    calls: list[tuple[Path, str, gate.PushUpdate]] = []
+
+    def qualified(root: Path, sha: str, update: gate.PushUpdate) -> None:
+        calls.append((root, sha, update))
+
+    monkeypatch.setattr(gate, "qualify", qualified)
+    assert gate.main() == 0
+    assert len(calls) == 1
+    assert calls[0][0] == tmp_path.resolve()
+    assert calls[0][1] == head
+    assert calls[0][2].remote_sha == ZERO
+    output = capsys.readouterr()
+    assert "OUTGOING_REF=refs/heads/new-branch" in output.out
+    assert "LOCAL_GATE_NOOP" not in output.out

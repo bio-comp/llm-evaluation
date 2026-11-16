@@ -342,3 +342,29 @@ def test_actual_installed_hook_noop_push_is_not_a_qualification(
     assert "only a single branch update is supported" in tag.stderr
     assert git(clone, "ls-remote", "origin", "refs/tags/unsupported").stdout == ""
     assert git(clone, "ls-remote", "origin", "refs/heads/noop-proof").stdout == before
+
+
+def test_new_remote_branch_at_exact_trusted_main_head_reaches_hook(
+    git_case: tuple[Path, Path, Path, dict[str, str]],
+) -> None:
+    """Actual installed ref-aware hook, fast injected runner (not full quality gate)."""
+    primary, _, root, env = git_case
+    git(primary, "checkout", "-qb", "new-branch")
+    add_gate(primary)
+    head = sha(primary)
+    # Both trusted main references equal this branch tip: no older fallback.
+    git(primary, "branch", "-f", "main", head)
+    # Real remote origin/main, not a convenient local-only spoof.
+    git(primary, "push", "origin", "HEAD:refs/heads/main", env=env)
+    git(primary, "fetch", "-q", "origin", "main", env=env)
+    assert git(primary, "rev-parse", "refs/remotes/origin/main").stdout.strip() == head
+    assert git(primary, "ls-remote", "origin", "refs/heads/new-branch").stdout == ""
+    installed = install(primary, env)
+    assert installed.returncode == 0, installed.stderr
+    result = git(primary, "push", "-u", "origin", "new-branch", check=False, env=env)
+    assert result.returncode == 0, result.stderr
+    assert f"OUTGOING_RANGE_BASE={head} SOURCE=main COMMITS=0" in result.stdout
+    assert git(
+        primary, "ls-remote", "origin", "refs/heads/new-branch"
+    ).stdout.startswith(head)
+    assert "python scripts/pre_push_gate.py" in (root / "hook.log").read_text()
