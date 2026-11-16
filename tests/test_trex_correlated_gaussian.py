@@ -5,7 +5,9 @@ Independent analytical oracles are deliberately separate from generator internal
 
 from __future__ import annotations
 
+import hashlib
 import math
+import platform
 import random
 from dataclasses import replace
 from fractions import Fraction
@@ -24,6 +26,11 @@ from llm_evaluation.trex_known_truth import (
 
 _HISTORICAL_ID = (
     "trex0a:af481762ac77947358040fcdc3bb1a7dfdeba47bedc9671fe0389e30c75024fa"
+)
+_HISTORICAL_DESIGN_REPR = (
+    "LinearGaussianDesign(n=9, p=4, beta=(0.0, 1.5, 0.0, -2.0), "
+    "seed=23, covariance_family='independent_standard_gaussian', "
+    "noise_law='gaussian', noise_scale=0.7, response_family='continuous_linear')"
 )
 
 
@@ -351,12 +358,48 @@ def test_legacy_phase_0a_bitwise_generation_and_fingerprint_regression() -> None
         n=9, p=4, beta=(0.0, 1.5, 0.0, -2.0), seed=23, noise_scale=0.7
     )
     dataset = generate_linear_dataset(design)
+    # Independently reconstruct the Phase 0A stream, response, and repr hash.
+    # random.gauss uses platform libm; the historical Mac digest is not a
+    # portable golden for arbitrary Python/OS/architecture combinations.
     rng = random.Random(23)
     reference_x = tuple(tuple(rng.gauss(0.0, 1.0) for _ in range(4)) for _ in range(9))
     reference_error = tuple(rng.gauss(0.0, 0.7) for _ in range(9))
+    reference_y = tuple(
+        math.fsum(
+            [
+                *(
+                    feature * coefficient
+                    for feature, coefficient in zip(row, design.beta, strict=True)
+                ),
+                error,
+            ]
+        )
+        for row, error in zip(reference_x, reference_error, strict=True)
+    )
+    assert repr(design) == _HISTORICAL_DESIGN_REPR
+    reference_id = (
+        "trex0a:"
+        + hashlib.sha256(
+            repr(("trex-known-truth-v1", design, reference_x, reference_y)).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+    )
     assert dataset.x == reference_x
     assert dataset.epsilon == reference_error
-    assert dataset.dataset_id == _HISTORICAL_ID
+    assert dataset.y == reference_y
+    assert dataset.dataset_id == reference_id
+    if (
+        platform.system() == "Darwin"
+        and platform.machine() == "arm64"
+        and platform.python_version() == "3.11.13"
+    ):
+        # Keep the byte-for-byte published Phase 0A anchor on its source host.
+        assert reference_id == _HISTORICAL_ID
+    # Known-bad control: altering seed provenance without regenerating data
+    # must fail, even though the response equation remains valid.
+    with pytest.raises(ValueError, match="dataset_id"):
+        score_generated_dataset(replace(dataset, design=replace(design, seed=24)), (1,))
     assert design.rho is None and design.block_size is None
     assert "rho" not in repr(design) and "block_size" not in repr(design)
     assert score_generated_dataset(dataset, (1,)).metrics.fdp == 0
