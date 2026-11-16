@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       PYTHONPATH: src
     steps:
@@ -24,6 +24,16 @@ jobs:
           python -m pip install uv==0.8.4
           uv lock --check
           uv sync --frozen --group dev --extra drive --extra local-auth
+      - name: Verify local quality-gate scripts and disposable Git controls
+        run: |
+          bash -n scripts/install_local_hooks.sh
+          sh -n .githooks/pre-commit
+          sh -n .githooks/pre-push
+          uv run --frozen --extra drive --extra local-auth prek validate-config .pre-commit-config.yaml
+          uv run --frozen --extra drive --extra local-auth ruff check scripts tests/engineering
+          uv run --frozen --extra drive --extra local-auth ruff format --check scripts/pre_push_gate.py tests/engineering
+          uv run --frozen --extra drive --extra local-auth mypy --strict scripts/pre_push_gate.py
+          uv run --frozen --extra drive --extra local-auth python -m pytest tests/engineering -q --randomly-seed=440044
       - name: Static checks and branch coverage
         run: |
           uv run --frozen --extra drive --extra local-auth ruff check src tests

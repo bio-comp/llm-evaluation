@@ -1,0 +1,6 @@
+#!/bin/sh
+# The native Git hook receives every ref update on stdin. prek 0.5.10 does not.
+set -eu
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+exec uv run --locked python scripts/pre_push_gate.py "$@"
