@@ -52,8 +52,16 @@ class Task(Closed):
         }[self.operation]()
         if calculated != self.expected:
             raise ValueError("reference answer contradicts executable arithmetic")
-        if str(self.lhs) not in self.prompt or str(self.rhs) not in self.prompt:
-            raise ValueError("prompt must state both operands")
+        # v1 supports exactly this executable question grammar (and two
+        # equivalent output-format suffixes), not arbitrary arithmetic prose.
+        question = (
+            f"Compute {self.lhs} {self.operation} {self.rhs}. "
+            "Return exactly one decimal integer"
+        )
+        if self.prompt not in (question + ".", question + " with no explanation."):
+            raise ValueError("prompt contradicts supported v1 arithmetic grammar")
+        if len(str(abs(self.expected))) > 20:
+            raise ValueError("reference answer exceeds the 20-digit grader domain")
         return self
 
 
@@ -148,6 +156,15 @@ class Trial(Closed):
         return self
 
 
+def _check_task_chronology(trials: tuple[Trial, ...]) -> None:
+    """Each task's ordinals must increase with genuine global observation order."""
+    last_ordinal: dict[str, int] = {}
+    for trial in sorted(trials, key=lambda t: t.global_order):
+        if trial.ordinal <= last_ordinal.get(trial.task_id, 0):
+            raise ValueError("task ordinal contradicts global chronology")
+        last_ordinal[trial.task_id] = trial.ordinal
+
+
 class TrajectoryEvidence(Closed):
     schema_version: Literal[1]
     manifest_sha256: str = Field(pattern=_SHA256)
@@ -162,6 +179,7 @@ class TrajectoryEvidence(Closed):
         positions = [t.global_order for t in self.trials]
         if len(set(positions)) != len(positions):
             raise ValueError("duplicate global chronology position")
+        _check_task_chronology(self.trials)
         return self
 
 
@@ -286,6 +304,8 @@ def evaluate(
         sorted(t.global_order for t in evidence.trials)
     ):
         raise ValueError("trial records must preserve chronological global order")
+    # Defensive replay guard: Pydantic's model_copy(update=...) skips validation.
+    _check_task_chronology(evidence.trials)
     attempted = len(evidence.trials)
     completed = sum(t.status is TrialStatus.COMPLETED for t in evidence.trials)
     failed = sum(t.status is TrialStatus.FAILED for t in evidence.trials)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import itertools
+import json
 import math
 from pathlib import Path
 from types import SimpleNamespace
@@ -434,3 +435,141 @@ def test_no_trajectory_is_not_a_successful_zero_cost_evaluation() -> None:
     assert result.task_scores == ()
     assert result.task_weighted_marginal is None
     assert result.decision_error is None
+
+
+def test_r1_ordinal_labels_cannot_rewrite_true_observation_order() -> None:
+    """Strict external evidence rejects label swaps with intact raw provenance."""
+    original = _evidence()
+    assert (
+        evaluate(_PACKET, _BYTES, original).task_scores[0].arms[0].decision == "reject"
+    )
+    record = original.model_dump(mode="json")
+    # The first task is interleaved across all six tasks, from positions 1 to 91.
+    first = next(
+        i for i, t in enumerate(record["trials"]) if t["task_id"] == _PACKET.tasks[0].id
+    )
+    last = max(
+        i for i, t in enumerate(record["trials"]) if t["task_id"] == _PACKET.tasks[0].id
+    )
+    assert len(record["trials"]) == 96
+    assert record["trials"][first]["ordinal"] == 1
+    assert record["trials"][last]["ordinal"] == 16
+    record["trials"][first]["ordinal"] = 16
+    record["trials"][last]["ordinal"] = 1
+    # The R1 source accepted this exact input, then flipped fixed-1 reject to accept.
+    with pytest.raises(ValidationError, match="ordinal contradicts global chronology"):
+        TrajectoryEvidence.model_validate_json(json.dumps(record))
+
+    # Also fail closed when a caller bypasses Pydantic by using model_copy(update=...).
+    swapped_trials = tuple(
+        Trial.model_validate_json(json.dumps(row)) for row in record["trials"]
+    )
+    unchecked = original.model_copy(update={"trials": swapped_trials})
+    with pytest.raises(ValueError, match="ordinal contradicts global chronology"):
+        evaluate(_PACKET, _BYTES, unchecked)
+
+
+def test_interleaving_preserves_prefix_policy_decisions_and_costs() -> None:
+    """Task-contiguous and six-task interleaved streams have identical prefixes."""
+    interleaved = _evidence()
+    original = evaluate(_PACKET, _BYTES, interleaved)
+    ordered_by_task = sorted(interleaved.trials, key=lambda t: (t.task_id, t.ordinal))
+    rows = [
+        {
+            **trial.model_dump(mode="json"),
+            "global_order": i,
+        }
+        for i, trial in enumerate(ordered_by_task, start=1)
+    ]
+    contiguous = TrajectoryEvidence.model_validate_json(
+        json.dumps(
+            {
+                **interleaved.model_dump(mode="json"),
+                "trials": rows,
+            }
+        )
+    )
+    result = evaluate(_PACKET, _BYTES, contiguous)
+    assert result.status == original.status == "evaluated"
+    assert result.task_scores == original.task_scores
+    assert result.input_tokens == original.input_tokens == 960
+    assert result.output_tokens == original.output_tokens == 480
+    assert result.elapsed_seconds == original.elapsed_seconds == 24.0
+
+
+@pytest.mark.parametrize(
+    "unbound_prompt",
+    [
+        "Compute 7 + 8. Return exactly one decimal integer.",
+        "Compute 7 * 80. Return exactly one decimal integer.",
+        "Compute 7 * 8 and then add 1. Return exactly one decimal integer.",
+        "Compute 7 * 8. Return exactly one decimal integer. Also print 15.",
+    ],
+)
+def test_r1_prompt_must_bind_actual_operation_and_operands(
+    unbound_prompt: str,
+) -> None:
+    packet = _PACKET.model_dump(mode="json")
+    packet["tasks"][0]["prompt"] = unbound_prompt
+    with pytest.raises(ValidationError, match="supported v1 arithmetic grammar"):
+        TaskPacket.model_validate_json(json.dumps(packet))
+
+
+def test_r1_unsupported_21_digit_correct_result_fails_packet_validation() -> None:
+    lhs = 10**20
+    task = {
+        "id": "huge",
+        "lhs": lhs,
+        "operation": "+",
+        "rhs": 1,
+        "expected": lhs + 1,
+        "prompt": f"Compute {lhs} + 1. Return exactly one decimal integer.",
+    }
+    with pytest.raises(ValidationError, match="20-digit grader domain"):
+        Task.model_validate_json(json.dumps(task))
+
+
+def test_supported_20_digit_correct_result_and_alternates_are_accepted() -> None:
+    lhs = 10**19
+    task = Task.model_validate_json(
+        json.dumps(
+            {
+                "id": "max-length",
+                "lhs": lhs,
+                "operation": "+",
+                "rhs": 1,
+                "expected": lhs + 1,
+                "prompt": f"Compute {lhs} + 1. Return exactly one decimal integer.",
+            }
+        )
+    )
+    answer = str(lhs + 1)
+    assert len(answer) == 20
+    assert grade(task, answer) is Grading.CORRECT
+    assert grade(task, "+" + answer) is Grading.CORRECT
+    assert grade(task, str(lhs)) is Grading.INCORRECT
+    assert grade(task, answer + " " + answer) is Grading.MALFORMED
+    assert grade(task, "0" + answer) is Grading.MALFORMED
+    assert TaskPacket.model_validate_json(_BYTES) == _PACKET
+
+
+@given(
+    st.integers(min_value=0, max_value=5),
+    st.integers(min_value=1, max_value=16),
+    st.integers(min_value=1, max_value=15),
+)
+@settings(max_examples=40, deadline=None)
+def test_any_distinct_per_task_ordinal_swap_is_rejected(
+    task_index: int, first_ordinal: int, offset: int
+) -> None:
+    """Property: no two distinct observed ordinals may be relabeled in place."""
+    second_ordinal = 1 + (first_ordinal - 1 + offset) % 16
+    record = _evidence().model_dump(mode="json")
+    first = (first_ordinal - 1) * 6 + task_index
+    second = (second_ordinal - 1) * 6 + task_index
+    assert first != second
+    assert record["trials"][first]["task_id"] == record["trials"][second]["task_id"]
+    record["trials"][first]["ordinal"] = second_ordinal
+    record["trials"][second]["ordinal"] = first_ordinal
+    with pytest.raises(ValidationError, match="ordinal contradicts global chronology"):
+        TrajectoryEvidence.model_validate_json(json.dumps(record))
