@@ -316,3 +316,59 @@ def test_equal_main_new_ref_dispatches_full_qualification_not_noop(
     output = capsys.readouterr()
     assert "OUTGOING_REF=refs/heads/new-branch" in output.out
     assert "LOCAL_GATE_NOOP" not in output.out
+
+
+def test_push_gate_isolates_nested_git_repositories_from_hook_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pre-push Git context must not redirect fixture Git writes to its parent."""
+    import io
+    import os
+    import subprocess
+    import sys
+
+    import scripts.pre_push_gate as gate
+
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    _git(primary, "init", "-q", "-b", "main")
+    _git(primary, "config", "user.name", "host")
+    _git(primary, "config", "user.email", "host@example.invalid")
+    head = _commit(primary, "base\n")
+    original_config = (primary / ".git" / "config").read_bytes()
+    child = tmp_path / "child"
+    child.mkdir()
+
+    # Git exports these repository pointers when executing pre-push hooks.
+    monkeypatch.setenv("GIT_DIR", str(primary / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(primary))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(primary / ".git" / "index"))
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "preserved-author")
+    monkeypatch.chdir(primary)
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO(f"refs/heads/main {head} refs/heads/test {ZERO}\n"),
+    )
+
+    qualified: list[str] = []
+
+    def verify_nested(root: Path, sha: str, update: gate.PushUpdate) -> None:
+        assert root == primary.resolve()
+        assert sha == head
+        assert update.remote_ref == "refs/heads/test"
+        assert "GIT_DIR" not in os.environ
+        assert "GIT_WORK_TREE" not in os.environ
+        assert "GIT_INDEX_FILE" not in os.environ
+        assert os.environ["GIT_AUTHOR_NAME"] == "preserved-author"
+        subprocess.run(("git", "init", "-q", "-b", "main"), cwd=child, check=True)
+        subprocess.run(("git", "config", "user.name", "child"), cwd=child, check=True)
+        assert (child / ".git").is_dir()
+        assert _git(child, "config", "user.name") == "child"
+        assert (primary / ".git" / "config").read_bytes() == original_config
+        qualified.append(sha)
+
+    monkeypatch.setattr(gate, "qualify", verify_nested)
+    assert gate.main() == 0
+    assert qualified == [head]
+    assert (primary / ".git" / "config").read_bytes() == original_config
