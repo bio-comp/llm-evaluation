@@ -8,6 +8,7 @@ under one frozen B with exact rational arithmetic.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from dataclasses import FrozenInstanceError, replace
@@ -515,6 +516,84 @@ def test_omitting_abstention_from_marginal_outcomes_fails_oracle() -> None:
         _check_exact_oracle(replace(result, policies=(*result.policies[:-1], wrong)))
 
 
+def _assert_fixture_semantics(
+    published: PolicyComparison, expected: PolicyComparison
+) -> None:
+    """Check every field without conflating binary64 serialization across OSes.
+
+    Scientific numerical equivalence is tightly bounded; the committed artifact's
+    *own* bytes are separately SHA-256 guarded by the fixture test. This is not
+    an excuse to ignore changed choices, missing rows, or altered conclusions.
+    """
+    assert published.design_id == expected.design_id
+    assert published.candidate_margins_40ths == expected.candidate_margins_40ths
+    assert published.reference_n == expected.reference_n
+    assert published.monitoring_n == expected.monitoring_n
+    assert published.monitoring_looks == expected.monitoring_looks
+    assert published.cp_bisection_iterations == expected.cp_bisection_iterations
+    for field in (
+        "reference_true_null_probability",
+        "monitoring_true_null_probability",
+        "monitoring_alternative_probability",
+        "conditional_null_limit",
+    ):
+        assert getattr(published, field) == getattr(expected, field)
+    assert len(published.policies) == len(expected.policies) == 5
+    for old_policy, current_policy in zip(
+        published.policies, expected.policies, strict=True
+    ):
+        assert old_policy.name is current_policy.name
+        assert old_policy.confidence_level == current_policy.confidence_level
+        assert (
+            old_policy.violating_reference_count
+            == current_policy.violating_reference_count
+        )
+        assert len(old_policy.decisions) == len(current_policy.decisions) == 41
+        for field in (
+            "activation_probability",
+            "withheld_probability",
+            "marginal_null_alarm",
+            "marginal_alternative_detection",
+            "null_alarm_given_activation",
+            "detection_given_activation",
+            "violating_reference_mass",
+            "confidence_noncoverage_mass_at_true_null",
+        ):
+            actual, reference = (
+                getattr(old_policy, field),
+                getattr(current_policy, field),
+            )
+            if reference is None:
+                assert actual is None
+            else:
+                assert actual == pytest.approx(reference, rel=1e-11, abs=1e-14)
+        assert old_policy.margin_probability_masses == pytest.approx(
+            current_policy.margin_probability_masses, rel=1e-11, abs=1e-14
+        )
+        for previous, current in zip(
+            old_policy.decisions, current_policy.decisions, strict=True
+        ):
+            assert previous.reference_errors == current.reference_errors
+            assert previous.status is current.status
+            assert previous.selected_margin_40ths == current.selected_margin_40ths
+            assert (
+                previous.conditional_limit_violated
+                is current.conditional_limit_violated
+            )
+            for field in (
+                "selection_null_probability",
+                "selection_risk",
+                "minimum_candidate_selection_risk",
+                "actual_null_six_look_risk",
+                "actual_alternative_six_look_detection",
+            ):
+                actual, reference = getattr(previous, field), getattr(current, field)
+                if reference is None:
+                    assert actual is None
+                else:
+                    assert actual == pytest.approx(reference, rel=1e-11, abs=1e-14)
+
+
 def test_persisted_development_fixture_matches_executable_result() -> None:
     from pathlib import Path
 
@@ -524,8 +603,31 @@ def test_persisted_development_fixture_matches_executable_result() -> None:
         / "d019_estimated_null_policy_comparison_dev_v1.json"
     )
     payload = path.read_bytes()
-    adapter = TypeAdapter(PolicyComparison)
+    assert hashlib.sha256(payload).hexdigest() == (
+        "fc249d015ad581687b1becc30f7db426cd92c57adb3b41afc3302b07453af8df"
+    )
+    published = TypeAdapter(PolicyComparison).validate_json(payload)
     expected = evaluate_policy_comparison(_MARGINS)
-    assert payload == adapter.dump_json(expected, indent=2) + b"\n"
-    assert adapter.validate_json(payload) == expected
-    assert sum(len(policy.decisions) for policy in expected.policies) == 205
+    _assert_fixture_semantics(published, expected)
+    assert sum(len(policy.decisions) for policy in published.policies) == 205
+
+
+def test_fixture_semantic_check_rejects_mutated_selection_and_risk() -> None:
+    original = evaluate_policy_comparison(_MARGINS)
+    first_policy = original.policies[0]
+    first_row = first_policy.decisions[0]
+    for changed_row in (
+        replace(first_row, selected_margin_40ths=10),
+        replace(first_row, selection_null_probability=0.999),
+    ):
+        corrupted = replace(
+            original,
+            policies=(
+                replace(
+                    first_policy, decisions=(changed_row, *first_policy.decisions[1:])
+                ),
+                *original.policies[1:],
+            ),
+        )
+        with pytest.raises(AssertionError):
+            _assert_fixture_semantics(corrupted, original)
