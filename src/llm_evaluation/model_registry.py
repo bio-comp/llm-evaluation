@@ -111,6 +111,11 @@ def resolve_approved_model(
 ) -> ApprovedModel:
     """Resolve one approved model and independently prove its current local bytes."""
 
+    if type(runtime) is not str:
+        raise TypeError("runtime must be a string")
+    if runtime not in ("llamacpp", "lm_studio"):
+        raise ValueError("unsupported approved model runtime")
+
     registry = load_model_registry(registry_path)
     matches = [model for model in registry.models if model.logical_id == logical_id]
     if len(matches) != 1:
