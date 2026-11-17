@@ -30,7 +30,13 @@ from llm_evaluation.trex_known_truth import (
 
 Kind = Literal["trex", "trex_da", "lasso_cv", "stability", "bh_independent"]
 Status = Literal[
-    "success", "failed", "timeout", "unavailable", "unsupported", "budget_exhausted"
+    "success",
+    "failed",
+    "timeout",
+    "unavailable",
+    "unqualified",
+    "unsupported",
+    "budget_exhausted",
 ]
 
 
@@ -107,7 +113,8 @@ class Method(StrictRecord):
     kind: Kind
     k: int | None = Field(default=None, ge=2, le=1000)
     da_method: Literal["BT", "EQUI"] | None = None
-    reruns: int = Field(default=1, ge=1, le=4)
+    # Pairwise Jaccard is defined for exactly two completed selector executions.
+    reruns: int = Field(default=1, ge=1, le=2)
     stability_subsamples: int = Field(default=20, ge=4, le=100)
 
     @model_validator(mode="after")
@@ -277,6 +284,8 @@ class Summary(StrictRecord):
     mean_runtime_seconds: float | None = None
     max_peak_rss_mib: float | None = None
     mean_rerun_jaccard: float | None = None
+    rerun_pairs_completed: int | None = None
+    rerun_pairs_incomplete: int | None = None
 
 
 def derived_seed(base: int, *parts: str) -> int:
@@ -326,9 +335,21 @@ def _invoke_worker(
             f"worker exceeded {timeout:g}s hard subprocess deadline",
             time.monotonic() - started,
         )
+    except OSError as exc:
+        # A child that never starts still consumes one explicit method attempt.
+        # Do not leak executable paths or operating-system error details.
+        number = exc.errno if exc.errno is not None else "unknown"
+        return (
+            "failed",
+            None,
+            f"worker launch failed: OSError errno={number}",
+            time.monotonic() - started,
+        )
     elapsed = time.monotonic() - started
     if call.returncode == 42:
         return "unavailable", None, call.stderr[-600:], elapsed
+    if call.returncode == 43:
+        return "unqualified", None, call.stderr[-600:], elapsed
     if call.returncode:
         return "failed", None, f"exit={call.returncode}: {call.stderr[-600:]}", elapsed
     try:
@@ -397,7 +418,8 @@ def summarize(
                 if r.status != "success":
                     failures[r.status] = failures.get(r.status, 0) + 1
             pairs: list[float] = []
-            if method.reruns >= 2:
+            incomplete_pairs = 0
+            if method.reruns == 2:
                 by_ds: dict[str, dict[int, RunRecord]] = defaultdict(dict)
                 for r in group:
                     by_ds[r.dataset_id][r.rerun] = r
@@ -406,10 +428,14 @@ def summarize(
                     if (
                         first is not None
                         and second is not None
+                        and first.status == "success"
+                        and second.status == "success"
                         and first.selected is not None
                         and second.selected is not None
                     ):
                         pairs.append(_jaccard(first.selected, second.selected))
+                    else:
+                        incomplete_pairs += 1
             if canonical is not None:
                 if not math.isclose(
                     float(canonical.empirical_fdr),
@@ -481,6 +507,10 @@ def summarize(
                         default=None,
                     ),
                     mean_rerun_jaccard=statistics.fmean(pairs) if pairs else None,
+                    rerun_pairs_completed=len(pairs) if method.reruns == 2 else None,
+                    rerun_pairs_incomplete=incomplete_pairs
+                    if method.reruns == 2
+                    else None,
                 )
             )
     return summaries

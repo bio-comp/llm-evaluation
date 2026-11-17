@@ -8,12 +8,21 @@ import importlib.metadata
 import json
 import subprocess
 from pathlib import Path
+from typing import Literal
+
+from pydantic import Field, model_validator
 
 from llm_evaluation.trex_finite_k import (
     PilotConfig,
+    StrictRecord,
     execute,
     file_digest,
     runtime_provenance,
+)
+from llm_evaluation.trex_runtime_provenance import (
+    InstalledArtifact,
+    IntendedRelease,
+    inspect_installed_trex,
 )
 
 
@@ -29,6 +38,43 @@ def _git_head() -> str:
         ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=False
     )
     return run.stdout.strip() if run.returncode == 0 else "unavailable"
+
+
+class DevelopmentManifest(StrictRecord):
+    """Typed v2 persistence boundary; historical v1 manifests remain immutable."""
+
+    schema_version: Literal["trex47-manifest-v2"] = "trex47-manifest-v2"
+    lifecycle: Literal["DEVELOPMENT_ONLY_NOT_FINAL"] = "DEVELOPMENT_ONLY_NOT_FINAL"
+    pilot_id: str = Field(min_length=1)
+    repository_head_at_execution: str
+    canonical_drive_experiments_id: str
+    canonical_ownership: str
+    intended_upstream_release: IntendedRelease
+    installed_upstream_artifact: InstalledArtifact
+    source_digests_sha256: dict[str, str]
+    artifacts_sha256: dict[str, str]
+    python_runtime: dict[str, str]
+    dependency_versions: dict[str, str]
+    planned_primary_runs: int = Field(ge=1)
+    executed_worker_successes: int = Field(ge=0)
+    successful_native_trex_executions: int = Field(ge=0)
+    record_count_including_reruns_and_explicit_exclusions: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def require_native_qualification(self) -> DevelopmentManifest:
+        if (
+            self.successful_native_trex_executions
+            and self.installed_upstream_artifact.status != "qualified"
+        ):
+            raise ValueError(
+                "T-Rex success may not claim an unqualified installed artifact"
+            )
+        if (
+            self.executed_worker_successes
+            > self.record_count_including_reruns_and_explicit_exclusions
+        ):
+            raise ValueError("successful outcomes exceed recorded attempts")
+        return self
 
 
 def main() -> int:
@@ -56,51 +102,54 @@ def main() -> int:
     config_path = args.output_dir / "configuration.json"
     config_path.write_text(config.model_dump_json(indent=2) + "\n", encoding="utf-8")
 
-    manifest: dict[str, str | int | dict[str, str]] = {
-        "schema_version": "trex47-manifest-v1",
-        "lifecycle": "DEVELOPMENT_ONLY_NOT_FINAL",
-        "pilot_id": config.pilot_id,
-        "repository_head_at_execution_before_research_commit": _git_head(),
-        "canonical_drive_experiments_id": "11aLrfuynQQfp6C4utseQHV-KTYl01kWfW-JAEMs2Ti4",
-        "canonical_ownership": "Drive controls scientific interpretation; Git artifacts are development evidence",
-        "method_release_tag_commit": "trexselector/TRexSelector v1.0.0: aa7e5cade4b7129e83417f19c437a811e828e8ac",
-        "pypi_macos_arm64_cp311_sha256": "82b645e5bb8b67547fb35f652a83d0a9ca3d801839961f8d07c407e26b161f2e",
-        "pypi_sdist_sha256": "61f0a57b275cf4fc2a2f8c690f75a5ce7364951f3f27caa2729a7128991ab538",
-        "source_digests_sha256": {
+    # Installed runtime evidence is observed independently from the intended
+    # upstream release. Only exact file-content matches qualify native success.
+    observed = inspect_installed_trex()
+    manifest = DevelopmentManifest(
+        pilot_id=config.pilot_id,
+        repository_head_at_execution=_git_head(),
+        canonical_drive_experiments_id="11aLrfuynQQfp6C4utseQHV-KTYl01kWfW-JAEMs2Ti4",
+        canonical_ownership="Drive controls scientific interpretation; Git artifacts are development evidence",
+        intended_upstream_release=IntendedRelease(),
+        installed_upstream_artifact=observed,
+        source_digests_sha256={
             name: file_digest(root / name)
             for name in (
                 "trex_known_truth.py",
                 "trex_finite_k.py",
                 "trex_finite_k_worker.py",
                 "trex_finite_k_cli.py",
+                "trex_runtime_provenance.py",
             )
         },
-        "artifacts_sha256": {
+        artifacts_sha256={
             name: file_digest(args.output_dir / name)
             for name in ("configuration.json", "records.jsonl", "summary.json")
         },
-        "python_runtime": runtime_provenance(),
-        "dependency_versions": {
+        python_runtime=runtime_provenance(),
+        dependency_versions={
             name: _version(name)
             for name in ("trexselector", "numpy", "scipy", "scikit-learn", "pydantic")
         },
-        "planned_primary_runs": len(config.scenarios)
+        planned_primary_runs=len(config.scenarios)
         * config.independent_replicates
         * len(config.methods),
-        "executed_worker_successes": sum(
-            record.status == "success" for record in records
+        executed_worker_successes=sum(record.status == "success" for record in records),
+        successful_native_trex_executions=sum(
+            record.status == "success" and record.method_kind in ("trex", "trex_da")
+            for record in records
         ),
-        "record_count_including_reruns_and_explicit_exclusions": len(records),
-    }
+        record_count_including_reruns_and_explicit_exclusions=len(records),
+    )
     (args.output_dir / "manifest.json").write_text(
-        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+        manifest.model_dump_json(indent=2) + "\n", encoding="utf-8"
     )
     print(
         json.dumps(
             {
                 "pilot_id": config.pilot_id,
                 "records": len(records),
-                "successful": manifest["executed_worker_successes"],
+                "successful": manifest.executed_worker_successes,
                 "outcome_counts": {
                     status: sum(record.status == status for record in records)
                     for status in (
@@ -108,6 +157,7 @@ def main() -> int:
                         "failed",
                         "timeout",
                         "unavailable",
+                        "unqualified",
                         "unsupported",
                         "budget_exhausted",
                     )

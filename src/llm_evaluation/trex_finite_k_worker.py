@@ -11,6 +11,11 @@ import traceback
 from importlib import import_module
 
 from llm_evaluation.trex_finite_k import WorkerRequest, WorkerResult
+from llm_evaluation.trex_runtime_provenance import inspect_installed_trex
+
+
+class UnqualifiedTRexRuntime(RuntimeError):
+    """Native selector was not run because its installed artifact is unqualified."""
 
 
 def _indices(values: object, p: int) -> tuple[int, ...]:
@@ -41,6 +46,17 @@ def _rss_mib() -> float:
 
 
 def run(request: WorkerRequest) -> WorkerResult:
+    if request.kind in ("trex", "trex_da"):
+        evidence = inspect_installed_trex()
+        if evidence.status == "unavailable":
+            raise ModuleNotFoundError(
+                "trexselector is not installed", name="trexselector"
+            )
+        if evidence.status != "qualified":
+            raise UnqualifiedTRexRuntime(
+                evidence.reason or "unverified trexselector runtime"
+            )
+
     np = import_module("numpy")
 
     x = np.array(request.x, dtype=np.float64, order="F", copy=True)
@@ -203,6 +219,9 @@ def main() -> int:
     except (ImportError, ModuleNotFoundError) as exc:
         print(f"optional research dependency unavailable: {exc}", file=sys.stderr)
         return 42
+    except UnqualifiedTRexRuntime as exc:
+        print(f"unqualified research runtime: {exc}", file=sys.stderr)
+        return 43
     except Exception:
         traceback.print_exc(file=sys.stderr)
         return 1
