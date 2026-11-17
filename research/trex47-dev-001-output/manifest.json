@@ -1,0 +1,36 @@
+{
+  "schema_version": "trex47-manifest-v1",
+  "lifecycle": "DEVELOPMENT_ONLY_NOT_FINAL",
+  "pilot_id": "trex47-dev-001",
+  "implementation_commit_at_execution": "ca7af2f1bcaa1eefc524406251bd7a62c33986e1",
+  "canonical_drive_experiments_id": "11aLrfuynQQfp6C4utseQHV-KTYl01kWfW-JAEMs2Ti4",
+  "canonical_ownership": "Drive controls scientific interpretation; Git artifacts are development evidence",
+  "method_release_tag_commit": "trexselector/TRexSelector v1.0.0: aa7e5cade4b7129e83417f19c437a811e828e8ac",
+  "pypi_macos_arm64_cp311_sha256": "82b645e5bb8b67547fb35f652a83d0a9ca3d801839961f8d07c407e26b161f2e",
+  "pypi_sdist_sha256": "61f0a57b275cf4fc2a2f8c690f75a5ce7364951f3f27caa2729a7128991ab538",
+  "source_digests_sha256": {
+    "trex_known_truth.py": "c4ff6c812815cb7a64d2dc6833d932fe114c1ecc2203469fb3ffaa4be6076b47",
+    "trex_finite_k.py": "a99789d9c427e4b3f2f50251e6b7822b88e3d834e7d86926d677f679c11f159f",
+    "trex_finite_k_worker.py": "76a475b9183a15bebb43c0aeda3ff6e03dbe4fada589e6fb10811829d2f414c8"
+  },
+  "artifacts_sha256": {
+    "configuration.json": "945878f19635dba4776664d729d4632b6b888f699250f71272709c03c3d1705e",
+    "records.jsonl": "513d6e779e6961f69065f46bb28b134e82ceeffcab37a4f8b8c24fb44f3d03d2",
+    "summary.json": "18a215495160552261a6cf72de7ffcdf9beac8bf385f9b5e8dca1efcf76a3a39"
+  },
+  "python_runtime": {
+    "python": "3.11.13",
+    "platform": "macOS-26.6.2-arm64-arm-64bit",
+    "architecture": "arm64"
+  },
+  "dependency_versions": {
+    "trexselector": "1.0.0",
+    "numpy": "2.4.6",
+    "scipy": "1.17.1",
+    "scikit-learn": "1.9.1",
+    "pydantic": "2.14.1"
+  },
+  "planned_primary_runs": 1296,
+  "executed_worker_successes": 1232,
+  "record_count_including_reruns_and_explicit_exclusions": 1728
+}

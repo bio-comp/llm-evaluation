@@ -1,0 +1,228 @@
+{
+  "schema_version": "trex47-config-v1",
+  "pilot_id": "trex47-dev-002",
+  "development_namespace": "issue47-development-v1",
+  "scenarios": [
+    {
+      "name": "null_independent_p40",
+      "n": 80,
+      "p": 40,
+      "covariance": "independent_standard_gaussian",
+      "rho": null,
+      "block_size": null,
+      "active": [],
+      "coefficient": 0.0,
+      "noise_scale": 1.0,
+      "proxy_index": null
+    },
+    {
+      "name": "strong_independent_p40",
+      "n": 80,
+      "p": 40,
+      "covariance": "independent_standard_gaussian",
+      "rho": null,
+      "block_size": null,
+      "active": [
+        0,
+        10,
+        39
+      ],
+      "coefficient": 2.5,
+      "noise_scale": 1.0,
+      "proxy_index": null
+    },
+    {
+      "name": "weak_independent_p40",
+      "n": 80,
+      "p": 40,
+      "covariance": "independent_standard_gaussian",
+      "rho": null,
+      "block_size": null,
+      "active": [
+        0,
+        10,
+        39
+      ],
+      "coefficient": 0.45,
+      "noise_scale": 1.0,
+      "proxy_index": null
+    },
+    {
+      "name": "strong_block_rho05",
+      "n": 80,
+      "p": 40,
+      "covariance": "block_correlated_gaussian",
+      "rho": 0.5,
+      "block_size": 8,
+      "active": [
+        0,
+        16,
+        32
+      ],
+      "coefficient": 2.5,
+      "noise_scale": 1.0,
+      "proxy_index": null
+    },
+    {
+      "name": "proxy_block_rho09",
+      "n": 80,
+      "p": 40,
+      "covariance": "block_correlated_gaussian",
+      "rho": 0.9,
+      "block_size": 8,
+      "active": [
+        0,
+        16,
+        32
+      ],
+      "coefficient": 2.5,
+      "noise_scale": 1.0,
+      "proxy_index": 1
+    },
+    {
+      "name": "strong_equi_rho05",
+      "n": 80,
+      "p": 40,
+      "covariance": "equicorrelated_gaussian",
+      "rho": 0.5,
+      "block_size": null,
+      "active": [
+        0,
+        10,
+        39
+      ],
+      "coefficient": 2.5,
+      "noise_scale": 1.0,
+      "proxy_index": null
+    },
+    {
+      "name": "weak_equi_rho09",
+      "n": 80,
+      "p": 40,
+      "covariance": "equicorrelated_gaussian",
+      "rho": 0.9,
+      "block_size": null,
+      "active": [
+        0,
+        10,
+        39
+      ],
+      "coefficient": 0.45,
+      "noise_scale": 1.0,
+      "proxy_index": 1
+    },
+    {
+      "name": "strong_independent_p160_gt_n",
+      "n": 80,
+      "p": 160,
+      "covariance": "independent_standard_gaussian",
+      "rho": null,
+      "block_size": null,
+      "active": [
+        0,
+        40,
+        159
+      ],
+      "coefficient": 2.5,
+      "noise_scale": 1.0,
+      "proxy_index": null
+    },
+    {
+      "name": "strong_block_p160_gt_n",
+      "n": 80,
+      "p": 160,
+      "covariance": "block_correlated_gaussian",
+      "rho": 0.5,
+      "block_size": 8,
+      "active": [
+        0,
+        40,
+        159
+      ],
+      "coefficient": 2.5,
+      "noise_scale": 1.0,
+      "proxy_index": null
+    }
+  ],
+  "methods": [
+    {
+      "name": "trex_k10",
+      "kind": "trex",
+      "k": 10,
+      "da_method": null,
+      "reruns": 1,
+      "stability_subsamples": 20
+    },
+    {
+      "name": "trex_k20",
+      "kind": "trex",
+      "k": 20,
+      "da_method": null,
+      "reruns": 2,
+      "stability_subsamples": 20
+    },
+    {
+      "name": "trex_k50",
+      "kind": "trex",
+      "k": 50,
+      "da_method": null,
+      "reruns": 1,
+      "stability_subsamples": 20
+    },
+    {
+      "name": "trex_k100",
+      "kind": "trex",
+      "k": 100,
+      "da_method": null,
+      "reruns": 1,
+      "stability_subsamples": 20
+    },
+    {
+      "name": "trex_da_bt_k20",
+      "kind": "trex_da",
+      "k": 20,
+      "da_method": "BT",
+      "reruns": 2,
+      "stability_subsamples": 20
+    },
+    {
+      "name": "trex_da_equi_k20",
+      "kind": "trex_da",
+      "k": 20,
+      "da_method": "EQUI",
+      "reruns": 2,
+      "stability_subsamples": 20
+    },
+    {
+      "name": "lasso_cv",
+      "kind": "lasso_cv",
+      "k": null,
+      "da_method": null,
+      "reruns": 1,
+      "stability_subsamples": 20
+    },
+    {
+      "name": "stability",
+      "kind": "stability",
+      "k": null,
+      "da_method": null,
+      "reruns": 1,
+      "stability_subsamples": 12
+    },
+    {
+      "name": "bh_independent",
+      "kind": "bh_independent",
+      "k": null,
+      "da_method": null,
+      "reruns": 1,
+      "stability_subsamples": 20
+    }
+  ],
+  "independent_replicates": 16,
+  "target_q": 0.2,
+  "seed_base": 470016,
+  "analysis_seed": 470019,
+  "bootstrap_draws": 500,
+  "per_method_timeout_seconds": 15.0,
+  "overall_budget_seconds": 480.0
+}

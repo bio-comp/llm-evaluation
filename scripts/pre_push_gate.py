@@ -61,6 +61,12 @@ def run(*argv: str) -> None:
     subprocess.run(argv, check=True)
 
 
+def clear_git_repository_environment() -> None:
+    """Do not pass Git's hook repository pointers into nested test repositories."""
+    for name in git("rev-parse", "--local-env-vars").splitlines():
+        os.environ.pop(name, None)
+
+
 def require_exact_clean_head(root: Path, sha: str) -> None:
     if Path(git("rev-parse", "--show-toplevel")).resolve() != root:
         raise RuntimeError("local gate must run from repository root")
@@ -384,6 +390,7 @@ def main() -> int:
         head = git("rev-parse", "HEAD")
         branch = git("symbolic-ref", "HEAD")
         update = parse_single_update(records, head=head, branch_ref=branch)
+        clear_git_repository_environment()
         print(f"OUTGOING_REF={update.local_ref} TO={update.remote_ref}", flush=True)
         qualify(root, update.local_sha, update)
         return 0
