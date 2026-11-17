@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "status": "BLOCKED_NOT_EXECUTED",
+  "reason": "NO_APPROVED_MODEL",
+  "registry_schema": 1,
+  "registry_sha256": "a5d4bc589ed89b720ca7adc134022c304c7f0a01cb701965b8c5aa76ecd2ca08",
+  "packet_sha256": "16547692cd5c4350790fb57cc7cf1936f706dc82af7d770d441bcc28d5a2ae26",
+  "runtime_sha256": "780fa4764b08a1d9e0035a2c1245bb9bb9f4bd6838f2f2be09714af75ee2cae3",
+  "runtime_version": "1.0.0",
+  "runtime_build": 12359,
+  "runtime_commit": "b1b770d90",
+  "hardware_os": "Darwin",
+  "hardware_arch": "arm64",
+  "approved_models": 0,
+  "sampled_tasks": 0,
+  "sampled_trials": 0,
+  "policy_results": null
+}
