@@ -1,10 +1,45 @@
 from __future__ import annotations
 
+import itertools
 import math
 
 import pytest
 
 from llm_evaluation import drift_lab_detectors as d
+
+
+def _brute_exceedance_threshold(data, target):
+    for threshold in sorted(set(data)):
+        probability = sum(value > threshold for value in data) / len(data)
+        if probability <= target:
+            return d.CalibratedThreshold(
+                threshold=threshold, exceedance_probability=probability
+            )
+    raise AssertionError("maximum observed statistic must always be feasible")
+
+
+def _brute_layered(distribution, process, target_family, grid):
+    feasible = None
+    for component_tail in grid:
+        distribution_result = _brute_exceedance_threshold(distribution, component_tail)
+        process_result = _brute_exceedance_threshold(process, component_tail)
+        family_probability = sum(
+            distribution_value > distribution_result.threshold
+            or process_value > process_result.threshold
+            for distribution_value, process_value in zip(
+                distribution, process, strict=True
+            )
+        ) / len(distribution)
+        if family_probability <= target_family:
+            feasible = (
+                distribution_result.threshold,
+                process_result.threshold,
+                component_tail,
+                family_probability,
+            )
+    if feasible is None:
+        raise ValueError("no component tail allocation satisfies the family alert budget")
+    return feasible
 
 
 def test_two_bin_psi_matches_manual_formula_and_is_symmetric() -> None:
@@ -100,3 +135,122 @@ def test_typed_alarm_preserves_distribution_and_process_channels() -> None:
     assert d.typed_alarm(True, False) == "distribution"
     assert d.typed_alarm(False, True) == "process"
     assert d.typed_alarm(True, True) == "both"
+
+
+def test_calibration_matches_brute_force_exhaustive() -> None:
+    pool = (-1.0, 0.0, 1.0)
+    targets = (0.0, 0.05, 0.2, 0.5, 1.0)
+    for n in range(1, 6):
+        for sequence in itertools.product(pool, repeat=n):
+            for target in targets:
+                expected = _brute_exceedance_threshold(sequence, target)
+                actual = d.calibrate_exceedance_threshold(
+                    sequence, target_tail_probability=target
+                )
+                assert actual.threshold == expected.threshold
+                assert actual.exceedance_probability == expected.exceedance_probability
+
+
+def test_calibration_signed_zero_case() -> None:
+    data = (-0.0, 0.0, 1.0)
+    targets = (0.0, 0.05, 0.2, 0.5, 1.0)
+    for target in targets:
+        expected = _brute_exceedance_threshold(data, target)
+        actual = d.calibrate_exceedance_threshold(data, target_tail_probability=target)
+        assert actual.threshold == expected.threshold
+        assert actual.exceedance_probability == expected.exceedance_probability
+
+
+def test_calibration_mostly_unique_127() -> None:
+    values = [float(value) for value in range(127, 0, -1)]
+    target = 0.05
+    expected = _brute_exceedance_threshold(values, target)
+    actual = d.calibrate_exceedance_threshold(values, target_tail_probability=target)
+    assert actual.threshold == expected.threshold
+    assert actual.exceedance_probability == expected.exceedance_probability
+
+
+def test_layered_calibration_matches_naive_reference() -> None:
+    # Small paired tied fixture.
+    distribution = (1.0, 2.0, 2.0, 3.0, 4.0)
+    process = (4.0, 3.0, 2.0, 2.0, 1.0)
+    grid = (0.2, 0.4, 0.6)
+    target_family = 0.6
+    expected = _brute_layered(distribution, process, target_family, grid)
+    actual = d.calibrate_layered_equal_tail(
+        distribution,
+        process,
+        target_family_probability=target_family,
+        component_tail_grid=grid,
+    )
+    assert actual.distribution_threshold == expected[0]
+    assert actual.process_threshold == expected[1]
+    assert actual.component_tail_probability == expected[2]
+    assert actual.family_exceedance_probability == expected[3]
+
+    # Anti-correlated fixture.
+    distribution = (0.0, 0.0, 10.0, 10.0)
+    process = (10.0, 10.0, 0.0, 0.0)
+    grid = (0.25, 0.5, 0.75)
+    target_family = 0.5
+    expected = _brute_layered(distribution, process, target_family, grid)
+    actual = d.calibrate_layered_equal_tail(
+        distribution,
+        process,
+        target_family_probability=target_family,
+        component_tail_grid=grid,
+    )
+    assert actual.distribution_threshold == expected[0]
+    assert actual.process_threshold == expected[1]
+    assert actual.component_tail_probability == expected[2]
+    assert actual.family_exceedance_probability == expected[3]
+
+
+def test_layered_calibration_largest_feasible_not_first() -> None:
+    distribution = tuple(float(i) for i in range(20))
+    process = tuple(float(19 - i) for i in range(20))
+    grid = (0.05, 0.10, 0.15, 0.20)
+    target_family = 0.20
+    actual = d.calibrate_layered_equal_tail(
+        distribution,
+        process,
+        target_family_probability=target_family,
+        component_tail_grid=grid,
+    )
+    assert actual.component_tail_probability == 0.10
+
+
+def test_layered_calibration_value_errors() -> None:
+    with pytest.raises(ValueError):
+        d.calibrate_layered_equal_tail(
+            (1.0, float("nan")),
+            (1.0, 2.0),
+            target_family_probability=0.2,
+            component_tail_grid=(0.1, 0.2),
+        )
+    with pytest.raises(ValueError):
+        d.calibrate_layered_equal_tail(
+            (1.0, 2.0),
+            (1.0, float("inf")),
+            target_family_probability=0.2,
+            component_tail_grid=(0.1, 0.2),
+        )
+    with pytest.raises(ValueError):
+        d.calibrate_layered_equal_tail((), (1.0,), target_family_probability=0.2, component_tail_grid=(0.1,))
+    with pytest.raises(ValueError):
+        d.calibrate_layered_equal_tail((1.0, 2.0), (1.0,), target_family_probability=0.2, component_tail_grid=(0.1,))
+    with pytest.raises(ValueError):
+        d.calibrate_layered_equal_tail(
+            (1.0, 2.0), (1.0, 2.0), target_family_probability=1.5, component_tail_grid=(0.1, 0.2)
+        )
+    with pytest.raises(ValueError):
+        d.calibrate_layered_equal_tail(
+            (1.0, 2.0), (1.0, 2.0), target_family_probability=0.2, component_tail_grid=(0.2, 0.1)
+        )
+
+    with pytest.raises(ValueError):
+        d.calibrate_exceedance_threshold((), target_tail_probability=0.1)
+    with pytest.raises(ValueError):
+        d.calibrate_exceedance_threshold((1.0, float("nan")), target_tail_probability=0.1)
+    with pytest.raises(ValueError):
+        d.calibrate_exceedance_threshold((1.0, 2.0), target_tail_probability=1.5)
