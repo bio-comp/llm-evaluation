@@ -10,6 +10,7 @@ import subprocess
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
+from pydantic import Field
 from ..codec import parse_json_unique
 from ..contracts import ClosedRecord
 from ..timing import RequestTiming
@@ -22,6 +23,23 @@ class ExecutableIdentity(ClosedRecord):
     build: int
     commit: str
     platform: str
+
+
+class ExpectedExecutable(ClosedRecord):
+    """Operator-frozen executable identity, not derived from a runtime probe."""
+
+    version: str = Field(min_length=1)
+    build: int = Field(ge=1)
+    commit: str = Field(pattern=r"^[0-9a-f]{7,40}$")
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    def matches(self, observed: ExecutableIdentity) -> bool:
+        return (
+            observed.version == self.version
+            and observed.build == self.build
+            and observed.commit == self.commit
+            and observed.sha256 == self.sha256
+        )
 
 
 class ArtifactIdentity(ClosedRecord):
@@ -70,10 +88,12 @@ def project_exact_llama_timing(evidence: bytes, timing: RequestTiming) -> Reques
             raise ValueError("invalid direct llama timing")
         return value / 1000
 
-    return timing.model_copy(update={
-        "prompt_processing_seconds": seconds("prompt_ms"),
-        "generation_seconds": seconds("predicted_ms"),
-    })
+    return timing.model_copy(
+        update={
+            "prompt_processing_seconds": seconds("prompt_ms"),
+            "generation_seconds": seconds("predicted_ms"),
+        }
+    )
 
 
 def hash_model_artifact(
@@ -146,7 +166,11 @@ def classify_processes(text: str, exclude_pids: set[int]) -> ExternalConflictSta
         executable = Path(argv[0]).name
         is_llama_cli = executable in {"llama-cli", "llama-cli.exe"}
         llama_cli_model = is_llama_cli and any(
-            (arg in {"-m", "--model"} and index + 1 < len(argv) and bool(argv[index + 1]))
+            (
+                arg in {"-m", "--model"}
+                and index + 1 < len(argv)
+                and bool(argv[index + 1])
+            )
             or (arg.startswith("--model=") and bool(arg.removeprefix("--model=")))
             for index, arg in enumerate(argv[1:], start=1)
         )
@@ -171,9 +195,7 @@ def _lm_studio_main_pids(text: str, exclude_pids: set[int]) -> tuple[int, ...] |
         pid = int(parts[0])
         if pid in exclude_pids:
             continue
-        if re.match(
-            r"^/.*/LM Studio\.app/Contents/MacOS/LM Studio(?:\s|$)", parts[1]
-        ):
+        if re.match(r"^/.*/LM Studio\.app/Contents/MacOS/LM Studio(?:\s|$)", parts[1]):
             pids.append(pid)
     return tuple(pids)
 
@@ -240,7 +262,10 @@ def probe_known_external_conflicts(
 
     for pid in lm_studio_pids:
         listener = observe_owned_listener(pid, port)
-        if listener in {ListenerStatus.LOOPBACK_VERIFIED, ListenerStatus.WILDCARD_DETECTED}:
+        if listener in {
+            ListenerStatus.LOOPBACK_VERIFIED,
+            ListenerStatus.WILDCARD_DETECTED,
+        }:
             return ExternalConflictStatus.CONFLICT_DETECTED
     return ExternalConflictStatus.UNVERIFIED
 
@@ -271,18 +296,21 @@ async def qualify_llama_server(
     if (
         not isinstance(models, dict)
         or not isinstance(models.get("data"), list)
-        or sum(
-            isinstance(m, dict) and m.get("id") == alias
-            for m in models["data"]
-        ) != 1
+        or sum(isinstance(m, dict) and m.get("id") == alias for m in models["data"])
+        != 1
     ):
         raise ValueError("model alias missing or ambiguous")
     template = props.get("chat_template")
-    if not isinstance(template, str) or not template or len(template.encode("utf-8")) > 65536:
+    if (
+        not isinstance(template, str)
+        or not template
+        or len(template.encode("utf-8")) > 65536
+    ):
         raise ValueError("bounded exact chat template required")
     caps = props.get("chat_template_caps")
     if (
-        not isinstance(caps, dict) or len(caps) > 16
+        not isinstance(caps, dict)
+        or len(caps) > 16
         or any(
             not isinstance(key, str)
             or re.fullmatch(r"[a-z][a-z0-9_]{0,63}", key) is None
@@ -295,12 +323,21 @@ async def qualify_llama_server(
     if not isinstance(build, str) or not build or len(build) > 512:
         raise ValueError("bounded build info required")
     defaults = props.get("default_generation_settings")
-    if not isinstance(defaults, dict) or type(defaults.get("n_ctx")) is not int or defaults["n_ctx"] != 2048:
+    if (
+        not isinstance(defaults, dict)
+        or type(defaults.get("n_ctx")) is not int
+        or defaults["n_ctx"] != 2048
+    ):
         raise ValueError("effective context mismatch")
     return LlamaQualification(
-        total_slots=1, slot_count=1, model_path=str(Path(actual).resolve()), alias=alias,
+        total_slots=1,
+        slot_count=1,
+        model_path=str(Path(actual).resolve()),
+        alias=alias,
         chat_template_sha256=hashlib.sha256(template.encode("utf-8")).hexdigest(),
-        chat_template_caps=tuple(sorted(caps.items())), build_info=build, context_tokens=defaults["n_ctx"],
+        chat_template_caps=tuple(sorted(caps.items())),
+        build_info=build,
+        context_tokens=defaults["n_ctx"],
     )
 
 
@@ -338,9 +375,19 @@ def observe_owned_listener(pid: int, port: int) -> ListenerStatus:
         raise ValueError("valid owned PID and port required")
     try:
         observed = subprocess.run(
-            ["lsof", "-nP", "-a", "-p", str(pid), "-iTCP:" + str(port),
-             "-sTCP:LISTEN", "-FpnT"],
-            capture_output=True, text=True, timeout=3,
+            [
+                "lsof",
+                "-nP",
+                "-a",
+                "-p",
+                str(pid),
+                "-iTCP:" + str(port),
+                "-sTCP:LISTEN",
+                "-FpnT",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=3,
         )
     except (OSError, subprocess.TimeoutExpired):
         return ListenerStatus.UNVERIFIED

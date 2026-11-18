@@ -70,6 +70,126 @@ def fake(tmp_path, monkeypatch):
     )
 
 
+@pytest.fixture
+def pinned_current(fake):
+    """Mock the independently pinned installed v1.0.0 executable condition."""
+    from pathlib import Path
+    from llm_evaluation.runtime.llamacpp.qualification import (
+        ExpectedExecutable,
+        hash_model_artifact,
+    )
+
+    exe = Path(fake["executable"])
+    exe.write_text(
+        exe.read_text().replace(
+            "0.7.0 (build 11669, commit 620d2225c)",
+            "1.0.0 (build 12359, commit b1b770d90)",
+        )
+    )
+    pin = ExpectedExecutable(
+        version="1.0.0",
+        build=12359,
+        commit="b1b770d90",
+        sha256=hash_model_artifact(exe).sha256,
+    )
+    return fake | {"expected_executable": pin}
+
+
+def test_current_runtime_exact_pin_passes_and_binds_backend(
+    pinned_current, monkeypatch
+):
+    import llm_evaluation.local_runtime_preflight as preflight
+
+    observed = []
+    original = preflight.prepare_generation
+
+    def capture(binding, request, structured=None):
+        observed.append(binding.condition.backend_version)
+        return original(binding, request, structured)
+
+    monkeypatch.setattr(preflight, "prepare_generation", capture)
+    record = run_preflight(**pinned_current)
+    assert record.status == "passed"
+    assert record.executable is not None
+    assert record.executable.sha256 == pinned_current["expected_executable"].sha256
+    assert observed
+    assert set(observed) == {"1.0.0-12359-b1b770d90"}
+    assert record.budget.server_launches == 3
+
+
+def test_current_runtime_requires_explicit_pin_before_launch(pinned_current):
+    args = {k: v for k, v in pinned_current.items() if k != "expected_executable"}
+    result = run_preflight(**args)
+    assert result.status == "failed" and result.failure_stage == "identity"
+    assert result.budget.server_launches == result.budget.generation_submissions == 0
+
+
+@pytest.mark.parametrize("change", ["sha256", "version", "commit", "build"])
+def test_current_runtime_rejects_wrong_pin_without_launch(pinned_current, change):
+    pin = pinned_current["expected_executable"]
+    bad_value = {
+        "sha256": "0" * 64,
+        "version": "0.9.0",
+        "commit": "deadbeef",
+        "build": 12358,
+    }[change]
+    wrong = pin.model_copy(update={change: bad_value})
+    result = run_preflight(**(pinned_current | {"expected_executable": wrong}))
+    assert result.status == "failed" and result.failure_stage == "identity"
+    assert result.budget.server_launches == result.budget.generation_submissions == 0
+
+
+def test_current_runtime_rejects_binary_mutation_after_pin(pinned_current):
+    from pathlib import Path
+
+    exe = Path(pinned_current["executable"])
+    exe.write_text(exe.read_text() + "\n# changed bytes\n")
+    result = run_preflight(**pinned_current)
+    assert result.status == "failed" and result.failure_stage == "identity"
+    assert result.budget.server_launches == 0
+
+
+def test_current_runtime_pin_cannot_bypass_validation(pinned_current):
+    from pydantic import ValidationError
+
+    pin = pinned_current["expected_executable"]
+    with pytest.raises(ValidationError):
+        run_preflight(
+            **(
+                pinned_current
+                | {
+                    "expected_executable": pin.model_copy(
+                        update={"sha256": "not-a-sha"}
+                    )
+                }
+            )
+        )
+
+
+def test_current_runtime_external_conflict_remains_hard_stop(
+    pinned_current, monkeypatch
+):
+    monkeypatch.setattr(
+        "llm_evaluation.local_runtime_preflight.probe_known_external_conflicts",
+        lambda: ExternalConflictStatus.CONFLICT_DETECTED,
+    )
+    result = run_preflight(**pinned_current)
+    assert result.status == "incomplete"
+    assert result.failure_stage == "external_conflict"
+    assert result.budget.server_launches == result.budget.generation_submissions == 0
+
+
+def test_current_runtime_structured_diagnostic_pin(pinned_current):
+    from llm_evaluation.local_runtime_preflight import run_structured_diagnostic
+
+    result = run_structured_diagnostic(**pinned_current, reasoning_mode="off")
+    assert result.status == "passed"
+    assert result.server_launches == 1
+    assert result.generation_submissions == 1
+    assert result.executable is not None
+    assert result.executable.build == 12359
+
+
 def test_full_synthetic_harness_and_readback(fake):
     record = run_preflight(**fake)
     assert record.status == "passed"
@@ -249,10 +369,151 @@ def test_outer_preflight_deadline_publishes_failed_record(fake, monkeypatch):
     )
     original = preflight._live_checks
 
-    async def short(exe, artifact, root, sha, remaining, progress):
-        return await original(exe, artifact, root, sha, 0.4, progress)
+    async def short(exe, artifact, root, sha, remaining, backend_version, progress):
+        return await original(exe, artifact, root, sha, 0.4, backend_version, progress)
 
     monkeypatch.setattr(preflight, "_live_checks", short)
     record = run_preflight(**fake)
     assert record.status == "failed" and record.failure_kind == "deadline"
     assert fake["output"].exists()
+
+
+@pytest.mark.parametrize("entrypoint", ["full", "structured"])
+def test_r1_mutation_after_inspection_rejected(pinned_current, monkeypatch, entrypoint):
+    """R1 known bad: source changes during conflict probe, before model launch."""
+    from pathlib import Path
+    import llm_evaluation.local_runtime_preflight as preflight
+
+    source = Path(pinned_current["executable"])
+
+    def mutate_after_identity():
+        source.write_text(source.read_text() + "\n# changed after inspection\n")
+        return ExternalConflictStatus.NO_KNOWN_CONFLICT
+
+    monkeypatch.setattr(
+        preflight, "probe_known_external_conflicts", mutate_after_identity
+    )
+    if entrypoint == "full":
+        record = run_preflight(**pinned_current)
+        assert record.status == "failed"
+        assert record.failure_kind == "identity"
+        assert record.budget.server_launches == 0
+    else:
+        record = preflight.run_structured_diagnostic(
+            **pinned_current, reasoning_mode="off"
+        )
+        assert record.status == "failed"
+        assert record.failure_stage == "identity"
+        assert record.server_launches == 0
+
+
+@pytest.mark.parametrize("entrypoint", ["full", "structured"])
+def test_r1_model_mutation_after_inspection_rejected(fake, monkeypatch, entrypoint):
+    """The GGUF supplied at launch must also match the measured artifact."""
+    from pathlib import Path
+    import llm_evaluation.local_runtime_preflight as preflight
+
+    source = Path(fake["artifact"])
+
+    def mutate_after_identity():
+        source.write_bytes(source.read_bytes() + b"changed after initial hash")
+        return ExternalConflictStatus.NO_KNOWN_CONFLICT
+
+    monkeypatch.setattr(
+        preflight, "probe_known_external_conflicts", mutate_after_identity
+    )
+    if entrypoint == "full":
+        record = run_preflight(**fake)
+        assert record.status == "failed"
+        assert record.failure_kind == "identity"
+        assert record.budget.server_launches == 0
+    else:
+        record = preflight.run_structured_diagnostic(**fake, reasoning_mode="off")
+        assert record.status == "failed"
+        assert record.failure_stage == "identity"
+        assert record.server_launches == 0
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"sha256": b"a" * 64},
+        {"bogus": "unexpected"},
+        {"sha256": "a" * 63},
+        {"commit": "not-a-hex-commit"},
+        {"version": ""},
+        {"build": 0},
+        {"build": True},
+    ],
+)
+def test_r1_unvalidated_copied_pin_rejected(pinned_current, change):
+    from pydantic import ValidationError
+
+    pin = pinned_current["expected_executable"].model_copy(update=change)
+    with pytest.raises(ValidationError):
+        run_preflight(**(pinned_current | {"expected_executable": pin}))
+
+
+def test_r1_constructed_invalid_pin_rejected(pinned_current):
+    from pydantic import ValidationError
+    from llm_evaluation.runtime.llamacpp.qualification import ExpectedExecutable
+
+    pin = pinned_current["expected_executable"]
+    constructed = ExpectedExecutable.model_construct(
+        version=pin.version, build=-1, commit=pin.commit, sha256=pin.sha256
+    )
+    with pytest.raises(ValidationError):
+        run_preflight(**(pinned_current | {"expected_executable": constructed}))
+
+
+@pytest.mark.parametrize("entrypoint", ["full", "structured"])
+def test_r1_staged_sources_survive_later_source_mutation(
+    pinned_current, monkeypatch, entrypoint
+):
+    """Once snapshotted, source-path changes cannot change launched bytes."""
+    from pathlib import Path
+    import llm_evaluation.local_runtime_preflight as preflight
+    from llm_evaluation.runtime.llamacpp.qualification import hash_model_artifact
+    from llm_evaluation.runtime.resources import acquire_resource_lease
+
+    exe = Path(pinned_current["executable"])
+    model = Path(pinned_current["artifact"])
+    initial_exe_hash = hash_model_artifact(exe).sha256
+    initial_model_hash = hash_model_artifact(model).sha256
+    launch_paths = []
+    original = preflight.start_managed_server
+
+    async def mutate_original_on_first_launch(declaration, **kwargs):
+        launch_paths.append((declaration.executable, declaration.artifact))
+        if len(launch_paths) == 1:
+            exe.write_text(exe.read_text() + "\n# later executable source mutation\n")
+            model.write_bytes(model.read_bytes() + b"later model source mutation")
+        assert hash_model_artifact(declaration.executable).sha256 == initial_exe_hash
+        assert hash_model_artifact(declaration.artifact).sha256 == initial_model_hash
+        return await original(declaration, **kwargs)
+
+    monkeypatch.setattr(
+        preflight, "start_managed_server", mutate_original_on_first_launch
+    )
+    if entrypoint == "full":
+        result = run_preflight(**pinned_current)
+        assert result.status == "passed" and result.budget.server_launches == 3
+    else:
+        result = preflight.run_structured_diagnostic(
+            **pinned_current, reasoning_mode="off"
+        )
+        assert result.status == "passed" and result.server_launches == 1
+    assert launch_paths
+    assert all(
+        path != str(exe) and model_path != str(model)
+        for path, model_path in launch_paths
+    )
+    assert hash_model_artifact(exe).sha256 != initial_exe_hash
+    assert hash_model_artifact(model).sha256 != initial_model_hash
+    # Temporary snapshots must be gone after lifecycle cleanup.
+    assert all(
+        not Path(path).exists() and not Path(model_path).exists()
+        for path, model_path in launch_paths
+    )
+    with acquire_resource_lease(pinned_current["lease_root"], "llama-device:MTL0"):
+        pass
