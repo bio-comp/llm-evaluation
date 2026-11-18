@@ -46,6 +46,8 @@ from .runtime.llamacpp.lifecycle import (
 )
 from .runtime.llamacpp.qualification import (
     inspect_llama_executable,
+    ExpectedExecutable,
+    ExecutableIdentity,
     hash_model_artifact,
     probe_known_external_conflicts,
     ExternalConflictStatus,
@@ -62,6 +64,24 @@ from .local_runtime_preflight_records import (
     StructuredDiagnosticRecord,
     SlotSample,
 )
+
+
+_HISTORICAL_RUNTIME = ("0.7.0", 11669, "620d2225c")
+
+
+def _matched_backend_version(
+    expected: ExpectedExecutable | None, observed: ExecutableIdentity
+) -> str | None:
+    """Only an exact historical condition or independently supplied pin matches."""
+    if expected is None:
+        if (observed.version, observed.build, observed.commit) != _HISTORICAL_RUNTIME:
+            return None
+    else:
+        # An unvalidated Pydantic model_copy(update=...) must not be trusted.
+        pin = ExpectedExecutable.model_validate_json(expected.model_dump_json())
+        if not pin.matches(observed):
+            return None
+    return f"{observed.version}-{observed.build}-{observed.commit}"
 
 
 class ProbeOutput(BaseModel):
@@ -208,6 +228,7 @@ async def _live_checks(
     root: str,
     artifact_sha: str,
     remaining: float,
+    backend_version: str,
     progress: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if remaining <= 0:
@@ -304,7 +325,7 @@ async def _live_checks(
                 provider_id="managed-llamacpp",
                 backend_config_id="preflight",
                 backend_name="llamacpp",
-                backend_version="0.7.0-11669-620d2225c",
+                backend_version=backend_version,
                 api_mode="chat_completions",
                 endpoint_model_id="preflight",
                 prompt_template_id="runtime-default-recorded-build",
@@ -364,20 +385,31 @@ async def _live_checks(
                 endpoint, authorization=launch.authorization, timeouts=binding.timeouts
             )
             progress["failure_stage"] = "qualification"
-            qualification = await qualify_llama_server(probe, artifact=artifact, alias="preflight")
+            qualification = await qualify_llama_server(
+                probe, artifact=artifact, alias="preflight"
+            )
             progress["chat_template_sha256"] = qualification.chat_template_sha256
             progress["chat_template_caps"] = qualification.chat_template_caps
-            progress["build_info_sha256"] = hashlib.sha256(qualification.build_info.encode()).hexdigest()
-            progress["reasoning_profile"] = formal.reasoning_mode.value if formal.reasoning_mode else None
-            condition = condition.model_copy(update={
-                "prompt_template_id": "llamacpp-chat-template-sha256:" + qualification.chat_template_sha256,
-                "runtime_environment": {
-                    "parallel": 1, "ctx_size": qualification.context_tokens,
-                    "output_limit": 128, "reasoning": progress["reasoning_profile"],
-                    "jinja": True,
-                    "cache_prompt": FORMAL_CACHE_PROMPT,
-                },
-            })
+            progress["build_info_sha256"] = hashlib.sha256(
+                qualification.build_info.encode()
+            ).hexdigest()
+            progress["reasoning_profile"] = (
+                formal.reasoning_mode.value if formal.reasoning_mode else None
+            )
+            condition = condition.model_copy(
+                update={
+                    "prompt_template_id": "llamacpp-chat-template-sha256:"
+                    + qualification.chat_template_sha256,
+                    "runtime_environment": {
+                        "parallel": 1,
+                        "ctx_size": qualification.context_tokens,
+                        "output_limit": 128,
+                        "reasoning": progress["reasoning_profile"],
+                        "jinja": True,
+                        "cache_prompt": FORMAL_CACHE_PROMPT,
+                    },
+                }
+            )
             binding = binding.model_copy(update={"condition": condition})
             prepared = prepare_generation(binding, request)
             progress["qualified_condition_sha256"] = prepared.condition_sha256
@@ -393,9 +425,10 @@ async def _live_checks(
             argv = launch.handle.process.args
             gates["agent_tools_disabled"] = (
                 isinstance(argv, list)
-                and all(flag in argv for flag in (
-                    "--no-agent", "--no-ui-mcp-proxy", "--no-webui"
-                ))
+                and all(
+                    flag in argv
+                    for flag in ("--no-agent", "--no-ui-mcp-proxy", "--no-webui")
+                )
                 and "--tools" not in argv
             )
             if not gates["agent_tools_disabled"]:
@@ -431,12 +464,15 @@ async def _live_checks(
                 )
             except RuntimeFailure as exc:
                 progress["failure_code"] = (
-                    exc.kind.value if exc.kind.value in {
-                        "http_status", "invalid_json", "invalid_response"
-                    } else "unknown_safe_failure"
+                    exc.kind.value
+                    if exc.kind.value
+                    in {"http_status", "invalid_json", "invalid_response"}
+                    else "unknown_safe_failure"
                 )
                 raise
-            summaries.append(summarize_generation(structured.observation, structured.evidence.body))
+            summaries.append(
+                summarize_generation(structured.observation, structured.evidence.body)
+            )
             if structured.observation.reported_model_matches_condition is not True:
                 gates["structured_generation"] = False
                 raise ValueError("structured generation model binding mismatch")
@@ -483,10 +519,13 @@ async def _live_checks(
                         raise ValueError("invalid processing slot observation")
                     processing = sum(s["is_processing"] for s in slots)
                     if len(samples) < 4000:
-                        samples.append(SlotSample(
-                            monotonic_offset_seconds=time.monotonic() - observed,
-                            slot_count=len(slots), processing_count=processing,
-                        ))
+                        samples.append(
+                            SlotSample(
+                                monotonic_offset_seconds=time.monotonic() - observed,
+                                slot_count=len(slots),
+                                processing_count=processing,
+                            )
+                        )
                     if processing > 1:
                         raise ValueError("multiple processing slots")
                     if all(t.done() for t in tasks):
@@ -499,7 +538,11 @@ async def _live_checks(
                     ):
                         gates["concurrent_requests"] = False
                         raise ValueError("concurrent generation model binding mismatch")
-                    summaries.append(summarize_generation(execution.observation, execution.evidence.body))
+                    summaries.append(
+                        summarize_generation(
+                            execution.observation, execution.evidence.body
+                        )
+                    )
                     timings.append(
                         project_exact_llama_timing(
                             execution.evidence.body, execution.timing
@@ -551,6 +594,7 @@ def run_preflight(
     output: Path,
     authorized: bool = False,
     lease_root: Path | None = None,
+    expected_executable: ExpectedExecutable | None = None,
 ) -> PreflightRecord:
     if not authorized or os.environ.get("LLM_EVAL_LLAMA_PREFLIGHT") != "1":
         raise PermissionError(
@@ -564,6 +608,7 @@ def run_preflight(
     conflict = ExternalConflictStatus.UNVERIFIED
     progress: dict[str, Any] = {}
     status: Literal["passed", "failed", "incomplete"] = "incomplete"
+    backend_version = ""
     failure: Literal[
         "none", "conflict", "identity", "runtime", "deadline", "qualification"
     ] = "conflict"
@@ -579,14 +624,12 @@ def run_preflight(
         exe = inspect_llama_executable(executable, deadline=deadline)
         model = hash_model_artifact(artifact, deadline=deadline)
         remaining()
-        if (exe.version, exe.build, exe.commit) != (
-            "0.7.0",
-            11669,
-            "620d2225c",
-        ) or model.sha256 != expected_sha256:
+        matched_version = _matched_backend_version(expected_executable, exe)
+        if matched_version is None or model.sha256 != expected_sha256:
             raise ValueError(
                 "exact executable/artifact identity mismatch; no server launched"
             )
+        backend_version = matched_version
         conflict = probe_known_external_conflicts()
         remaining()
     except TimeoutError:
@@ -595,7 +638,10 @@ def run_preflight(
         progress["failure_stage"] = "deadline"
         progress["failure_code"] = "deadline"
     except ValueError as exc:
-        if str(exc) != "exact executable/artifact identity mismatch; no server launched":
+        if (
+            str(exc)
+            != "exact executable/artifact identity mismatch; no server launched"
+        ):
             raise
         status = "failed"
         failure = "identity"
@@ -607,7 +653,13 @@ def run_preflight(
         try:
             asyncio.run(
                 _live_checks(
-                    exe.path, model.path, str(root), model.sha256, remaining(), progress
+                    exe.path,
+                    model.path,
+                    str(root),
+                    model.sha256,
+                    remaining(),
+                    backend_version,
+                    progress,
                 )
             )
             status = "passed"
@@ -622,7 +674,9 @@ def run_preflight(
             failure = "runtime"
         finally:
             try:
-                if any(h.process.poll() is None for h in progress.get("owned_handles", [])):
+                if any(
+                    h.process.poll() is None for h in progress.get("owned_handles", [])
+                ):
                     raise RuntimeError("owned server still alive")
                 with acquire_resource_lease(root, "llama-device:MTL0"):
                     pass
@@ -641,7 +695,9 @@ def run_preflight(
         progress["failure_stage"] = "external_conflict"
         progress["failure_code"] = "resource_busy"
     data = _snapshot(progress)
-    if status == "passed" and not all(v is True for v in data["gates"].model_dump().values()):
+    if status == "passed" and not all(
+        v is True for v in data["gates"].model_dump().values()
+    ):
         status = "failed"
         failure = "qualification"
     record = PreflightRecord(
@@ -676,24 +732,34 @@ def run_structured_diagnostic(
     reasoning_mode: Literal["auto", "off"],
     authorized: bool = False,
     lease_root: Path | None = None,
+    expected_executable: ExpectedExecutable | None = None,
 ) -> StructuredDiagnosticRecord:
     """One immutable, non-evaluation technical probe: at most one launch/call."""
 
     if not authorized or os.environ.get("LLM_EVAL_LLAMA_PREFLIGHT") != "1":
-        raise PermissionError("explicit bounded local diagnostic authorization required")
+        raise PermissionError(
+            "explicit bounded local diagnostic authorization required"
+        )
     if reasoning_mode not in ("auto", "off"):
         raise ValueError("explicit supported reasoning mode required")
     started = time.monotonic()
     deadline = started + 240
     commit, package = software_identity()
     root = lease_root or Path.home() / ".local/state/llm-runtime/leases"
+    backend_version = ""
     state: dict[str, Any] = {
-        "executable": None, "artifact": None,
-        "status": "incomplete", "failure_stage": "identity",
-        "failure_code": "unknown_safe_failure", "cleanup_status": "unverified",
-        "server_launches": 0, "generation_submissions": 0,
-        "reasoning_profile": reasoning_mode, "structured_generation": None,
-        "summary": None, "chat_template_sha256": None,
+        "executable": None,
+        "artifact": None,
+        "status": "incomplete",
+        "failure_stage": "identity",
+        "failure_code": "unknown_safe_failure",
+        "cleanup_status": "unverified",
+        "server_launches": 0,
+        "generation_submissions": 0,
+        "reasoning_profile": reasoning_mode,
+        "structured_generation": None,
+        "summary": None,
+        "chat_template_sha256": None,
         "qualified_condition_sha256": None,
     }
     contract = build_structured_output_contract(ProbeOutput)
@@ -709,8 +775,11 @@ def run_structured_diagnostic(
 
     async def one_generation() -> None:
         declaration = ManagedServerDeclaration(
-            executable=executable, artifact=artifact, alias="preflight",
-            mode=ManagedServerMode.FORMAL, reasoning_mode=ReasoningMode(reasoning_mode),
+            executable=executable,
+            artifact=artifact,
+            alias="preflight",
+            mode=ManagedServerMode.FORMAL,
+            reasoning_mode=ReasoningMode(reasoning_mode),
             lease_root=str(root),
         )
 
@@ -726,18 +795,23 @@ def run_structured_diagnostic(
         try:
             endpoint = launch.handle.endpoint
             probe = AsyncOpenAICompatibleTransport(
-                endpoint, authorization=launch.authorization,
-                timeouts=HttpTimeouts(connect=2.0, read=30.0, write=2.0, pool=2.0, total=30.0),
+                endpoint,
+                authorization=launch.authorization,
+                timeouts=HttpTimeouts(
+                    connect=2.0, read=30.0, write=2.0, pool=2.0, total=30.0
+                ),
             )
             state["failure_stage"] = "qualification"
             qualification = await qualify_llama_server(
                 probe, artifact=artifact, alias="preflight"
             )
             state["chat_template_sha256"] = qualification.chat_template_sha256
-            profile = CapabilityProfile(statuses={
-                key: CapabilityStatus.SUPPORTED for key in
-                ("chat_completions", "max_output_tokens", "json_schema")
-            })
+            profile = CapabilityProfile(
+                statuses={
+                    key: CapabilityStatus.SUPPORTED
+                    for key in ("chat_completions", "max_output_tokens", "json_schema")
+                }
+            )
             condition = ModelCondition(
                 condition_id="infrastructure-preflight",
                 weights_id="exact-local-artifact",
@@ -745,29 +819,36 @@ def run_structured_diagnostic(
                 provider_id="managed-llamacpp",
                 backend_config_id="preflight",
                 backend_name="llamacpp",
-                backend_version="0.7.0-11669-620d2225c",
+                backend_version=backend_version,
                 api_mode="chat_completions",
                 endpoint_model_id="preflight",
-                prompt_template_id="llamacpp-chat-template-sha256:" + qualification.chat_template_sha256,
+                prompt_template_id="llamacpp-chat-template-sha256:"
+                + qualification.chat_template_sha256,
                 seed_behavior="unrequested",
                 runtime_environment={
-                    "parallel": 1, "ctx_size": qualification.context_tokens,
-                    "output_limit": 128, "reasoning": reasoning_mode,
+                    "parallel": 1,
+                    "ctx_size": qualification.context_tokens,
+                    "output_limit": 128,
+                    "reasoning": reasoning_mode,
                     "jinja": True,
                     "cache_prompt": FORMAL_CACHE_PROMPT,
                 },
             )
             binding = RuntimeBinding(
                 backend=BackendConfig(
-                    provider_id="managed-llamacpp", model_id="preflight",
-                    api_mode="chat_completions", capability_profile=profile,
+                    provider_id="managed-llamacpp",
+                    model_id="preflight",
+                    api_mode="chat_completions",
+                    capability_profile=profile,
                     config_id="preflight",
                 ),
                 condition=condition,
                 scientific_endpoint=ScientificEndpointIdentity(
                     value="managed-infrastructure-profile"
                 ),
-                timeouts=HttpTimeouts(connect=2.0, read=30.0, write=2.0, pool=2.0, total=30.0),
+                timeouts=HttpTimeouts(
+                    connect=2.0, read=30.0, write=2.0, pool=2.0, total=30.0
+                ),
             )
             request = GenerationRequest(
                 condition_id=condition.condition_id,
@@ -778,18 +859,21 @@ def run_structured_diagnostic(
             state["qualified_condition_sha256"] = prepared.condition_sha256
             client = AsyncOpenAICompatibleTransport(
                 OperationalEndpoint(base_url=endpoint.base_url + "/v1"),
-                authorization=launch.authorization, timeouts=binding.timeouts,
+                authorization=launch.authorization,
+                timeouts=binding.timeouts,
             )
             state["failure_stage"] = "structured_generation"
             state["structured_generation"] = False
             remaining()
             state["generation_submissions"] = 1
             execution = await client.generate(prepared)
-            execution = execution.model_copy(update={
-                "timing": project_exact_llama_timing(
-                    execution.evidence.body, execution.timing
-                )
-            })
+            execution = execution.model_copy(
+                update={
+                    "timing": project_exact_llama_timing(
+                        execution.evidence.body, execution.timing
+                    )
+                }
+            )
             state["summary"] = summarize_generation(
                 execution.observation, execution.evidence.body
             )
@@ -817,7 +901,8 @@ def run_structured_diagnostic(
                 raise ValueError("diagnostic model binding mismatch")
             if not observation.raw_output:
                 state["failure_code"] = (
-                    "output_exhausted" if observation.termination_reason == "length"
+                    "output_exhausted"
+                    if observation.termination_reason == "length"
                     else "empty_visible_output"
                 )
                 raise ValueError("empty visible structured output")
@@ -827,7 +912,8 @@ def run_structured_diagnostic(
                 from pydantic import ValidationError
 
                 state["failure_code"] = (
-                    "structured_validation" if isinstance(exc, ValidationError)
+                    "structured_validation"
+                    if isinstance(exc, ValidationError)
                     else "structured_parse"
                 )
                 raise
@@ -841,14 +927,18 @@ def run_structured_diagnostic(
         remaining()
         state["executable"] = inspect_llama_executable(executable, deadline=deadline)
         state["artifact"] = hash_model_artifact(artifact, deadline=deadline)
-        if (
-            state["executable"].version, state["executable"].build,
-            state["executable"].commit, state["artifact"].sha256
-        ) != ("0.7.0", 11669, "620d2225c", expected_sha256):
+        matched_version = _matched_backend_version(
+            expected_executable, state["executable"]
+        )
+        if matched_version is None or state["artifact"].sha256 != expected_sha256:
             state["failure_stage"] = "identity"
             raise ValueError("diagnostic identity mismatch")
+        backend_version = matched_version
         remaining()
-        if probe_known_external_conflicts() is not ExternalConflictStatus.NO_KNOWN_CONFLICT:
+        if (
+            probe_known_external_conflicts()
+            is not ExternalConflictStatus.NO_KNOWN_CONFLICT
+        ):
             state["status"] = "incomplete"
             state["failure_stage"] = "external_conflict"
         else:
@@ -862,9 +952,9 @@ def run_structured_diagnostic(
     except RuntimeFailure as exc:
         state["status"] = "failed"
         state["failure_code"] = (
-            exc.kind.value if exc.kind.value in {
-                "http_status", "invalid_json", "invalid_response"
-            } else "unknown_safe_failure"
+            exc.kind.value
+            if exc.kind.value in {"http_status", "invalid_json", "invalid_response"}
+            else "unknown_safe_failure"
         )
         state["remote_completion_unknown"] = exc.remote_completion_unknown
     except (RuntimeError, ValueError, OSError, subprocess.SubprocessError):
