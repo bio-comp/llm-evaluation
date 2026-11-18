@@ -184,3 +184,37 @@ raw environment or model text. Failure does not trigger model substitution,
 download/conversion, generation retry or competitor termination. Keep local records
 under ignored `runs/` when retaining them. A failed/unverified live gate means Task-1
 live acceptance is incomplete, even when deterministic tests pass. E-002 stays PLANNED.
+
+### Launch-byte qualification and bounded trust (R1 correction)
+
+The executable and model digests in a qualification are measured from the
+operator-supplied source paths. Path-based execution **after** hashing alone
+would not bind those measurements to the bytes subsequently opened: a source
+could change during external-conflict probing or before a later launch. Both
+entry points now construct one private per-call launch snapshot **after** source
+identity checks and conflict clearance. They independently verify the staged
+executable's version/build/commit/SHA-256 and the staged model's size/SHA-256,
+launch only those staged paths, and rehash both before a `passed` result. The
+snapshot stays in scope through server lifecycle and is removed afterward;
+there is no new model registry, persistent GGUF store, or change to the approved
+Homebrew executable. An initial-to-staged mismatch fails closed before launch.
+
+On macOS the model snapshot requires `cp -c` (`clonefile(2)`/copy-on-write)
+on an appropriate volume, not a hard link; clone failure fails rather than
+silently copying a large model or reading mutable source bytes at launch.
+The staged executable is a private copy with owner-read/execute permissions.
+For Homebrew's `@loader_path/../lib` relative linkage, the stage preserves
+resolution of the installation's existing dynamic libraries, which are **not**
+included in the executable's SHA-256 and are not claimed immutable. A portable
+non-macOS path only supports synthetic files up to 1 MiB; larger model snapshots
+fail without qualifying. Each operation is within the existing 240-second budget.
+
+**Trust boundary:** this is local cooperative-process provenance, not a
+same-UID adversarial security guarantee. A malicious process with the same
+account privileges could change the stage's permissions, binaries, dependencies
+or executable closure. The reported exact-byte qualification describes the
+staged executable and GGUF content under that bounded assumption; it does not
+attest dynamic-library closure, kernel execution identity or GGUF semantic
+compatibility. If staging, reinspection, hashing or cleanup fails, no `passed`
+qualification is published. The frozen E-002 packet, historical records and
+scientific lifecycle remain unchanged.

@@ -7,7 +7,11 @@ import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
+import shutil
+from contextlib import contextmanager
+from collections.abc import Iterator
 from pathlib import Path
 from urllib.parse import urlsplit
 from typing import Any, Literal, Callable
@@ -48,6 +52,7 @@ from .runtime.llamacpp.qualification import (
     inspect_llama_executable,
     ExpectedExecutable,
     ExecutableIdentity,
+    ArtifactIdentity,
     hash_model_artifact,
     probe_known_external_conflicts,
     ExternalConflictStatus,
@@ -78,10 +83,94 @@ def _matched_backend_version(
             return None
     else:
         # An unvalidated Pydantic model_copy(update=...) must not be trusted.
-        pin = ExpectedExecutable.model_validate_json(expected.model_dump_json())
+        # Inspect the actual Python fields: JSON serialization can coerce bytes
+        # to strings and discard fields added by unvalidated model_copy(update).
+        raw = vars(expected).copy()
+        if expected.__pydantic_extra__:
+            raw.update(expected.__pydantic_extra__)
+        pin = ExpectedExecutable.model_validate(raw, strict=True)
         if not pin.matches(observed):
             return None
     return f"{observed.version}-{observed.build}-{observed.commit}"
+
+
+class LaunchIdentityMismatch(ValueError):
+    """The privately staged launch bytes differ from the inspected identity."""
+
+
+@contextmanager
+def _attested_launch_inputs(
+    executable: ExecutableIdentity,
+    artifact: ArtifactIdentity,
+    *,
+    deadline: float,
+) -> Iterator[tuple[str, str]]:
+    """Run only private copies, never the source paths checked earlier.
+
+    Scope: an honest local process under an exclusive user-owned temporary
+    directory. This is NOT protection against a malicious same-UID process
+    that can chmod/overwrite the stage or against mutable dynamic libraries.
+    """
+    with tempfile.TemporaryDirectory(prefix="llm-eval-qualified-launch-") as folder:
+        root = Path(folder)
+        bin_dir = root / "bin"
+        bin_dir.mkdir(mode=0o700)
+        source_exe = Path(executable.path)
+        staged_exe = bin_dir / source_exe.name
+        if time.monotonic() >= deadline:
+            raise TimeoutError("launch snapshot deadline exhausted")
+        shutil.copyfile(source_exe, staged_exe, follow_symlinks=True)
+        staged_exe.chmod(0o500)
+
+        # Homebrew's executable uses @loader_path/../lib for shared libraries.
+        # Those libraries are NOT covered by the executable pin and remain a
+        # separately documented limitation of the local infrastructure gate.
+        source_lib = source_exe.parent.parent / "lib"
+        if sys.platform == "darwin" and source_lib.is_dir():
+            (root / "lib").symlink_to(source_lib, target_is_directory=True)
+        staged_identity = inspect_llama_executable(staged_exe, deadline=deadline)
+        if (
+            staged_identity.version != executable.version
+            or staged_identity.build != executable.build
+            or staged_identity.commit != executable.commit
+            or staged_identity.sha256 != executable.sha256
+        ):
+            raise LaunchIdentityMismatch(
+                "executable changed between inspection and snapshot"
+            )
+
+        staged_artifact = root / "model.gguf"
+        if sys.platform == "darwin":
+            # macOS cp -c requires clonefile(2), not a hard link. Fail closed
+            # on unsupported volumes; do not create another persistent store.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("launch snapshot deadline exhausted")
+            try:
+                subprocess.run(
+                    ["cp", "-c", artifact.path, str(staged_artifact)],
+                    check=True,
+                    capture_output=True,
+                    timeout=remaining,
+                )
+            except subprocess.TimeoutExpired:
+                raise TimeoutError("launch snapshot deadline exhausted") from None
+        else:
+            # Portable synthetic fixture support; large models are not
+            # authorized through this path without a verified COW clone.
+            if artifact.size_bytes > 1024 * 1024:
+                raise RuntimeError("non-macOS large-model snapshot unsupported")
+            shutil.copyfile(artifact.path, staged_artifact)
+        staged_artifact.chmod(0o400)
+        staged_model_identity = hash_model_artifact(staged_artifact, deadline=deadline)
+        if (
+            staged_model_identity.sha256 != artifact.sha256
+            or staged_model_identity.size_bytes != artifact.size_bytes
+        ):
+            raise LaunchIdentityMismatch(
+                "model artifact changed between inspection and snapshot"
+            )
+        yield str(staged_exe), str(staged_artifact)
 
 
 class ProbeOutput(BaseModel):
@@ -651,17 +740,31 @@ def run_preflight(
         assert exe is not None and model is not None
         root = lease_root or Path.home() / ".local/state/llm-runtime/leases"
         try:
-            asyncio.run(
-                _live_checks(
-                    exe.path,
-                    model.path,
-                    str(root),
-                    model.sha256,
-                    remaining(),
-                    backend_version,
-                    progress,
+            with _attested_launch_inputs(exe, model, deadline=deadline) as (
+                staged_executable,
+                staged_artifact,
+            ):
+                asyncio.run(
+                    _live_checks(
+                        staged_executable,
+                        staged_artifact,
+                        str(root),
+                        model.sha256,
+                        remaining(),
+                        backend_version,
+                        progress,
+                    )
                 )
-            )
+                # Verify that the private bytes survived the full launch period.
+                if (
+                    hash_model_artifact(staged_executable, deadline=deadline).sha256
+                    != exe.sha256
+                    or hash_model_artifact(staged_artifact, deadline=deadline).sha256
+                    != model.sha256
+                ):
+                    raise LaunchIdentityMismatch(
+                        "launch snapshot changed during preflight"
+                    )
             status = "passed"
             failure = "none"
         except TimeoutError:
@@ -669,6 +772,11 @@ def run_preflight(
             failure = "deadline"
             progress["failure_stage"] = "deadline"
             progress["failure_code"] = "deadline"
+        except LaunchIdentityMismatch:
+            status = "failed"
+            failure = "identity"
+            progress["failure_stage"] = "identity"
+            progress["failure_code"] = "unknown_safe_failure"
         except (RuntimeError, ValueError, OSError, subprocess.SubprocessError):
             status = "failed"
             failure = "runtime"
@@ -773,10 +881,10 @@ def run_structured_diagnostic(
             raise TimeoutError("diagnostic budget exhausted")
         return left
 
-    async def one_generation() -> None:
+    async def one_generation(launch_executable: str, launch_artifact: str) -> None:
         declaration = ManagedServerDeclaration(
-            executable=executable,
-            artifact=artifact,
+            executable=launch_executable,
+            artifact=launch_artifact,
             alias="preflight",
             mode=ManagedServerMode.FORMAL,
             reasoning_mode=ReasoningMode(reasoning_mode),
@@ -803,7 +911,7 @@ def run_structured_diagnostic(
             )
             state["failure_stage"] = "qualification"
             qualification = await qualify_llama_server(
-                probe, artifact=artifact, alias="preflight"
+                probe, artifact=launch_artifact, alias="preflight"
             )
             state["chat_template_sha256"] = qualification.chat_template_sha256
             profile = CapabilityProfile(
@@ -942,13 +1050,34 @@ def run_structured_diagnostic(
             state["status"] = "incomplete"
             state["failure_stage"] = "external_conflict"
         else:
-            asyncio.run(asyncio.wait_for(one_generation(), timeout=remaining()))
+            with _attested_launch_inputs(
+                state["executable"], state["artifact"], deadline=deadline
+            ) as (staged_executable, staged_artifact):
+                asyncio.run(
+                    asyncio.wait_for(
+                        one_generation(staged_executable, staged_artifact),
+                        timeout=remaining(),
+                    )
+                )
+                if (
+                    hash_model_artifact(staged_executable, deadline=deadline).sha256
+                    != state["executable"].sha256
+                    or hash_model_artifact(staged_artifact, deadline=deadline).sha256
+                    != state["artifact"].sha256
+                ):
+                    raise LaunchIdentityMismatch(
+                        "launch snapshot changed during diagnostic"
+                    )
             state["status"] = "passed"
     except TimeoutError:
         state["status"] = "failed"
         state["failure_stage"] = "deadline"
         state["failure_code"] = "deadline"
         state["remote_completion_unknown"] = state["generation_submissions"] > 0
+    except LaunchIdentityMismatch:
+        state["status"] = "failed"
+        state["failure_stage"] = "identity"
+        state["failure_code"] = "unknown_safe_failure"
     except RuntimeFailure as exc:
         state["status"] = "failed"
         state["failure_code"] = (
