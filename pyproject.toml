@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "llm-evaluation"
 version = "0.1.0"
 description = "Public, reproducible evaluation-methodology diagnostics"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "canonical-sync @ git+https://github.com/bio-comp/canonical-sync.git@a157898a4c2fd56984afb410d426f913ae7b2f09",
     "httpx>=0.28,<1",
@@ -48,3 +48,6 @@ markers = [
     "live_drive: explicit read-only Google Drive authority verification",
     "live_llama: explicit standalone model preflight",
 ]
+
+[tool.ruff]
+target-version = "py312"
