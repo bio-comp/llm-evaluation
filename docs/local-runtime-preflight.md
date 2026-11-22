@@ -254,25 +254,37 @@ baseline is a **derived delta**, and a sampled maximum is an **observed lower
 bound on peak usage**. Host RAM available/swap and owned process RSS are
 separate measured sources. No unavailable metric is fabricated.
 
-The immutable public-safe `Q0Manifest` schema version 1 is a strict Pydantic
-record with status `COMPLETED`, `INCOMPLETE`, or `BLOCKED`, exact software/runtime/
-model/fixture identity, explicit configuration, cleanup result, and five
-`Q0CaseResult` entries when completed. Each case records request-identity and
+The immutable public-safe `Q0Manifest` **schema version 2** is a strict Pydantic
+record with status `COMPLETED`, `INCOMPLETE`, or `BLOCKED`, independently
+recorded **expected and observed** model/runtime identity, actual executing
+Python-client version/implementation/executable digest, fixture identity,
+source re-verification, explicit configuration, cleanup result, and five
+`Q0CaseResult` entries when completed. Historical v1 files are not rewritten;
+their ambiguous identity fields and weaker validations are not retroactively
+reinterpreted as v2 evidence. Each case records request-identity and
 request/response SHA-256, finish reason, available usage/timing measurements,
 reasoning/visible-byte counts, and separate `PASS`, `FAIL_ORACLE`,
-`CENSORED_LENGTH`, `EMPTY_VISIBLE`, `MODEL_MISMATCH`, `INVALID_RESPONSE`,
-`MISSING_MEASUREMENT`, `TIMEOUT`, `HTTP_FAILURE`. A valid wrong answer is
+`CENSORED_LENGTH`, `OVER_BUDGET`, `EMPTY_VISIBLE`, `MODEL_MISMATCH`,
+`INVALID_RESPONSE`, `MISSING_MEASUREMENT`, `TIMEOUT`, `HTTP_FAILURE`. A valid wrong answer is
 not a technical failure. Exact text equality is used **without normalization**.
 Missing provider counters/timing cannot silently become a qualified case.
 
 The CLI prints the absolute private evidence directory under the supplied
 owner-only `--private-root`, named `q0-<run_id>`. Under this directory, each
-case has an immutable `case-NN-request.json` and, when a valid HTTP response
-was successfully decoded, `case-NN-response.json`; `server.stderr.log` records
-loader diagnostics. Public manifest fields store only relative filenames and
+case has an immutable `case-NN-request.json` and, when a credential-screened,
+size-bounded HTTP 200 response was successfully decoded as JSON (even if the
+response **schema is invalid**), `case-NN-response.json`;
+`server.stderr.log` records loader diagnostics. Public manifest fields store only relative filenames and
 hashes, not the prompts, responses, credentials or machine-local private root.
-HTTP failures that occur before valid response evidence is available are
-explicitly classified without inventing response bytes. Only the child launched
+HTTP failures that occur before safe response evidence is available are
+explicitly classified without inventing response bytes. Every `COMPLETED`
+record is independently verified against the private request/response bytes,
+the frozen packet, re-derived request identity and exact oracle, and the
+observed local Python interpreter before publication. The verification entry
+point `verify_q0_private_evidence(record, config, private_run_dir, packet)`
+can also be used for separate readback and corruption controls. Verified
+records do not imply reproducibility across a different Python executable;
+the local interpreter check is intentionally host-bound. Only the child launched
 by this invocation is stopped. LM Studio is recorded `NOT_TESTED` and is never
 restarted. The manifest is not scientific validation or E-002 acceptance.
 

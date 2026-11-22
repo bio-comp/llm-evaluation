@@ -7,6 +7,8 @@ change research status, reuse unowned servers, or execute the E-002 pilot.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import platform
 import json
 import os
 import re
@@ -25,7 +27,10 @@ from pydantic import Field, model_validator
 
 from .artifact_io import publish_immutable
 from .records import software_identity
-from .runtime.codec import sha256_hex
+from .runtime.codec import sha256_hex, parse_json_unique
+from .runtime.evidence import GenerationObservation
+from .runtime.timing import RequestTiming
+from .runtime.transport.response_models import ProviderChatProjection, ProviderParser
 from .runtime.contracts import (
     BackendConfig,
     CapabilityProfile,
@@ -131,8 +136,8 @@ class Q0Config(ClosedRecord):
 
 
 class Q0CaseResult(ClosedRecord):
-    task_id: str
-    category: str
+    task_id: str = Field(min_length=1, max_length=80)
+    category: str = Field(min_length=1, max_length=80)
     status: Literal[
         "PASS",
         "FAIL_ORACLE",
@@ -143,22 +148,70 @@ class Q0CaseResult(ClosedRecord):
         "MISSING_MEASUREMENT",
         "HTTP_FAILURE",
         "TIMEOUT",
+        "OVER_BUDGET",
     ]
-    request_identity_sha256: str
-    request_body_sha256: str
-    response_body_sha256: str | None
-    private_request_file: str
-    private_response_file: str | None
-    finish_reason: str | None = None
+    request_identity_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    request_body_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    response_body_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    private_request_file: str = Field(pattern=r"^case-0[1-5]-request\.json$")
+    private_response_file: str | None = Field(
+        default=None, pattern=r"^case-0[1-5]-response\.json$"
+    )
+    finish_reason: str | None = Field(default=None, max_length=80)
     prompt_tokens: int | None = Field(default=None, ge=0)
     completion_tokens: int | None = Field(default=None, ge=0)
     total_tokens: int | None = Field(default=None, ge=0)
-    request_wall_seconds: float | None = Field(default=None, ge=0)
-    prompt_processing_seconds: float | None = Field(default=None, ge=0)
-    generation_seconds: float | None = Field(default=None, ge=0)
+    request_wall_seconds: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    prompt_processing_seconds: float | None = Field(
+        default=None, ge=0, allow_inf_nan=False
+    )
+    generation_seconds: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     visible_bytes: int | None = Field(default=None, ge=0)
     reasoning_bytes: int | None = Field(default=None, ge=0)
-    failure_kind: str | None = None
+    failure_kind: str | None = Field(default=None, max_length=64)
+
+    @model_validator(mode="after")
+    def evidence_and_valid_outcome(self) -> Q0CaseResult:
+        if (self.response_body_sha256 is None) != (self.private_response_file is None):
+            raise ValueError("response digest/file must be jointly present or absent")
+        if self.private_response_file is not None and (
+            self.private_response_file.replace("-response.json", "")
+            != self.private_request_file.replace("-request.json", "")
+        ):
+            raise ValueError("request/response filename index differs")
+        if self.status in ("PASS", "FAIL_ORACLE"):
+            if (
+                self.response_body_sha256 is None
+                or self.finish_reason != "stop"
+                or self.failure_kind is not None
+                or any(
+                    value is None
+                    for value in (
+                        self.prompt_tokens,
+                        self.completion_tokens,
+                        self.total_tokens,
+                        self.request_wall_seconds,
+                        self.prompt_processing_seconds,
+                        self.generation_seconds,
+                        self.visible_bytes,
+                        self.reasoning_bytes,
+                    )
+                )
+                or self.visible_bytes == 0
+                or self.reasoning_bytes != 0
+                or (
+                    self.prompt_tokens is not None
+                    and self.completion_tokens is not None
+                    and self.total_tokens is not None
+                    and self.prompt_tokens + self.completion_tokens != self.total_tokens
+                )
+            ):
+                raise ValueError(
+                    "valid Q0 case requires exact response evidence and measurements"
+                )
+        if self.status in ("HTTP_FAILURE", "TIMEOUT") and self.failure_kind is None:
+            raise ValueError("transport failure requires explicit kind")
+        return self
 
 
 class HostMemory(ClosedRecord):
@@ -168,40 +221,57 @@ class HostMemory(ClosedRecord):
 
 
 class Q0Manifest(ClosedRecord):
-    schema_version: Literal[1] = 1
+    # v1 was published with ambiguous expected/observed identities and weak
+    # completed-case evidence constraints. v2 deliberately cannot read as v1.
+    schema_version: Literal[2] = 2
     evidence_class: Literal["development_only_q0_not_e002"] = (
         "development_only_q0_not_e002"
     )
     status: Literal["COMPLETED", "INCOMPLETE", "BLOCKED"]
-    failure_stage: str | None
-    failure_code: str | None
-    software_commit: str
-    package_source_sha256: str
-    run_id: str
-    repository: str
-    revision: str
-    artifact_filename: str
-    artifact_bytes: int
-    artifact_sha256: str
-    executable_sha256: str
-    executable_version: str
-    executable_build: int
-    executable_commit: str
-    packet_sha256: str
-    e002_packet_sha256: str = E002_PACKET_SHA256
+    failure_stage: str | None = Field(default=None, max_length=64)
+    failure_code: str | None = Field(default=None, max_length=64)
+    software_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    package_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    run_id: str = Field(pattern=r"^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$")
+    repository: Literal["Qwen/Qwen3-8B-GGUF"]
+    revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    artifact_filename: Literal["Qwen3-8B-Q4_K_M.gguf"]
+    expected_artifact_bytes: int = Field(gt=0)
+    expected_artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    artifact_bytes: int | None = Field(default=None, ge=0)
+    artifact_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    expected_executable_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_executable_version: str = Field(min_length=1)
+    expected_executable_build: int = Field(ge=1)
+    expected_executable_commit: str = Field(pattern=r"^[0-9a-f]{7,40}$")
+    executable_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    executable_version: str | None = None
+    executable_build: int | None = Field(default=None, ge=1)
+    executable_commit: str | None = Field(default=None, pattern=r"^[0-9a-f]{7,40}$")
+    client_python_version: str = Field(pattern=r"^3\.[0-9]+\.[0-9]+$")
+    client_python_implementation: str = Field(min_length=1)
+    client_python_executable_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    packet_sha256: str = Field(default=Q0_PACKET_SHA256, pattern=r"^[0-9a-f]{64}$")
+    e002_packet_sha256: str = Field(
+        default=E002_PACKET_SHA256, pattern=r"^[0-9a-f]{64}$"
+    )
     context_tokens: Literal[8192] = 8192
     parallel: Literal[1] = 1
     gpu_layers_requested: Literal[99] = 99
     output_limit: Literal[128] = 128
     seed: Literal[42] = 42
-    alias: str
+    alias: str = Field(min_length=1, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
     reasoning_mode: Literal["off"] = "off"
-    chat_template_sha256: str | None = None
-    chat_template_caps_sha256: str | None = None
-    build_info_sha256: str | None = None
+    chat_template_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    chat_template_caps_sha256: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    build_info_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     actual_gpu_offload_layers: int | None = Field(default=None, ge=0)
     actual_gpu_total_layers: int | None = Field(default=None, ge=0)
-    load_readiness_seconds: float | None = Field(default=None, ge=0)
+    load_readiness_seconds: float | None = Field(
+        default=None, ge=0, allow_inf_nan=False
+    )
     gpu_baseline_used_mib: int | None = Field(default=None, ge=0)
     gpu_loaded_used_mib: int | None = Field(default=None, ge=0)
     gpu_observed_peak_used_mib: int | None = Field(default=None, ge=0)
@@ -211,31 +281,60 @@ class Q0Manifest(ClosedRecord):
     child_observed_peak_rss_mib: int | None = Field(default=None, ge=0)
     owned_listener_verified: bool = False
     cleanup_verified: bool = False
+    source_reverified: bool = False
     protected_port_8080_untouched: bool = True
     lm_studio: Literal["NOT_TESTED"] = "NOT_TESTED"
-    private_server_log: str | None = None
-    server_log_sha256: str | None = None
+    private_server_log: Literal["server.stderr.log"] | None = None
+    server_log_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     control_token_128247_warning: bool | None = None
-    cases: tuple[Q0CaseResult, ...] = ()
-    wall_seconds: float = Field(ge=0)
+    cases: tuple[Q0CaseResult, ...] = Field(default=(), max_length=5)
+    wall_seconds: float = Field(ge=0, allow_inf_nan=False)
 
     @model_validator(mode="after")
-    def completion_is_not_scientific_approval(self) -> Q0Manifest:
+    def completed_require_observed_evidence(self) -> Q0Manifest:
+        if (
+            len(self.cases) > 5
+            or tuple(c.task_id for c in self.cases) != Q0_CASE_IDS[: len(self.cases)]
+        ):
+            raise ValueError("Q0 results must be a prefix of frozen ordered cases")
+        for index, case in enumerate(self.cases, 1):
+            if case.private_request_file != f"case-{index:02d}-request.json":
+                raise ValueError(
+                    "Q0 request evidence filename disagrees with case order"
+                )
+        if (self.private_server_log is None) != (self.server_log_sha256 is None):
+            raise ValueError("server diagnostic and digest must both exist")
         if self.status == "COMPLETED" and (
             len(self.cases) != 5
-            or tuple(c.task_id for c in self.cases) != Q0_CASE_IDS
-            or any(c.status not in ("PASS", "FAIL_ORACLE") for c in self.cases)
+            or any(case.status not in ("PASS", "FAIL_ORACLE") for case in self.cases)
+            or any(
+                case.prompt_tokens is None
+                or case.completion_tokens is None
+                or case.prompt_tokens + case.completion_tokens > self.context_tokens
+                or case.completion_tokens > self.output_limit
+                for case in self.cases
+            )
             or not self.cleanup_verified
+            or not self.source_reverified
             or not self.owned_listener_verified
+            or self.artifact_sha256 != self.expected_artifact_sha256
+            or self.artifact_bytes != self.expected_artifact_bytes
+            or self.executable_sha256 != self.expected_executable_sha256
+            or self.executable_version != self.expected_executable_version
+            or self.executable_build != self.expected_executable_build
+            or self.executable_commit != self.expected_executable_commit
             or self.chat_template_sha256 is None
             or self.chat_template_caps_sha256 is None
+            or self.build_info_sha256 is None
+            or self.server_log_sha256 is None
             or self.actual_gpu_offload_layers is None
             or self.actual_gpu_total_layers is None
+            or self.load_readiness_seconds is None
             or self.failure_stage is not None
             or self.failure_code is not None
         ):
             raise ValueError(
-                "COMPLETED requires five valid evaluations and verified cleanup"
+                "COMPLETED requires matched identities and complete source-backed Q0 evidence"
             )
         return self
 
@@ -271,12 +370,41 @@ class Q0Progress(TypedDict, total=False):
     build_info_sha256: str
     actual_gpu_offload_layers: int | None
     actual_gpu_total_layers: int | None
+    artifact_sha256: str
+    artifact_bytes: int
+    executable_sha256: str
+    executable_version: str
+    executable_build: int
+    executable_commit: str
+    source_reverified: bool
+
+
+class PythonClientIdentity(ClosedRecord):
+    version: str = Field(pattern=r"^3\.[0-9]+\.[0-9]+$")
+    implementation: str = Field(min_length=1)
+    executable_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+def observe_client_python() -> PythonClientIdentity:
+    """Measured executing client identity; not the source project Python floor."""
+    digest = hashlib.sha256()
+    with Path(sys.executable).resolve(strict=True).open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return PythonClientIdentity(
+        version=platform.python_version(),
+        implementation=platform.python_implementation(),
+        executable_sha256=digest.hexdigest(),
+    )
 
 
 def validate_identity(
     config: Q0Config,
+    state: Q0Progress | None = None,
 ) -> tuple[ArtifactIdentity, ExecutableIdentity, Q0Packet]:
     """Verify bytes and the pinned Hub snapshot *before* process/resource use."""
+    if state is None:
+        state = {}
     packet_bytes = config.packet.read_bytes()
     if sha256_hex(packet_bytes) != Q0_PACKET_SHA256:
         raise ValueError("frozen Q0 packet digest mismatch")
@@ -289,18 +417,23 @@ def validate_identity(
         raise ValueError("GGUF revision snapshot path mismatch")
     if snapshot.parent.parent.name != "models--Qwen--Qwen3-8B-GGUF":
         raise ValueError("GGUF repository snapshot path mismatch")
-    if (
-        not input_path.is_file()
-        or input_path.stat().st_size != config.expected_size_bytes
-    ):
-        raise ValueError("GGUF missing or byte size mismatch")
+    if not input_path.is_file():
+        raise ValueError("GGUF missing")
     artifact = hash_model_artifact(input_path)
+    state["artifact_sha256"] = artifact.sha256
+    state["artifact_bytes"] = artifact.size_bytes
+    if input_path.stat().st_size != artifact.size_bytes:
+        raise ValueError("measured GGUF size differs from filesystem")
+    runtime = inspect_llama_executable(config.executable)
+    state["executable_sha256"] = runtime.sha256
+    state["executable_version"] = runtime.version
+    state["executable_build"] = runtime.build
+    state["executable_commit"] = runtime.commit
     if (
         artifact.sha256 != config.expected_sha256
         or artifact.size_bytes != config.expected_size_bytes
     ):
         raise ValueError("GGUF digest or size mismatch")
-    runtime = inspect_llama_executable(config.executable)
     if not config.expected_runtime.matches(runtime):
         raise ValueError("llama-server version/build/digest mismatch")
     return artifact, runtime, packet
@@ -467,14 +600,13 @@ def classify_case(
     "INVALID_RESPONSE",
     "MODEL_MISMATCH",
     "MISSING_MEASUREMENT",
+    "OVER_BUDGET",
 ]:
     if reported_model_match is not True:
         return "MODEL_MISMATCH"
-    if finish == "length" or (
-        completion_tokens is not None
-        and completion_tokens >= limit
-        and finish != "stop"
-    ):
+    if completion_tokens is not None and completion_tokens > limit:
+        return "OVER_BUDGET"
+    if finish == "length":
         return "CENSORED_LENGTH"
     if finish != "stop" or reasoning_bytes > 0:
         return "INVALID_RESPONSE"
@@ -723,6 +855,12 @@ async def _collect(
             try:
                 execution = await transport.generate(prepared)
             except RuntimeFailure as exc:
+                response_name = None
+                response_digest = None
+                if exc.evidence is not None:
+                    response_name = f"case-{index:02d}-response.json"
+                    publish_immutable(run_dir / response_name, exc.evidence.body)
+                    response_digest = exc.evidence.body_sha256
                 status: Literal["TIMEOUT", "HTTP_FAILURE", "INVALID_RESPONSE"] = (
                     "TIMEOUT"
                     if exc.kind
@@ -746,8 +884,8 @@ async def _collect(
                     Q0CaseResult(
                         **common,
                         status=status,
-                        response_body_sha256=None,
-                        private_response_file=None,
+                        response_body_sha256=response_digest,
+                        private_response_file=response_name,
                         failure_kind=exc.kind.value,
                     )
                 )
@@ -806,11 +944,20 @@ async def _collect(
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
-        stop_managed_server(handle)
-        state["cleanup_verified"] = process.poll() is not None
-        with acquire_resource_lease(lease_root, RESOURCE):
-            pass
-        state["cleanup_verified"] = True
+        # Even a failed owned-process stop must not skip diagnostic capture or
+        # final source re-verification. Never attempt to stop an unowned PID.
+        stop_failed = False
+        try:
+            stop_managed_server(handle)
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            stop_failed = True
+        state["cleanup_verified"] = not stop_failed and process.poll() is not None
+        if state["cleanup_verified"]:
+            try:
+                with acquire_resource_lease(lease_root, RESOURCE):
+                    pass
+            except (OSError, RuntimeError):
+                state["cleanup_verified"] = False
         log_bytes = server_log.read_bytes()
         state["server_log_sha256"] = sha256_hex(log_bytes)
         state["control_token_128247_warning"] = b"128247" in log_bytes
@@ -818,19 +965,179 @@ async def _collect(
             state["actual_gpu_offload_layers"], state["actual_gpu_total_layers"] = (
                 _offload_observation(log_bytes)
             )
-    # A successful HTTP response does not establish unchanged source bytes.
-    after_run = hash_model_artifact(artifact.path)
-    after_runtime = inspect_llama_executable(runtime.path)
-    if (after_run.sha256, after_run.size_bytes) != (
-        artifact.sha256,
-        artifact.size_bytes,
-    ) or (
-        after_runtime.sha256 != runtime.sha256
-        or after_runtime.version != runtime.version
-        or after_runtime.build != runtime.build
-        or after_runtime.commit != runtime.commit
+        # This belongs in the shutdown path: invalid completions and timeouts
+        # must not skip the source-identity verification.
+        after_run = hash_model_artifact(artifact.path)
+        after_runtime = inspect_llama_executable(runtime.path)
+        state["source_reverified"] = (after_run.sha256, after_run.size_bytes) == (
+            artifact.sha256,
+            artifact.size_bytes,
+        ) and (
+            after_runtime.sha256,
+            after_runtime.version,
+            after_runtime.build,
+            after_runtime.commit,
+        ) == (runtime.sha256, runtime.version, runtime.build, runtime.commit)
+        if not state["source_reverified"]:
+            state["failure_stage"] = "source_reverification"
+            raise ValueError("model or runtime bytes changed during Q0")
+        if not state["cleanup_verified"]:
+            state["failure_stage"] = "cleanup"
+            raise RuntimeError("owned server cleanup/lease release unverified")
+
+
+def verify_q0_private_evidence(
+    record: Q0Manifest,
+    config: Q0Config,
+    private_run_dir: Path,
+    packet: Q0Packet,
+) -> None:
+    """Independently check the immutable public/privately stored Q0 receipt.
+
+    This is a same-host verification: Python executable identity must match.
+    It neither creates generation requests nor connects to a model server.
+    """
+    record = Q0Manifest.model_validate_json(record.model_dump_json())
+    if record.status != "COMPLETED":
+        raise ValueError("only completed Q0 receipts can pass evidence verification")
+    if not private_run_dir.is_dir() or private_run_dir.is_symlink():
+        raise ValueError("private evidence directory is missing or linked")
+    if private_run_dir.stat().st_mode & 0o077:
+        raise ValueError("private evidence directory is not owner-only")
+    client = observe_client_python()
+    if (
+        record.client_python_version != client.version
+        or record.client_python_implementation != client.implementation
+        or record.client_python_executable_sha256 != client.executable_sha256
     ):
-        raise ValueError("model or runtime bytes changed during Q0")
+        raise ValueError("Python client identity does not match executing verifier")
+    if sha256_hex(config.packet.read_bytes()) != Q0_PACKET_SHA256:
+        raise ValueError("frozen packet digest differs")
+    if Q0Packet.model_validate_json(config.packet.read_bytes()) != packet:
+        raise ValueError("frozen Q0 case packet does not match")
+    if (
+        record.repository != config.repository
+        or record.revision != config.revision
+        or record.alias != config.alias
+        or record.expected_artifact_sha256 != config.expected_sha256
+        or record.expected_artifact_bytes != config.expected_size_bytes
+        or record.expected_executable_sha256 != config.expected_runtime.sha256
+        or record.expected_executable_build != config.expected_runtime.build
+        or record.expected_executable_commit != config.expected_runtime.commit
+        or record.expected_executable_version != config.expected_runtime.version
+    ):
+        raise ValueError("Q0 receipt/configuration identity mismatch")
+
+    def private_bytes(name: str) -> bytes:
+        # Names are already closed-pattern validated, but independent file
+        # verification must also avoid user-controlled symlink traversal.
+        file = private_run_dir / name
+        if file.is_symlink() or not file.is_file():
+            raise ValueError("private evidence file missing or linked")
+        return file.read_bytes()
+
+    assert record.private_server_log is not None
+    assert record.server_log_sha256 is not None
+    if sha256_hex(private_bytes(record.private_server_log)) != record.server_log_sha256:
+        raise ValueError("private server log corrupted")
+    assert record.chat_template_sha256 is not None
+    assert record.artifact_sha256 is not None
+    assert record.executable_sha256 is not None
+    assert record.executable_version is not None
+    assert record.executable_build is not None
+    assert record.executable_commit is not None
+    binding = _request_binding(
+        config,
+        ArtifactIdentity(
+            path=str(config.artifact),
+            sha256=record.artifact_sha256,
+            size_bytes=record.artifact_bytes or 0,
+        ),
+        ExecutableIdentity(
+            path=str(config.executable),
+            sha256=record.executable_sha256,
+            version=record.executable_version,
+            build=record.executable_build,
+            commit=record.executable_commit,
+            platform="not_used_in_request_identity",
+        ),
+        record.chat_template_sha256,
+    )
+    from .local_runtime_preflight_records import summarize_generation
+
+    for task, case in zip(packet.tasks, record.cases, strict=True):
+        prepared = prepare_generation(
+            binding,
+            GenerationRequest(
+                condition_id=binding.condition.condition_id,
+                messages=(("user", task.prompt),),
+                max_output_tokens=config.max_output_tokens,
+                temperature=0.0,
+                seed=config.seed,
+            ),
+        )
+        request_bytes = private_bytes(case.private_request_file)
+        if (
+            sha256_hex(request_bytes) != case.request_body_sha256
+            or request_bytes != prepared.wire_bytes
+            or case.request_identity_sha256 != prepared.request_identity_sha256
+        ):
+            raise ValueError("Q0 request evidence or identity mismatch")
+        assert case.private_response_file is not None
+        assert case.response_body_sha256 is not None
+        response_bytes = private_bytes(case.private_response_file)
+        if sha256_hex(response_bytes) != case.response_body_sha256:
+            raise ValueError("Q0 response evidence digest mismatch")
+        payload = parse_json_unique(response_bytes)
+        if not isinstance(payload, dict):
+            raise ValueError("Q0 response is not a JSON object")
+        ProviderChatProjection.model_validate(payload)
+        fields = ProviderParser._parse_chat(payload)
+        observation = GenerationObservation(
+            raw_output=fields["raw_output"],
+            backend_model_id=fields["backend_model_id"],
+            finish_reason=fields["finish_reason"],
+            termination_reason=fields["termination_reason"],
+            prompt_tokens=fields["prompt_tokens"],
+            completion_tokens=fields["completion_tokens"],
+            total_tokens=fields["total_tokens"],
+            reported_model_matches_condition=(
+                fields["backend_model_id"] == config.alias
+            ),
+        )
+        summary = summarize_generation(observation, response_bytes)
+        if (
+            observation.prompt_tokens != case.prompt_tokens
+            or observation.completion_tokens != case.completion_tokens
+            or observation.total_tokens != case.total_tokens
+            or summary.visible_output_bytes != case.visible_bytes
+            or summary.reasoning_bytes != case.reasoning_bytes
+            or observation.finish_reason != case.finish_reason
+        ):
+            raise ValueError("Q0 reported counters or output metadata mutated")
+        assert case.request_wall_seconds is not None
+        timings = project_exact_llama_timing(
+            response_bytes,
+            RequestTiming(total_request_wall_seconds=case.request_wall_seconds),
+        )
+        if (
+            timings.prompt_processing_seconds != case.prompt_processing_seconds
+            or timings.generation_seconds != case.generation_seconds
+        ):
+            raise ValueError("Q0 direct provider timing measurement differs")
+        if (
+            classify_case(
+                task,
+                visible=observation.raw_output,
+                finish=observation.termination_reason,
+                reported_model_match=observation.reported_model_matches_condition,
+                reasoning_bytes=summary.reasoning_bytes,
+                completion_tokens=observation.completion_tokens,
+                limit=config.max_output_tokens,
+            )
+            != case.status
+        ):
+            raise ValueError("Q0 frozen exact oracle or case classification differs")
 
 
 def run_q0(config: Q0Config) -> Q0Manifest:
@@ -840,6 +1147,7 @@ def run_q0(config: Q0Config) -> Q0Manifest:
         raise FileExistsError("public manifest already exists")
     started = time.monotonic()
     commit, package_sha = software_identity()
+    actual_python = observe_client_python()
     run_id = (
         datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         + "-"
@@ -853,7 +1161,7 @@ def run_q0(config: Q0Config) -> Q0Manifest:
     }
     private_dir: Path | None = None
     try:
-        artifact, runtime, packet = validate_identity(config)
+        artifact, runtime, packet = validate_identity(config, state)
         state["failure_stage"] = "resource"
         config.private_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         if (
@@ -887,18 +1195,34 @@ def run_q0(config: Q0Config) -> Q0Manifest:
             repository=config.repository,
             revision=config.revision,
             artifact_filename=config.artifact.name,
-            artifact_bytes=config.expected_size_bytes,
-            artifact_sha256=config.expected_sha256,
-            executable_sha256=config.expected_runtime.sha256,
-            executable_version=config.expected_runtime.version,
-            executable_build=config.expected_runtime.build,
-            executable_commit=config.expected_runtime.commit,
+            expected_artifact_bytes=config.expected_size_bytes,
+            expected_artifact_sha256=config.expected_sha256,
+            expected_executable_sha256=config.expected_runtime.sha256,
+            expected_executable_version=config.expected_runtime.version,
+            expected_executable_build=config.expected_runtime.build,
+            expected_executable_commit=config.expected_runtime.commit,
+            client_python_version=actual_python.version,
+            client_python_implementation=actual_python.implementation,
+            client_python_executable_sha256=actual_python.executable_sha256,
             packet_sha256=Q0_PACKET_SHA256,
             alias=config.alias,
             wall_seconds=time.monotonic() - started,
             **state,
         )
     )
+    if record.status == "COMPLETED":
+        assert private_dir is not None
+        try:
+            verify_q0_private_evidence(record, config, private_dir, packet)
+        except (ValueError, OSError):
+            record = Q0Manifest.model_validate(
+                {
+                    **record.model_dump(),
+                    "status": "INCOMPLETE",
+                    "failure_stage": "evidence_readback",
+                    "failure_code": "private_evidence_invalid",
+                }
+            )
     serialized = record.model_dump_json(indent=2).encode() + b"\n"
     publish_immutable(config.public_manifest, serialized)
     if Q0Manifest.model_validate_json(config.public_manifest.read_bytes()) != record:

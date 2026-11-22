@@ -224,7 +224,10 @@ class AsyncOpenAICompatibleTransport:
         except ValueError:
             failure = True
         if failure:
-            raise RuntimeFailure(FailureKind.INVALID_RESPONSE)
+            # A successfully decoded, credential-screened, size-bounded body was
+            # received. Retain it privately even if the projection is invalid.
+            # Network/JSON/secret/oversize failures do not reach this point.
+            raise RuntimeFailure(FailureKind.INVALID_RESPONSE, evidence=evidence)
         assert observation is not None
         return GenerationExecution(
             observation=observation,

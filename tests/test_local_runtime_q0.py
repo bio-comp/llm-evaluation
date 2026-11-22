@@ -284,6 +284,22 @@ def test_classify_case_differentiates_oracle_and_technical_failures() -> None:
         limit=128,
     )
     assert classify_case(**arguments) == "PASS"
+    for count in (127, 128):
+        assert classify_case(**(arguments | {"completion_tokens": count})) == "PASS"
+    for count in (129, 500):
+        assert (
+            classify_case(**(arguments | {"completion_tokens": count})) == "OVER_BUDGET"
+        )
+    assert (
+        classify_case(**(arguments | {"completion_tokens": 128, "finish": "length"}))
+        == "CENSORED_LENGTH"
+    )
+    assert (
+        classify_case(
+            **(arguments | {"completion_tokens": None, "measurement_complete": False})
+        )
+        == "MISSING_MEASUREMENT"
+    )
     assert classify_case(**(arguments | {"visible": "257"})) == "FAIL_ORACLE"
     assert classify_case(**(arguments | {"visible": " 256"})) == "FAIL_ORACLE"
     assert classify_case(**(arguments | {"visible": ""})) == "EMPTY_VISIBLE"
@@ -371,7 +387,10 @@ def test_startup_error_cleans_up_only_owned_child(
     stopped: list[int] = []
     monkeypatch.setattr(
         "llm_evaluation.local_runtime_q0.stop_managed_server",
-        lambda handle: stopped.append(handle.process.pid),
+        lambda handle: (
+            stopped.append(handle.process.pid),
+            child.poll.configure_mock(return_value=0),
+        ),
     )
 
     class FailingTransport:
