@@ -2,7 +2,7 @@
 
 ## Scope and authority
 
-This repository keeps GitHub Public CI as the independent required exact-merge gate. Local checks reduce avoidable CI failures but do not authorize a merge. The first implementation slice enforces the existing Python 3.11.13 main baseline; Issue #41 / PR #42 separately owns promotion to Python >=3.12 with development on 3.14.10. The gate reads the declared package minimum to select mypy's compatibility target.
+This repository keeps GitHub Public CI as the independent required exact-merge gate. Local checks reduce avoidable CI failures but do not authorize a merge. The initial implementation slice enforced the historical Python 3.11.13 main baseline; Issue #41 / PR #42 promotes the development interpreter to Python 3.14.10 with a package minimum of Python 3.12. The gate reads the declared package minimum to select mypy's compatibility target.
 
 No scientific-method, persisted-artifact, data schema, or historical Python 3.11 identity is changed by this slice. GitHub Issues #36–#39 remain the owners of historical assertions, formatting, strict typing, and Pydantic/settings work.
 
