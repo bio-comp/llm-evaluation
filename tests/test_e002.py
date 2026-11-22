@@ -2,6 +2,7 @@ import copy
 import itertools
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -88,9 +89,14 @@ class RecordTests(unittest.TestCase):
         self.assertAlmostEqual(result["macro"]["best_of_k"], 11 / 18)
         self.assertAlmostEqual(result["macro"]["all_k"], 7 / 18)
         self.assertEqual(canonical_bytes(json.loads(canonical_bytes(result))), canonical_bytes(result))
-        # Frozen v3 contract from PR #3: refactors must not change its bytes.
+        # The record binds the active interpreter; preserve the frozen Python
+        # 3.11.13 v3 byte oracle by comparing a historical projection only.
+        # Production records retain their actual Python provenance unchanged.
         import hashlib
-        self.assertEqual(hashlib.sha256(canonical_bytes(result)).hexdigest(),
+        self.assertEqual(result["python_version"], platform.python_version())
+        historical = copy.deepcopy(result)
+        historical["python_version"] = "3.11.13"
+        self.assertEqual(hashlib.sha256(canonical_bytes(historical)).hexdigest(),
                          "a7c934e5871d94df2567e8165fcc4103c17e02933e84e4e90e111820989d87cc")
 
     def test_finalized_writer_rejects_missing_software_and_source(self):

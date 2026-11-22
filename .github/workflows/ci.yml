@@ -18,7 +18,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: '3.11.13'
+          python-version: '3.14.10'
       - name: Verify locked environment metadata
         run: |
           python -m pip install uv==0.8.4
@@ -37,7 +37,8 @@ jobs:
       - name: Static checks and branch coverage
         run: |
           uv run --frozen --extra drive --extra local-auth ruff check src tests
-          uv run --frozen --extra drive --extra local-auth mypy --python-version 3.11 src
+          uv run --frozen --extra drive --extra local-auth mypy --python-version 3.12 src
+          uv run --frozen --extra drive --extra local-auth mypy --python-version 3.14 src
           uv run --frozen --extra drive --extra local-auth coverage erase
           uv run --frozen --extra drive --extra local-auth coverage run --branch -m pytest -m 'not live_drive' -q
           uv run --frozen --extra drive --extra local-auth coverage report --include='src/llm_evaluation/*' --fail-under=80

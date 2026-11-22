@@ -14,7 +14,7 @@ The next bounded experiment is the [known-truth metric and reference-error labor
 
 ## Run the initial diagnostic
 
-Install uv, then use the declared Python 3.11.13 runtime. The base workspace has a small Pydantic runtime dependency through `canonical-sync`; Google client libraries remain optional under the explicit `drive` extra. From a checkout:
+Install uv, then use the declared Python 3.14.10 development runtime (package minimum: Python 3.12). The base workspace has a small Pydantic runtime dependency through `canonical-sync`; Google client libraries remain optional under the explicit `drive` extra. From a checkout:
 
 ```sh
 uv sync --all-packages --group dev
