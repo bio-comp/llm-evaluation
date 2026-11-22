@@ -11,7 +11,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
 from pydantic import Field
-from ..codec import parse_json_unique
+from ..codec import parse_json_unique, canonical_json_bytes
 from ..contracts import ClosedRecord
 from ..timing import RequestTiming
 
@@ -61,6 +61,7 @@ class LlamaQualification(ClosedRecord):
     alias: str
     chat_template_sha256: str
     chat_template_caps: tuple[tuple[str, bool], ...]
+    chat_template_caps_sha256: str
     build_info: str
     context_tokens: int
 
@@ -314,13 +315,29 @@ async def qualify_llama_server(
     ):
         raise ValueError("bounded exact chat template required")
     caps = props.get("chat_template_caps")
+    # llama.cpp build 12602 adds two string-list diagnostic capabilities;
+    # unknown non-boolean fields still fail closed. Do not discard them from
+    # identity: the entire bounded object is separately hashed.
+    allowed_lists = {"reasoning_effort_levels", "reasoning_effort_rejected"}
     if (
         not isinstance(caps, dict)
         or len(caps) > 16
         or any(
             not isinstance(key, str)
             or re.fullmatch(r"[a-z][a-z0-9_]{0,63}", key) is None
-            or type(value) is not bool
+            or not (
+                type(value) is bool
+                or (
+                    key in allowed_lists
+                    and isinstance(value, list)
+                    and len(value) <= 16
+                    and all(
+                        isinstance(item, str)
+                        and re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", item) is not None
+                        for item in value
+                    )
+                )
+            )
             for key, value in caps.items()
         )
     ):
@@ -341,7 +358,12 @@ async def qualify_llama_server(
         model_path=str(Path(actual).resolve()),
         alias=alias,
         chat_template_sha256=hashlib.sha256(template.encode("utf-8")).hexdigest(),
-        chat_template_caps=tuple(sorted(caps.items())),
+        chat_template_caps=tuple(
+            sorted((key, value) for key, value in caps.items() if type(value) is bool)
+        ),
+        chat_template_caps_sha256=hashlib.sha256(
+            canonical_json_bytes(caps)
+        ).hexdigest(),
         build_info=build,
         context_tokens=defaults["n_ctx"],
     )

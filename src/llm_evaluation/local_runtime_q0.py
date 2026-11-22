@@ -197,6 +197,7 @@ class Q0Manifest(ClosedRecord):
     alias: str
     reasoning_mode: Literal["off"] = "off"
     chat_template_sha256: str | None = None
+    chat_template_caps_sha256: str | None = None
     build_info_sha256: str | None = None
     actual_gpu_offload_layers: int | None = Field(default=None, ge=0)
     actual_gpu_total_layers: int | None = Field(default=None, ge=0)
@@ -227,6 +228,7 @@ class Q0Manifest(ClosedRecord):
             or not self.cleanup_verified
             or not self.owned_listener_verified
             or self.chat_template_sha256 is None
+            or self.chat_template_caps_sha256 is None
             or self.actual_gpu_offload_layers is None
             or self.actual_gpu_total_layers is None
             or self.failure_stage is not None
@@ -265,6 +267,7 @@ class Q0Progress(TypedDict, total=False):
     load_readiness_seconds: float
     owned_listener_verified: bool
     chat_template_sha256: str
+    chat_template_caps_sha256: str
     build_info_sha256: str
     actual_gpu_offload_layers: int | None
     actual_gpu_total_layers: int | None
@@ -545,6 +548,8 @@ async def _collect(
         "--chat-template-kwargs",
         '{"enable_thinking":false}',
         "--jinja",
+        "--verbosity",
+        "5",
         "--no-webui",
         "--no-agent",
         "--no-ui-mcp-proxy",
@@ -670,6 +675,7 @@ async def _collect(
             expected_context_tokens=config.context_tokens,
         )
         state["chat_template_sha256"] = observation.chat_template_sha256
+        state["chat_template_caps_sha256"] = observation.chat_template_caps_sha256
         state["build_info_sha256"] = sha256_hex(observation.build_info.encode())
         if (
             str(runtime.build) not in observation.build_info
