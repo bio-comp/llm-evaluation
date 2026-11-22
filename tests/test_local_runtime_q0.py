@@ -197,6 +197,9 @@ def test_failed_manifest_cannot_claim_qualification(
 
 def test_port_protection_and_occupied_listener(tmp_path: Path) -> None:
     c = config(tmp_path)
+    assert c.context_tokens == 8192
+    with pytest.raises(ValidationError):
+        Q0Config.model_validate({**c.model_dump(), "context_tokens": 4096})
     with pytest.raises(ValidationError, match="protected MCP"):
         Q0Config.model_validate({**c.model_dump(), "port": 8080})
     with socket.socket() as s:

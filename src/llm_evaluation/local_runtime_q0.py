@@ -113,7 +113,7 @@ class Q0Config(ClosedRecord):
     private_root: Path
     alias: str = Field(min_length=1, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
     port: int = Field(ge=1024, le=65535)
-    context_tokens: Literal[4096] = 4096
+    context_tokens: Literal[8192] = 8192
     parallel: Literal[1] = 1
     gpu_layers: Literal[99] = 99
     max_output_tokens: Literal[128] = 128
@@ -189,7 +189,7 @@ class Q0Manifest(ClosedRecord):
     executable_commit: str
     packet_sha256: str
     e002_packet_sha256: str = E002_PACKET_SHA256
-    context_tokens: Literal[4096] = 4096
+    context_tokens: Literal[8192] = 8192
     parallel: Literal[1] = 1
     gpu_layers_requested: Literal[99] = 99
     output_limit: Literal[128] = 128
@@ -538,7 +538,7 @@ async def _collect(
         "--alias",
         config.alias,
         "--ctx-size",
-        "4096",
+        "8192",
         "--predict",
         "128",
         "--reasoning",

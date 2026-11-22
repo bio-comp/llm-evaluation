@@ -229,6 +229,9 @@ weights or use an unowned runtime. The pinned fixture remains byte-for-byte
 `fixtures/local_runtime_preflight_v1.json`. A different checkpoint or runtime
 requires an independently versioned explicit condition and contract; this
 first profile is intentionally not a general inference framework.
+The original 4096-token smoke context is insufficient: llama-server build 12602
+reported 4723 input tokens for the frozen 256-record retrieval case. Q0 fixes
+8192 context tokens so it can execute this unchanged packet, not truncate it.
 
 Invoke `uv run --locked python scripts/run_local_q0.py --help` for all required
 pins. Supply `--artifact`, `--artifact-size`, `--artifact-sha256`,
@@ -242,7 +245,7 @@ launch. The fixed listener excludes port 8080; owned listener/lease and the
 child process must be independently established before calling the five cases.
 
 One formal CUDA0 `llama-server` child uses `--n-gpu-layers 99 --fit off`, one
-slot, 4096 context tokens, at most 128 response tokens, `--reasoning off`,
+slot, 8192 context tokens, at most 128 response tokens, `--reasoning off`,
 Jinja with `enable_thinking=false`, `seed=42` and `temperature=0`. Effective
 model alias, template SHA, build info and context are queried from the server;
 actual offloaded layers require affirmative loader-log evidence. GPU memory is
