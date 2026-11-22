@@ -271,8 +271,14 @@ def probe_known_external_conflicts(
 
 
 async def qualify_llama_server(
-    probe: JsonProbe, *, artifact: Path | str, alias: str
+    probe: JsonProbe,
+    *,
+    artifact: Path | str,
+    alias: str,
+    expected_context_tokens: int = 2048,
 ) -> LlamaQualification:
+    if type(expected_context_tokens) is not int or expected_context_tokens < 1:
+        raise ValueError("positive integer context size required")
     health, _, _ = await probe.request_json("GET", "/health")
     if not isinstance(health, dict) or health.get("status") != "ok":
         raise ValueError("llama.cpp health response is invalid")
@@ -326,7 +332,7 @@ async def qualify_llama_server(
     if (
         not isinstance(defaults, dict)
         or type(defaults.get("n_ctx")) is not int
-        or defaults["n_ctx"] != 2048
+        or defaults["n_ctx"] != expected_context_tokens
     ):
         raise ValueError("effective context mismatch")
     return LlamaQualification(
