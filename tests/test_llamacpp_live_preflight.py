@@ -28,12 +28,28 @@ def test_preflight_record_rejects_secret_and_scientific_sample_fields():
 )
 def test_standalone_llama_preflight(tmp_path):
     from llm_evaluation.local_runtime_preflight import run_preflight
+    from llm_evaluation.runtime.llamacpp.qualification import ExpectedExecutable
 
+    keys = (
+        "LLM_EVAL_LLAMA_RUNTIME_VERSION",
+        "LLM_EVAL_LLAMA_RUNTIME_BUILD",
+        "LLM_EVAL_LLAMA_RUNTIME_COMMIT",
+        "LLM_EVAL_LLAMA_RUNTIME_SHA256",
+    )
+    expected = None
+    if any(key in os.environ for key in keys):
+        expected = ExpectedExecutable(
+            version=os.environ[keys[0]],
+            build=int(os.environ[keys[1]]),
+            commit=os.environ[keys[2]],
+            sha256=os.environ[keys[3]],
+        )
     record = run_preflight(
         executable=os.environ["LLM_EVAL_LLAMA_SERVER"],
         artifact=os.environ["LLM_EVAL_LLAMA_GGUF_PATH"],
         expected_sha256=os.environ["LLM_EVAL_LLAMA_GGUF_SHA256"],
         output=tmp_path / "preflight.json",
+        expected_executable=expected,
         authorized=True,
     )
     assert record.status == "passed"

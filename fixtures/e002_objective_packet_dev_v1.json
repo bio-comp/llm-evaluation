@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "design_id": "e002-objective-packet-dev-v1",
+  "fixed_k": [
+    1,
+    2,
+    4,
+    8,
+    16
+  ],
+  "adaptive_looks": [
+    2,
+    4,
+    8,
+    16
+  ],
+  "tasks": [
+    {
+      "id": "multiply-simple",
+      "lhs": 7,
+      "operation": "*",
+      "rhs": 8,
+      "expected": 56,
+      "prompt": "Compute 7 * 8. Return exactly one decimal integer with no explanation."
+    },
+    {
+      "id": "negative-sum",
+      "lhs": -8,
+      "operation": "+",
+      "rhs": 5,
+      "expected": -3,
+      "prompt": "Compute -8 + 5. Return exactly one decimal integer with no explanation."
+    },
+    {
+      "id": "zero-difference",
+      "lhs": 9,
+      "operation": "-",
+      "rhs": 9,
+      "expected": 0,
+      "prompt": "Compute 9 - 9. Return exactly one decimal integer with no explanation."
+    },
+    {
+      "id": "multiply-two-digit",
+      "lhs": 12,
+      "operation": "*",
+      "rhs": 11,
+      "expected": 132,
+      "prompt": "Compute 12 * 11. Return exactly one decimal integer with no explanation."
+    },
+    {
+      "id": "signed-product",
+      "lhs": -7,
+      "operation": "*",
+      "rhs": -6,
+      "expected": 42,
+      "prompt": "Compute -7 * -6. Return exactly one decimal integer with no explanation."
+    },
+    {
+      "id": "signed-sum",
+      "lhs": 15,
+      "operation": "+",
+      "rhs": -28,
+      "expected": -13,
+      "prompt": "Compute 15 + -28. Return exactly one decimal integer with no explanation."
+    }
+  ]
+}

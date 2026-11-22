@@ -1,0 +1,885 @@
+[
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "null_independent_p40",
+    "method": "trex_k10",
+    "requested_k": 10,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.0,
+    "fdr_ci95": [
+      0.0,
+      0.0
+    ],
+    "mean_tpr": null,
+    "tpr_ci95": null,
+    "p_fdp_gt_q": 0.0,
+    "p_fdp_ge_half": 0.0,
+    "p_empty": 1.0,
+    "p_proxy": null,
+    "mean_runtime_seconds": 0.13197439606301486,
+    "max_peak_rss_mib": 51.28125,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "null_independent_p40",
+    "method": "trex_k20",
+    "requested_k": 20,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.0,
+    "fdr_ci95": [
+      0.0,
+      0.0
+    ],
+    "mean_tpr": null,
+    "tpr_ci95": null,
+    "p_fdp_gt_q": 0.0,
+    "p_fdp_ge_half": 0.0,
+    "p_empty": 1.0,
+    "p_proxy": null,
+    "mean_runtime_seconds": 0.11344268755055964,
+    "max_peak_rss_mib": 51.59375,
+    "mean_rerun_jaccard": 1.0
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "null_independent_p40",
+    "method": "trex_k50",
+    "requested_k": 50,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.0,
+    "fdr_ci95": [
+      0.0,
+      0.0
+    ],
+    "mean_tpr": null,
+    "tpr_ci95": null,
+    "p_fdp_gt_q": 0.0,
+    "p_fdp_ge_half": 0.0,
+    "p_empty": 1.0,
+    "p_proxy": null,
+    "mean_runtime_seconds": 0.13389691663905978,
+    "max_peak_rss_mib": 55.640625,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "null_independent_p40",
+    "method": "trex_k100",
+    "requested_k": 100,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.0,
+    "fdr_ci95": [
+      0.0,
+      0.0
+    ],
+    "mean_tpr": null,
+    "tpr_ci95": null,
+    "p_fdp_gt_q": 0.0,
+    "p_fdp_ge_half": 0.0,
+    "p_empty": 1.0,
+    "p_proxy": null,
+    "mean_runtime_seconds": 0.15303806238807738,
+    "max_peak_rss_mib": 61.734375,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "null_independent_p40",
+    "method": "trex_da_bt_k20",
+    "requested_k": 20,
+    "intended_datasets": 2,
+    "successful_datasets": 0,
+    "failures": {
+      "unsupported": 2
+    },
+    "fdr": null,
+    "fdr_ci95": null,
+    "mean_tpr": null,
+    "tpr_ci95": null,
+    "p_fdp_gt_q": null,
+    "p_fdp_ge_half": null,
+    "p_empty": null,
+    "p_proxy": null,
+    "mean_runtime_seconds": null,
+    "max_peak_rss_mib": null,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "null_independent_p40",
+    "method": "trex_da_equi_k20",
+    "requested_k": 20,
+    "intended_datasets": 2,
+    "successful_datasets": 0,
+    "failures": {
+      "unsupported": 2
+    },
+    "fdr": null,
+    "fdr_ci95": null,
+    "mean_tpr": null,
+    "tpr_ci95": null,
+    "p_fdp_gt_q": null,
+    "p_fdp_ge_half": null,
+    "p_empty": null,
+    "p_proxy": null,
+    "mean_runtime_seconds": null,
+    "max_peak_rss_mib": null,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "null_independent_p40",
+    "method": "lasso_cv",
+    "requested_k": null,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.0,
+    "fdr_ci95": [
+      0.0,
+      0.0
+    ],
+    "mean_tpr": null,
+    "tpr_ci95": null,
+    "p_fdp_gt_q": 0.0,
+    "p_fdp_ge_half": 0.0,
+    "p_empty": 1.0,
+    "p_proxy": null,
+    "mean_runtime_seconds": 0.6927905415650457,
+    "max_peak_rss_mib": 125.421875,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "null_independent_p40",
+    "method": "stability",
+    "requested_k": null,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.0,
+    "fdr_ci95": [
+      0.0,
+      0.0
+    ],
+    "mean_tpr": null,
+    "tpr_ci95": null,
+    "p_fdp_gt_q": 0.0,
+    "p_fdp_ge_half": 0.0,
+    "p_empty": 1.0,
+    "p_proxy": null,
+    "mean_runtime_seconds": 0.6001421459950507,
+    "max_peak_rss_mib": 125.421875,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "null_independent_p40",
+    "method": "bh_independent",
+    "requested_k": null,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.5,
+    "fdr_ci95": [
+      0.0,
+      1.0
+    ],
+    "mean_tpr": null,
+    "tpr_ci95": null,
+    "p_fdp_gt_q": 0.5,
+    "p_fdp_ge_half": 0.5,
+    "p_empty": 0.5,
+    "p_proxy": null,
+    "mean_runtime_seconds": 0.5728342086076736,
+    "max_peak_rss_mib": 125.578125,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "strong_independent_p40",
+    "method": "trex_k10",
+    "requested_k": 10,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.2,
+    "fdr_ci95": [
+      0.0,
+      0.4
+    ],
+    "mean_tpr": 1.0,
+    "tpr_ci95": [
+      1.0,
+      1.0
+    ],
+    "p_fdp_gt_q": 0.5,
+    "p_fdp_ge_half": 0.0,
+    "p_empty": 0.0,
+    "p_proxy": null,
+    "mean_runtime_seconds": 0.10846502124331892,
+    "max_peak_rss_mib": 50.96875,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "strong_independent_p40",
+    "method": "trex_k20",
+    "requested_k": 20,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.2,
+    "fdr_ci95": [
+      0.0,
+      0.4
+    ],
+    "mean_tpr": 1.0,
+    "tpr_ci95": [
+      1.0,
+      1.0
+    ],
+    "p_fdp_gt_q": 0.5,
+    "p_fdp_ge_half": 0.0,
+    "p_empty": 0.0,
+    "p_proxy": null,
+    "mean_runtime_seconds": 0.10714127100072801,
+    "max_peak_rss_mib": 52.609375,
+    "mean_rerun_jaccard": 1.0
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "strong_independent_p40",
+    "method": "trex_k50",
+    "requested_k": 50,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.2,
+    "fdr_ci95": [
+      0.0,
+      0.4
+    ],
+    "mean_tpr": 1.0,
+    "tpr_ci95": [
+      1.0,
+      1.0
+    ],
+    "p_fdp_gt_q": 0.5,
+    "p_fdp_ge_half": 0.0,
+    "p_empty": 0.0,
+    "p_proxy": null,
+    "mean_runtime_seconds": 0.11713329213671386,
+    "max_peak_rss_mib": 55.015625,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "strong_independent_p40",
+    "method": "trex_k100",
+    "requested_k": 100,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.2,
+    "fdr_ci95": [
+      0.0,
+      0.4
+    ],
+    "mean_tpr": 1.0,
+    "tpr_ci95": [
+      1.0,
+      1.0
+    ],
+    "p_fdp_gt_q": 0.5,
+    "p_fdp_ge_half": 0.0,
+    "p_empty": 0.0,
+    "p_proxy": null,
+    "mean_runtime_seconds": 0.1690139793790877,
+    "max_peak_rss_mib": 78.046875,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "strong_independent_p40",
+    "method": "trex_da_bt_k20",
+    "requested_k": 20,
+    "intended_datasets": 2,
+    "successful_datasets": 0,
+    "failures": {
+      "unsupported": 2
+    },
+    "fdr": null,
+    "fdr_ci95": null,
+    "mean_tpr": null,
+    "tpr_ci95": null,
+    "p_fdp_gt_q": null,
+    "p_fdp_ge_half": null,
+    "p_empty": null,
+    "p_proxy": null,
+    "mean_runtime_seconds": null,
+    "max_peak_rss_mib": null,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "strong_independent_p40",
+    "method": "trex_da_equi_k20",
+    "requested_k": 20,
+    "intended_datasets": 2,
+    "successful_datasets": 0,
+    "failures": {
+      "unsupported": 2
+    },
+    "fdr": null,
+    "fdr_ci95": null,
+    "mean_tpr": null,
+    "tpr_ci95": null,
+    "p_fdp_gt_q": null,
+    "p_fdp_ge_half": null,
+    "p_empty": null,
+    "p_proxy": null,
+    "mean_runtime_seconds": null,
+    "max_peak_rss_mib": null,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "strong_independent_p40",
+    "method": "lasso_cv",
+    "requested_k": null,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.55,
+    "fdr_ci95": [
+      0.4,
+      0.7
+    ],
+    "mean_tpr": 1.0,
+    "tpr_ci95": [
+      1.0,
+      1.0
+    ],
+    "p_fdp_gt_q": 1.0,
+    "p_fdp_ge_half": 0.5,
+    "p_empty": 0.0,
+    "p_proxy": null,
+    "mean_runtime_seconds": 0.586419083410874,
+    "max_peak_rss_mib": 125.578125,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "strong_independent_p40",
+    "method": "stability",
+    "requested_k": null,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.325,
+    "fdr_ci95": [
+      0.25,
+      0.4
+    ],
+    "mean_tpr": 1.0,
+    "tpr_ci95": [
+      1.0,
+      1.0
+    ],
+    "p_fdp_gt_q": 1.0,
+    "p_fdp_ge_half": 0.0,
+    "p_empty": 0.0,
+    "p_proxy": null,
+    "mean_runtime_seconds": 0.5760160000063479,
+    "max_peak_rss_mib": 125.609375,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "strong_independent_p40",
+    "method": "bh_independent",
+    "requested_k": null,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.0,
+    "fdr_ci95": [
+      0.0,
+      0.0
+    ],
+    "mean_tpr": 1.0,
+    "tpr_ci95": [
+      1.0,
+      1.0
+    ],
+    "p_fdp_gt_q": 0.0,
+    "p_fdp_ge_half": 0.0,
+    "p_empty": 0.0,
+    "p_proxy": null,
+    "mean_runtime_seconds": 0.5660794584546238,
+    "max_peak_rss_mib": 125.5625,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "proxy_block_rho09",
+    "method": "trex_k10",
+    "requested_k": 10,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.45,
+    "fdr_ci95": [
+      0.4,
+      0.5
+    ],
+    "mean_tpr": 1.0,
+    "tpr_ci95": [
+      1.0,
+      1.0
+    ],
+    "p_fdp_gt_q": 1.0,
+    "p_fdp_ge_half": 0.5,
+    "p_empty": 0.0,
+    "p_proxy": 0.5,
+    "mean_runtime_seconds": 0.09870343748480082,
+    "max_peak_rss_mib": 52.46875,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "proxy_block_rho09",
+    "method": "trex_k20",
+    "requested_k": 20,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.45,
+    "fdr_ci95": [
+      0.4,
+      0.5
+    ],
+    "mean_tpr": 1.0,
+    "tpr_ci95": [
+      1.0,
+      1.0
+    ],
+    "p_fdp_gt_q": 1.0,
+    "p_fdp_ge_half": 0.5,
+    "p_empty": 0.0,
+    "p_proxy": 0.5,
+    "mean_runtime_seconds": 0.10108618787489831,
+    "max_peak_rss_mib": 54.78125,
+    "mean_rerun_jaccard": 1.0
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "proxy_block_rho09",
+    "method": "trex_k50",
+    "requested_k": 50,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.45,
+    "fdr_ci95": [
+      0.4,
+      0.5
+    ],
+    "mean_tpr": 1.0,
+    "tpr_ci95": [
+      1.0,
+      1.0
+    ],
+    "p_fdp_gt_q": 1.0,
+    "p_fdp_ge_half": 0.5,
+    "p_empty": 0.0,
+    "p_proxy": 0.5,
+    "mean_runtime_seconds": 0.11278893798589706,
+    "max_peak_rss_mib": 63.390625,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "proxy_block_rho09",
+    "method": "trex_k100",
+    "requested_k": 100,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.45,
+    "fdr_ci95": [
+      0.4,
+      0.5
+    ],
+    "mean_tpr": 1.0,
+    "tpr_ci95": [
+      1.0,
+      1.0
+    ],
+    "p_fdp_gt_q": 1.0,
+    "p_fdp_ge_half": 0.5,
+    "p_empty": 0.0,
+    "p_proxy": 0.5,
+    "mean_runtime_seconds": 0.15597912506200373,
+    "max_peak_rss_mib": 77.421875,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "proxy_block_rho09",
+    "method": "trex_da_bt_k20",
+    "requested_k": 20,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.0,
+    "fdr_ci95": [
+      0.0,
+      0.0
+    ],
+    "mean_tpr": 0.3333333333333333,
+    "tpr_ci95": [
+      0.0,
+      0.6666666666666666
+    ],
+    "p_fdp_gt_q": 0.0,
+    "p_fdp_ge_half": 0.0,
+    "p_empty": 0.5,
+    "p_proxy": 0.0,
+    "mean_runtime_seconds": 0.12729247892275453,
+    "max_peak_rss_mib": 58.953125,
+    "mean_rerun_jaccard": 0.6666666666666666
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "proxy_block_rho09",
+    "method": "trex_da_equi_k20",
+    "requested_k": 20,
+    "intended_datasets": 2,
+    "successful_datasets": 0,
+    "failures": {
+      "unsupported": 2
+    },
+    "fdr": null,
+    "fdr_ci95": null,
+    "mean_tpr": null,
+    "tpr_ci95": null,
+    "p_fdp_gt_q": null,
+    "p_fdp_ge_half": null,
+    "p_empty": null,
+    "p_proxy": null,
+    "mean_runtime_seconds": null,
+    "max_peak_rss_mib": null,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "proxy_block_rho09",
+    "method": "lasso_cv",
+    "requested_k": null,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.6493506493506493,
+    "fdr_ci95": [
+      0.5714285714285714,
+      0.7272727272727273
+    ],
+    "mean_tpr": 1.0,
+    "tpr_ci95": [
+      1.0,
+      1.0
+    ],
+    "p_fdp_gt_q": 1.0,
+    "p_fdp_ge_half": 1.0,
+    "p_empty": 0.0,
+    "p_proxy": 0.5,
+    "mean_runtime_seconds": 0.5542850000783801,
+    "max_peak_rss_mib": 125.515625,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "proxy_block_rho09",
+    "method": "stability",
+    "requested_k": null,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.125,
+    "fdr_ci95": [
+      0.0,
+      0.25
+    ],
+    "mean_tpr": 1.0,
+    "tpr_ci95": [
+      1.0,
+      1.0
+    ],
+    "p_fdp_gt_q": 0.5,
+    "p_fdp_ge_half": 0.0,
+    "p_empty": 0.0,
+    "p_proxy": 0.0,
+    "mean_runtime_seconds": 0.5570715835783631,
+    "max_peak_rss_mib": 125.046875,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "proxy_block_rho09",
+    "method": "bh_independent",
+    "requested_k": null,
+    "intended_datasets": 2,
+    "successful_datasets": 0,
+    "failures": {
+      "unsupported": 2
+    },
+    "fdr": null,
+    "fdr_ci95": null,
+    "mean_tpr": null,
+    "tpr_ci95": null,
+    "p_fdp_gt_q": null,
+    "p_fdp_ge_half": null,
+    "p_empty": null,
+    "p_proxy": null,
+    "mean_runtime_seconds": null,
+    "max_peak_rss_mib": null,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "strong_equi_rho05",
+    "method": "trex_k10",
+    "requested_k": 10,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.6,
+    "fdr_ci95": [
+      0.5,
+      0.7
+    ],
+    "mean_tpr": 1.0,
+    "tpr_ci95": [
+      1.0,
+      1.0
+    ],
+    "p_fdp_gt_q": 1.0,
+    "p_fdp_ge_half": 1.0,
+    "p_empty": 0.0,
+    "p_proxy": null,
+    "mean_runtime_seconds": 0.0976814164314419,
+    "max_peak_rss_mib": 51.28125,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "strong_equi_rho05",
+    "method": "trex_k20",
+    "requested_k": 20,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.6136363636363636,
+    "fdr_ci95": [
+      0.5,
+      0.7272727272727273
+    ],
+    "mean_tpr": 1.0,
+    "tpr_ci95": [
+      1.0,
+      1.0
+    ],
+    "p_fdp_gt_q": 1.0,
+    "p_fdp_ge_half": 1.0,
+    "p_empty": 0.0,
+    "p_proxy": null,
+    "mean_runtime_seconds": 0.10431862506084144,
+    "max_peak_rss_mib": 54.578125,
+    "mean_rerun_jaccard": 0.8712121212121212
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "strong_equi_rho05",
+    "method": "trex_k50",
+    "requested_k": 50,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.6136363636363636,
+    "fdr_ci95": [
+      0.5,
+      0.7272727272727273
+    ],
+    "mean_tpr": 1.0,
+    "tpr_ci95": [
+      1.0,
+      1.0
+    ],
+    "p_fdp_gt_q": 1.0,
+    "p_fdp_ge_half": 1.0,
+    "p_empty": 0.0,
+    "p_proxy": null,
+    "mean_runtime_seconds": 0.11811997927725315,
+    "max_peak_rss_mib": 64.109375,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "strong_equi_rho05",
+    "method": "trex_k100",
+    "requested_k": 100,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.55,
+    "fdr_ci95": [
+      0.4,
+      0.7
+    ],
+    "mean_tpr": 1.0,
+    "tpr_ci95": [
+      1.0,
+      1.0
+    ],
+    "p_fdp_gt_q": 1.0,
+    "p_fdp_ge_half": 0.5,
+    "p_empty": 0.0,
+    "p_proxy": null,
+    "mean_runtime_seconds": 0.1430997080169618,
+    "max_peak_rss_mib": 78.78125,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "strong_equi_rho05",
+    "method": "trex_da_bt_k20",
+    "requested_k": 20,
+    "intended_datasets": 2,
+    "successful_datasets": 0,
+    "failures": {
+      "unsupported": 2
+    },
+    "fdr": null,
+    "fdr_ci95": null,
+    "mean_tpr": null,
+    "tpr_ci95": null,
+    "p_fdp_gt_q": null,
+    "p_fdp_ge_half": null,
+    "p_empty": null,
+    "p_proxy": null,
+    "mean_runtime_seconds": null,
+    "max_peak_rss_mib": null,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "strong_equi_rho05",
+    "method": "trex_da_equi_k20",
+    "requested_k": 20,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.0,
+    "fdr_ci95": [
+      0.0,
+      0.0
+    ],
+    "mean_tpr": 0.0,
+    "tpr_ci95": [
+      0.0,
+      0.0
+    ],
+    "p_fdp_gt_q": 0.0,
+    "p_fdp_ge_half": 0.0,
+    "p_empty": 1.0,
+    "p_proxy": null,
+    "mean_runtime_seconds": 0.1070081046782434,
+    "max_peak_rss_mib": 56.515625,
+    "mean_rerun_jaccard": 1.0
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "strong_equi_rho05",
+    "method": "lasso_cv",
+    "requested_k": null,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.7482517482517482,
+    "fdr_ci95": [
+      0.7272727272727273,
+      0.7692307692307693
+    ],
+    "mean_tpr": 1.0,
+    "tpr_ci95": [
+      1.0,
+      1.0
+    ],
+    "p_fdp_gt_q": 1.0,
+    "p_fdp_ge_half": 1.0,
+    "p_empty": 0.0,
+    "p_proxy": null,
+    "mean_runtime_seconds": 0.5945748533122241,
+    "max_peak_rss_mib": 125.59375,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "strong_equi_rho05",
+    "method": "stability",
+    "requested_k": null,
+    "intended_datasets": 2,
+    "successful_datasets": 2,
+    "failures": {},
+    "fdr": 0.0,
+    "fdr_ci95": [
+      0.0,
+      0.0
+    ],
+    "mean_tpr": 1.0,
+    "tpr_ci95": [
+      1.0,
+      1.0
+    ],
+    "p_fdp_gt_q": 0.0,
+    "p_fdp_ge_half": 0.0,
+    "p_empty": 0.0,
+    "p_proxy": null,
+    "mean_runtime_seconds": 0.5615744171664119,
+    "max_peak_rss_mib": 125.625,
+    "mean_rerun_jaccard": null
+  },
+  {
+    "schema_version": "trex47-summary-v1",
+    "scenario": "strong_equi_rho05",
+    "method": "bh_independent",
+    "requested_k": null,
+    "intended_datasets": 2,
+    "successful_datasets": 0,
+    "failures": {
+      "unsupported": 2
+    },
+    "fdr": null,
+    "fdr_ci95": null,
+    "mean_tpr": null,
+    "tpr_ci95": null,
+    "p_fdp_gt_q": null,
+    "p_fdp_ge_half": null,
+    "p_empty": null,
+    "p_proxy": null,
+    "mean_runtime_seconds": null,
+    "max_peak_rss_mib": null,
+    "mean_rerun_jaccard": null
+  }
+]
