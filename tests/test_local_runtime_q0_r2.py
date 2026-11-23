@@ -238,6 +238,7 @@ def synthetic_completed_run(
     fail_kind: FailureKind | None = None,
     cleanup_lease_fails: bool = False,
     corrupt_source_after_launch: bool = False,
+    synthetic_offload_log: bytes = b"llama_model_load: offloaded 37/37 layers to GPU\n",
 ) -> tuple[Q0Manifest, Path]:
     c = config(tmp_path)
     patch_identifiers(monkeypatch, c)
@@ -290,7 +291,7 @@ def synthetic_completed_run(
 
     def spawn(*args: object, **kwargs: object) -> Mock:
         stream = kwargs["stdout"]
-        stream.write(b"llama_model_load: offloaded 37/37 layers to GPU\n")
+        stream.write(synthetic_offload_log)
         stream.flush()
         return child
 

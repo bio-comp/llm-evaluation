@@ -278,15 +278,36 @@ response **schema is invalid**), `case-NN-response.json`;
 hashes, not the prompts, responses, credentials or machine-local private root.
 HTTP failures that occur before safe response evidence is available are
 explicitly classified without inventing response bytes. Every `COMPLETED`
-record is independently verified against the private request/response bytes,
-the frozen packet, re-derived request identity and exact oracle, and the
-observed local Python interpreter before publication. The verification entry
-point `verify_q0_private_evidence(record, config, private_run_dir, packet)`
-can also be used for separate readback and corruption controls. Verified
-records do not imply reproducibility across a different Python executable;
-the local interpreter check is intentionally host-bound. Only the child launched
-by this invocation is stopped. LM Studio is recorded `NOT_TESTED` and is never
-restarted. The manifest is not scientific validation or E-002 acceptance.
+record is checked against retained private request/response bytes, the
+SHA-pinned frozen packet (including exact task IDs and categories), re-derived
+request identities and exact oracles, and the observed local Python interpreter.
+Same-checkout readback invokes `records.software_identity()` to verify the Git
+commit and measured package-source digest against the current clean, byte-matched
+checkout; other source trees cannot satisfy that same-checkout claim.
+
+The digest-verified `server.stderr.log` is independently parsed for
+unambiguous **positive full CUDA layer offload**, `N/N` with `N > 0`. Both
+counts must match the manifest exactly; `0/0`, `0/N`, missing, conflicting or
+tampered loader-log observations cannot qualify. A loader log records the
+loader's report, not direct proof of every CUDA kernel or linked library.
+
+**Qualification metadata has a narrower scope:** original llama.cpp capability
+and build HTTP response bytes were not retained under schema v2. The
+`chat_template_sha256`, `chat_template_caps_sha256` and `build_info_sha256`
+values remain producer-**recorded observations**, not independently reconstructed
+from retained responses. The verifier returns typed `Q0ReadbackScope` with
+`qualification_metadata="recorded_only_not_independently_verified"` and the
+explicit `unverified_fields`; a mutated such hash does not constitute verified
+original server evidence. The `e002_packet_sha256` field is an exactly enforced,
+frozen **expected reference**, not an independently measured Q0 input.
+
+`verify_q0_private_evidence(record, config, private_run_dir, packet)` checks
+only those claims supported by retrievable evidence. `BLOCKED` describes
+pre-execution identity/resource rejection; failed attempted launches, startup
+and generation are `INCOMPLETE`, including zero-case executions. Verified
+receipts are host/check-out bound; the recorded history is not rewritten.
+Only the invocation-owned child may be stopped. LM Studio is `NOT_TESTED`.
+No completed Q0 receipt implies E-002 acceptance or scientific qualification.
 
 **Trust limitations:** on Linux the large GGUF is intentionally not duplicated
 or automatically requantized; the source artifact and executable are hashed

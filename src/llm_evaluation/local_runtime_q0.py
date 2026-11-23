@@ -76,6 +76,14 @@ Q0_CASE_IDS = (
     "python-comprehension",
     "synthetic-long-context",
 )
+# Exact category projection from the SHA-pinned, unmodified Q0 packet.
+Q0_CASE_CATEGORIES = (
+    "instruction_exactness",
+    "short_factual",
+    "reasoning",
+    "coding",
+    "long_context_retrieval",
+)
 RESOURCE = "llama-device:CUDA0"
 
 
@@ -253,7 +261,9 @@ class Q0Manifest(ClosedRecord):
     client_python_executable_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     packet_sha256: str = Field(default=Q0_PACKET_SHA256, pattern=r"^[0-9a-f]{64}$")
     e002_packet_sha256: str = Field(
-        default=E002_PACKET_SHA256, pattern=r"^[0-9a-f]{64}$"
+        default=E002_PACKET_SHA256,
+        pattern=r"^[0-9a-f]{64}$",
+        description="Frozen expected E-002 development packet reference, not independently measured Q0 input",
     )
     context_tokens: Literal[8192] = 8192
     parallel: Literal[1] = 1
@@ -293,11 +303,20 @@ class Q0Manifest(ClosedRecord):
     @model_validator(mode="after")
     def completed_require_observed_evidence(self) -> Q0Manifest:
         if (
+            self.packet_sha256 != Q0_PACKET_SHA256
+            or self.e002_packet_sha256 != E002_PACKET_SHA256
+        ):
+            raise ValueError(
+                "Q0 and expected E-002 packet identities must match frozen digests"
+            )
+        if (
             len(self.cases) > 5
             or tuple(c.task_id for c in self.cases) != Q0_CASE_IDS[: len(self.cases)]
         ):
             raise ValueError("Q0 results must be a prefix of frozen ordered cases")
         for index, case in enumerate(self.cases, 1):
+            if case.category != Q0_CASE_CATEGORIES[index - 1]:
+                raise ValueError("case category disagrees with frozen Q0 task")
             if case.private_request_file != f"case-{index:02d}-request.json":
                 raise ValueError(
                     "Q0 request evidence filename disagrees with case order"
@@ -329,6 +348,9 @@ class Q0Manifest(ClosedRecord):
             or self.server_log_sha256 is None
             or self.actual_gpu_offload_layers is None
             or self.actual_gpu_total_layers is None
+            or not _full_gpu_offload(
+                self.actual_gpu_offload_layers, self.actual_gpu_total_layers
+            )
             or self.load_readiness_seconds is None
             or self.failure_stage is not None
             or self.failure_code is not None
@@ -377,6 +399,26 @@ class Q0Progress(TypedDict, total=False):
     executable_build: int
     executable_commit: str
     source_reverified: bool
+
+
+class Q0ReadbackScope(ClosedRecord):
+    """Verification receipt: distinguish measured bindings from recorded claims.
+
+    No original /props or /slots response bytes were retained in Q0 schema v2.
+    The capability/build digests are therefore NOT independently verified by
+    this reader; they are only the producer's recorded observations.
+    """
+
+    gpu_offload: Literal["digest_verified_server_log"] = "digest_verified_server_log"
+    software_identity: Literal["verified_same_checkout"] = "verified_same_checkout"
+    qualification_metadata: Literal["recorded_only_not_independently_verified"] = (
+        "recorded_only_not_independently_verified"
+    )
+    unverified_fields: tuple[str, ...] = (
+        "chat_template_sha256",
+        "chat_template_caps_sha256",
+        "build_info_sha256",
+    )
 
 
 class PythonClientIdentity(ClosedRecord):
@@ -519,10 +561,22 @@ def _offload_observation(log_bytes: bytes) -> tuple[int | None, int | None]:
     matches = re.findall(
         rb"offloaded\s+(\d+)\s*/\s*(\d+)\s+layers\s+to\s+GPU", log_bytes
     )
-    if not matches:
+    # Conflicting or absent observations cannot establish a single GPU-layer
+    # identity; accepting the final match alone permits ambiguous loader logs.
+    if not matches or len(set(matches)) != 1:
         return None, None
-    layers, total = matches[-1]
+    layers, total = matches[0]
     return int(layers), int(total)
+
+
+def _full_gpu_offload(offloaded: int | None, total: int | None) -> bool:
+    return (
+        offloaded is not None
+        and total is not None
+        and total > 0
+        and offloaded > 0
+        and offloaded == total
+    )
 
 
 def _request_binding(
@@ -709,7 +763,10 @@ async def _collect(
         reasoning_mode=ReasoningMode.OFF,
         resource=RESOURCE,
     )
+    # A server launch attempt has started, even before its first generation.
+    # BLOCKED is reserved for identity/resource preflight rejection.
     state["failure_stage"] = "startup"
+    state["status"] = "INCOMPLETE"
     started = time.monotonic()
     with server_log.open("xb") as log:
         process = subprocess.Popen(
@@ -818,8 +875,8 @@ async def _collect(
         offloaded, total_layers = _offload_observation(log_bytes)
         state["actual_gpu_offload_layers"] = offloaded
         state["actual_gpu_total_layers"] = total_layers
-        if offloaded is None or total_layers is None or offloaded < total_layers:
-            raise ValueError("CUDA GPU-layer offload not fully observed")
+        if not _full_gpu_offload(offloaded, total_layers):
+            raise ValueError("positive full CUDA GPU-layer offload not observed")
         binding = _request_binding(
             config, artifact, runtime, observation.chat_template_sha256
         )
@@ -991,11 +1048,14 @@ def verify_q0_private_evidence(
     config: Q0Config,
     private_run_dir: Path,
     packet: Q0Packet,
-) -> None:
-    """Independently check the immutable public/privately stored Q0 receipt.
+) -> Q0ReadbackScope:
+    """Verify the retrievable evidence; report *unverified* metadata separately.
 
-    This is a same-host verification: Python executable identity must match.
-    It neither creates generation requests nor connects to a model server.
+    Same-checkout source identity, local Python executable, immutable five-case
+    bytes, and offload loader log are independently checked. The server's
+    capability/build SHA claims cannot be reconstructed without the original
+    qualification response bytes and are explicitly *not* attested here.
+    No inference service connection or GGUF re-execution is performed.
     """
     record = Q0Manifest.model_validate_json(record.model_dump_json())
     if record.status != "COMPLETED":
@@ -1038,8 +1098,26 @@ def verify_q0_private_evidence(
 
     assert record.private_server_log is not None
     assert record.server_log_sha256 is not None
-    if sha256_hex(private_bytes(record.private_server_log)) != record.server_log_sha256:
+    log_bytes = private_bytes(record.private_server_log)
+    if sha256_hex(log_bytes) != record.server_log_sha256:
         raise ValueError("private server log corrupted")
+    offloaded, total = _offload_observation(log_bytes)
+    if (
+        not _full_gpu_offload(offloaded, total)
+        or record.actual_gpu_offload_layers != offloaded
+        or record.actual_gpu_total_layers != total
+    ):
+        raise ValueError(
+            "Q0 offload manifest contradicts digest-verified private server log"
+        )
+    # The exact checkout is checked independently; a syntactically valid
+    # software identity supplied by an untrusted receipt is not evidence.
+    checked_commit, checked_package = software_identity()
+    if (
+        record.software_commit != checked_commit
+        or record.package_source_sha256 != checked_package
+    ):
+        raise ValueError("Q0 software identity does not match this verified checkout")
     assert record.chat_template_sha256 is not None
     assert record.artifact_sha256 is not None
     assert record.executable_sha256 is not None
@@ -1066,6 +1144,8 @@ def verify_q0_private_evidence(
     from .local_runtime_preflight_records import summarize_generation
 
     for task, case in zip(packet.tasks, record.cases, strict=True):
+        if case.task_id != task.id or case.category != task.category:
+            raise ValueError("Q0 case category or task ID differs from frozen packet")
         prepared = prepare_generation(
             binding,
             GenerationRequest(
@@ -1138,6 +1218,7 @@ def verify_q0_private_evidence(
             != case.status
         ):
             raise ValueError("Q0 frozen exact oracle or case classification differs")
+    return Q0ReadbackScope()
 
 
 def run_q0(config: Q0Config) -> Q0Manifest:
@@ -1184,7 +1265,18 @@ def run_q0(config: Q0Config) -> Q0Manifest:
         KeyboardInterrupt,
     ) as exc:
         state["failure_code"] = type(exc).__name__
-        if state.get("cases") or isinstance(exc, KeyboardInterrupt):
+        if (
+            state.get("failure_stage")
+            in {
+                "startup",
+                "qualification",
+                "generation",
+                "cleanup",
+                "source_reverification",
+            }
+            or state.get("cases")
+            or isinstance(exc, KeyboardInterrupt)
+        ):
             state["status"] = "INCOMPLETE"
     state.setdefault("host_baseline", _host_memory())
     record = Q0Manifest.model_validate(
