@@ -218,3 +218,101 @@ attest dynamic-library closure, kernel execution identity or GGUF semantic
 compatibility. If staging, reinspection, hashing or cleanup fails, no `passed`
 qualification is published. The frozen E-002 packet, historical records and
 scientific lifecycle remain unchanged.
+
+### Quantum CUDA Q0 — explicit existing-GGUF qualification (Issue #50)
+
+The opt-in `scripts/run_local_q0.py` adds a separate, DEVELOPMENT-only five-case
+technical qualification of a previously available exact **Qwen3-8B Q4_K_M**
+GGUF. It does **not** alter the historical macOS/Metal managed profile, approve
+or register models, mutate E-002, launch E-002 repeated sampling, download
+weights or use an unowned runtime. The pinned fixture remains byte-for-byte
+`fixtures/local_runtime_preflight_v1.json`. A different checkpoint or runtime
+requires an independently versioned explicit condition and contract; this
+first profile is intentionally not a general inference framework.
+The original 4096-token smoke context is insufficient: llama-server build 12602
+reported 4723 input tokens for the frozen 256-record retrieval case. Q0 fixes
+8192 context tokens so it can execute this unchanged packet, not truncate it.
+
+Invoke `uv run --locked python scripts/run_local_q0.py --help` for all required
+pins. Supply `--artifact`, `--artifact-size`, `--artifact-sha256`,
+`--revision`, `--llama-server`, `--runtime-sha256`, `--runtime-version`,
+`--runtime-build`, `--runtime-commit`, `--packet`, `--public-manifest`,
+`--private-root`, `--alias`, and `--port` explicitly. The full pinned example
+is in the script docstring. The program rejects a mismatched Hub snapshot,
+GGUF size/hash, runtime version/build/hash, frozen packet hash, known conflicting
+inference process, running LM Studio API, or occupied loopback listener before
+launch. The fixed listener excludes port 8080; owned listener/lease and the
+child process must be independently established before calling the five cases.
+
+One formal CUDA0 `llama-server` child uses `--n-gpu-layers 99 --fit off`, one
+slot, 8192 context tokens, at most 128 response tokens, `--reasoning off`,
+Jinja with `enable_thinking=false`, `seed=42` and `temperature=0`. Effective
+model alias, template SHA, build info and context are queried from the server;
+actual offloaded layers require affirmative loader-log evidence. GPU memory is
+host-total sampled by `nvidia-smi`, not model-exclusive allocation; loaded minus
+baseline is a **derived delta**, and a sampled maximum is an **observed lower
+bound on peak usage**. Host RAM available/swap and owned process RSS are
+separate measured sources. No unavailable metric is fabricated.
+
+The immutable public-safe `Q0Manifest` **schema version 2** is a strict Pydantic
+record with status `COMPLETED`, `INCOMPLETE`, or `BLOCKED`, independently
+recorded **expected and observed** model/runtime identity, actual executing
+Python-client version/implementation/executable digest, fixture identity,
+source re-verification, explicit configuration, cleanup result, and five
+`Q0CaseResult` entries when completed. Historical v1 files are not rewritten;
+their ambiguous identity fields and weaker validations are not retroactively
+reinterpreted as v2 evidence. Each case records request-identity and
+request/response SHA-256, finish reason, available usage/timing measurements,
+reasoning/visible-byte counts, and separate `PASS`, `FAIL_ORACLE`,
+`CENSORED_LENGTH`, `OVER_BUDGET`, `EMPTY_VISIBLE`, `MODEL_MISMATCH`,
+`INVALID_RESPONSE`, `MISSING_MEASUREMENT`, `TIMEOUT`, `HTTP_FAILURE`. A valid wrong answer is
+not a technical failure. Exact text equality is used **without normalization**.
+Missing provider counters/timing cannot silently become a qualified case.
+
+The CLI prints the absolute private evidence directory under the supplied
+owner-only `--private-root`, named `q0-<run_id>`. Under this directory, each
+case has an immutable `case-NN-request.json` and, when a credential-screened,
+size-bounded HTTP 200 response was successfully decoded as JSON (even if the
+response **schema is invalid**), `case-NN-response.json`;
+`server.stderr.log` records loader diagnostics. Public manifest fields store only relative filenames and
+hashes, not the prompts, responses, credentials or machine-local private root.
+HTTP failures that occur before safe response evidence is available are
+explicitly classified without inventing response bytes. Every `COMPLETED`
+record is checked against retained private request/response bytes, the
+SHA-pinned frozen packet (including exact task IDs and categories), re-derived
+request identities and exact oracles, and the observed local Python interpreter.
+Same-checkout readback invokes `records.software_identity()` to verify the Git
+commit and measured package-source digest against the current clean, byte-matched
+checkout; other source trees cannot satisfy that same-checkout claim.
+
+The digest-verified `server.stderr.log` is independently parsed for
+unambiguous **positive full CUDA layer offload**, `N/N` with `N > 0`. Both
+counts must match the manifest exactly; `0/0`, `0/N`, missing, conflicting or
+tampered loader-log observations cannot qualify. A loader log records the
+loader's report, not direct proof of every CUDA kernel or linked library.
+
+**Qualification metadata has a narrower scope:** original llama.cpp capability
+and build HTTP response bytes were not retained under schema v2. The
+`chat_template_sha256`, `chat_template_caps_sha256` and `build_info_sha256`
+values remain producer-**recorded observations**, not independently reconstructed
+from retained responses. The verifier returns typed `Q0ReadbackScope` with
+`qualification_metadata="recorded_only_not_independently_verified"` and the
+explicit `unverified_fields`; a mutated such hash does not constitute verified
+original server evidence. The `e002_packet_sha256` field is an exactly enforced,
+frozen **expected reference**, not an independently measured Q0 input.
+
+`verify_q0_private_evidence(record, config, private_run_dir, packet)` checks
+only those claims supported by retrievable evidence. `BLOCKED` describes
+pre-execution identity/resource rejection; failed attempted launches, startup
+and generation are `INCOMPLETE`, including zero-case executions. Verified
+receipts are host/check-out bound; the recorded history is not rewritten.
+Only the invocation-owned child may be stopped. LM Studio is `NOT_TESTED`.
+No completed Q0 receipt implies E-002 acceptance or scientific qualification.
+
+**Trust limitations:** on Linux the large GGUF is intentionally not duplicated
+or automatically requantized; the source artifact and executable are hashed
+before launch and rehashed after child shutdown. This detects ordinary changes,
+but does not attest dynamic libraries or prevent an actively malicious same-UID
+actor from altering and restoring bytes between inspections. Reproducibility
+also requires the exact hardware/runtime condition and raw private evidence;
+one Q0 observation does not establish model reliability or calibration.

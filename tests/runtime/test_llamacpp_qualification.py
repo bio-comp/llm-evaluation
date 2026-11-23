@@ -38,12 +38,60 @@ def test_qualification_validates_binding_slots_and_ignores_fake_digest(tmp_path)
     p.write_bytes(b"exact")
     result = asyncio.run(qualify_llama_server(Fake(str(p)), artifact=p, alias="alias"))
     assert result.total_slots == 1
+    assert len(result.chat_template_caps_sha256) == 64
     assert "verified_model_sha256" not in result.model_dump()
     with pytest.raises(ValueError):
         asyncio.run(qualify_llama_server(Fake(str(p), 2), artifact=p, alias="alias"))
     with pytest.raises(ValueError):
         asyncio.run(
             qualify_llama_server(Fake(str(p), model="other"), artifact=p, alias="alias")
+        )
+
+
+def test_llama_12602_bounded_string_list_capabilities_and_negative_control(tmp_path):
+    p = tmp_path / "model"
+    p.write_bytes(b"exact")
+
+    class ActualBuild(Fake):
+        async def request_json(self, method, path):
+            body, evidence, elapsed = await super().request_json(method, path)
+            if path == "/props":
+                body["chat_template_caps"]["reasoning_effort_levels"] = []
+                body["chat_template_caps"]["reasoning_effort_rejected"] = []
+                body["default_generation_settings"]["n_ctx"] = 4096
+            return body, evidence, elapsed
+
+    observed = asyncio.run(
+        qualify_llama_server(
+            ActualBuild(str(p)),
+            artifact=p,
+            alias="alias",
+            expected_context_tokens=4096,
+        )
+    )
+    assert observed.context_tokens == 4096
+    assert observed.chat_template_caps == (("supports_tools", False),)
+    assert len(observed.chat_template_caps_sha256) == 64
+    with pytest.raises(ValueError, match="context mismatch"):
+        asyncio.run(
+            qualify_llama_server(ActualBuild(str(p)), artifact=p, alias="alias")
+        )
+
+    class UnknownList(ActualBuild):
+        async def request_json(self, method, path):
+            body, evidence, elapsed = await super().request_json(method, path)
+            if path == "/props":
+                body["chat_template_caps"]["unexpected_list"] = []
+            return body, evidence, elapsed
+
+    with pytest.raises(ValueError, match="bounded chat template caps"):
+        asyncio.run(
+            qualify_llama_server(
+                UnknownList(str(p)),
+                artifact=p,
+                alias="alias",
+                expected_context_tokens=4096,
+            )
         )
 
 
@@ -68,7 +116,9 @@ def test_known_process_conflict_is_not_global_exclusivity():
 
 def test_retired_ollama_is_not_part_of_current_inference_conflict_vocabulary():
     assert (
-        classify_processes("444 /opt/homebrew/bin/ollama runner --model historical", set())
+        classify_processes(
+            "444 /opt/homebrew/bin/ollama runner --model historical", set()
+        )
         is ExternalConflictStatus.NO_KNOWN_CONFLICT
     )
 
@@ -78,7 +128,9 @@ def test_qualification_hashes_exact_template_and_checks_effective_context(tmp_pa
     p.write_bytes(b"exact")
     probe = Fake(str(p))
     first = asyncio.run(qualify_llama_server(probe, artifact=p, alias="alias"))
-    assert first.chat_template_sha256 == hashlib.sha256(b"synthetic-template").hexdigest()
+    assert (
+        first.chat_template_sha256 == hashlib.sha256(b"synthetic-template").hexdigest()
+    )
     assert first.chat_template_caps == (("supports_tools", False),)
     assert first.build_info == "synthetic-build"
     assert first.context_tokens == 2048
@@ -90,7 +142,9 @@ def test_qualification_hashes_exact_template_and_checks_effective_context(tmp_pa
                 body["chat_template"] = "changed-template"
             return body, evidence, elapsed
 
-    changed = asyncio.run(qualify_llama_server(Changed(str(p)), artifact=p, alias="alias"))
+    changed = asyncio.run(
+        qualify_llama_server(Changed(str(p)), artifact=p, alias="alias")
+    )
     assert changed.chat_template_sha256 != first.chat_template_sha256
 
     class Missing(Fake):
@@ -143,7 +197,10 @@ def test_exact_llama_timing_projection_leaves_absent_fields_unknown():
 
 
 def test_ambiguous_process_line_stays_unverified():
-    assert classify_processes("malformed process line", set()) is ExternalConflictStatus.UNVERIFIED
+    assert (
+        classify_processes("malformed process line", set())
+        is ExternalConflictStatus.UNVERIFIED
+    )
 
 
 def test_owned_listener_probe_distinguishes_loopback_and_wildcard():
@@ -156,9 +213,13 @@ def test_owned_listener_probe_distinguishes_loopback_and_wildcard():
         "s=socket.socket();s.bind((sys.argv[1],0));s.listen(1);"
         "print(s.getsockname()[1],flush=True);time.sleep(10)"
     )
-    for host, expected in (("127.0.0.1", "loopback_verified"), ("0.0.0.0", "wildcard_detected")):
+    for host, expected in (
+        ("127.0.0.1", "loopback_verified"),
+        ("0.0.0.0", "wildcard_detected"),
+    ):
         child = subprocess.Popen(
-            [sys.executable, "-c", code, host], stdout=subprocess.PIPE,
+            [sys.executable, "-c", code, host],
+            stdout=subprocess.PIPE,
             text=True,
         )
         try:
@@ -198,7 +259,9 @@ def test_lm_studio_gui_without_server_is_not_automatically_a_conflict(monkeypatc
     import shutil
 
     monkeypatch.setattr(qualification.subprocess, "run", fake_run)
-    monkeypatch.setattr(shutil, "which", lambda name: "/fake/lms" if name == "lms" else None)
+    monkeypatch.setattr(
+        shutil, "which", lambda name: "/fake/lms" if name == "lms" else None
+    )
     assert (
         qualification.probe_known_external_conflicts()
         is ExternalConflictStatus.NO_KNOWN_CONFLICT
@@ -211,13 +274,7 @@ def test_lm_studio_owned_configured_listener_is_known_conflict(monkeypatch):
     import subprocess
 
     ps_text = "222 /Applications/LM Studio.app/Contents/MacOS/LM Studio\n"
-    listener = (
-        "p222\n"
-        "cLM Studio\n"
-        "f81\n"
-        "n127.0.0.1:43210\n"
-        "TST=LISTEN\n"
-    )
+    listener = "p222\ncLM Studio\nf81\nn127.0.0.1:43210\nTST=LISTEN\n"
 
     def fake_run(argv, **kwargs):
         if argv[:3] == ["ps", "-axo", "pid=,args="]:
@@ -233,7 +290,9 @@ def test_lm_studio_owned_configured_listener_is_known_conflict(monkeypatch):
         raise AssertionError(f"unexpected command: {argv!r}")
 
     monkeypatch.setattr(qualification.subprocess, "run", fake_run)
-    monkeypatch.setattr(shutil, "which", lambda name: "/fake/lms" if name == "lms" else None)
+    monkeypatch.setattr(
+        shutil, "which", lambda name: "/fake/lms" if name == "lms" else None
+    )
     assert (
         qualification.probe_known_external_conflicts()
         is ExternalConflictStatus.CONFLICT_DETECTED
@@ -259,7 +318,9 @@ def test_malformed_listener_observation_is_unverified(monkeypatch):
         raise AssertionError(f"unexpected command: {argv!r}")
 
     monkeypatch.setattr(qualification.subprocess, "run", fake_run)
-    monkeypatch.setattr(shutil, "which", lambda name: "/fake/lms" if name == "lms" else None)
+    monkeypatch.setattr(
+        shutil, "which", lambda name: "/fake/lms" if name == "lms" else None
+    )
     assert (
         qualification.probe_known_external_conflicts()
         is ExternalConflictStatus.UNVERIFIED
@@ -293,14 +354,18 @@ def test_qualification_requires_healthy_endpoint_and_unambiguous_model(tmp_path)
 
     for invalid in (Unhealthy, DuplicateAlias):
         with pytest.raises(ValueError):
-            asyncio.run(qualify_llama_server(invalid(str(p)), artifact=p, alias="alias"))
-
+            asyncio.run(
+                qualify_llama_server(invalid(str(p)), artifact=p, alias="alias")
+            )
 
 
 def test_formal_launch_pins_jinja_even_when_build_has_a_default(tmp_path):
     """A reasoning-relevant template engine setting must be explicit on the wire."""
     from llm_evaluation.runtime.llamacpp.lifecycle import (
-        ManagedServerDeclaration, ManagedServerMode, ReasoningMode, build_launch,
+        ManagedServerDeclaration,
+        ManagedServerMode,
+        ReasoningMode,
+        build_launch,
     )
 
     executable = tmp_path / "fake-server"
@@ -308,8 +373,10 @@ def test_formal_launch_pins_jinja_even_when_build_has_a_default(tmp_path):
     executable.write_bytes(b"fixture executable")
     artifact.write_bytes(b"fixture weights")
     declaration = ManagedServerDeclaration(
-        executable=str(executable), artifact=str(artifact),
-        alias="fixture", mode=ManagedServerMode.FORMAL,
+        executable=str(executable),
+        artifact=str(artifact),
+        alias="fixture",
+        mode=ManagedServerMode.FORMAL,
         reasoning_mode=ReasoningMode.OFF,
     )
     argv, _, _ = build_launch(declaration, 30099)

@@ -2,6 +2,8 @@
 
 from enum import StrEnum
 
+from .evidence import RawResponseEvidence
+
 
 class FailureKind(StrEnum):
     CONNECT_TIMEOUT = "connect_timeout"
@@ -31,11 +33,15 @@ class RuntimeFailure(RuntimeError):
         phase: FailurePhase = FailurePhase.RESPONSE_RECEIVED,
         remote_completion_unknown: bool = False,
         status_code: int | None = None,
+        evidence: RawResponseEvidence | None = None,
     ):
         self.kind = kind
         self.phase = phase
         self.remote_completion_unknown = remote_completion_unknown
+        if evidence is not None and kind is not FailureKind.INVALID_RESPONSE:
+            raise ValueError("raw evidence permitted only for invalid parsed response")
         self.status_code = status_code
+        self.evidence = evidence
         super().__init__(
             kind.value + (f" HTTP {status_code}" if status_code is not None else "")
         )

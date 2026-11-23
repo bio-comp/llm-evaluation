@@ -172,13 +172,13 @@ def test_outer_asyncio_deadline_is_not_bypassed_by_cancellation_wrapping(server)
         asyncio.run(run())
 
 
-
 def test_generic_transport_has_no_llamacpp_mode():
     import inspect
 
-    assert "llamacpp_exact_build" not in inspect.signature(
-        AsyncOpenAICompatibleTransport
-    ).parameters
+    assert (
+        "llamacpp_exact_build"
+        not in inspect.signature(AsyncOpenAICompatibleTransport).parameters
+    )
 
 
 def test_generic_transport_leaves_provider_specific_timings_untrusted(server):
@@ -187,15 +187,79 @@ def test_generic_transport_leaves_provider_specific_timings_untrusted(server):
     from llm_evaluation.runtime.preparation import prepare_generation
 
     binding, request = native_binding()
-    Handler.payload = json.dumps({
-        "model": binding.backend.model_id,
-        "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
-        "timings": {"prompt_ms": 12.5, "predicted_ms": 20},
-    }).encode()
-    execution = asyncio.run(AsyncOpenAICompatibleTransport(
-        OperationalEndpoint(base_url=server), timeouts=binding.timeouts,
-    ).generate(prepare_generation(binding, request)))
+    Handler.payload = json.dumps(
+        {
+            "model": binding.backend.model_id,
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "timings": {"prompt_ms": 12.5, "predicted_ms": 20},
+        }
+    ).encode()
+    execution = asyncio.run(
+        AsyncOpenAICompatibleTransport(
+            OperationalEndpoint(base_url=server),
+            timeouts=binding.timeouts,
+        ).generate(prepare_generation(binding, request))
+    )
     assert execution.timing.prompt_processing_seconds is None
     assert execution.timing.generation_seconds is None
     assert execution.timing.queue_admission_wait_seconds is None
     assert execution.timing.server_processing_wait_seconds is None
+
+
+def test_invalid_successful_http_response_keeps_only_screened_raw_evidence(server):
+    """R1-04: invalid projection must retain the actually received bounded bytes."""
+    from test_preparation import native_binding
+    from llm_evaluation.runtime.preparation import prepare_generation
+    from llm_evaluation.runtime.codec import sha256_hex
+
+    binding, generation = native_binding()
+    prepared = prepare_generation(binding, generation)
+    Handler.payload = b'{"model":"synthetic","choices":[{"message":{"role":"assistant","content":7},"finish_reason":"stop"}]}'
+    transport = AsyncOpenAICompatibleTransport(
+        OperationalEndpoint(base_url=server),
+        timeouts=binding.timeouts,
+    )
+    with pytest.raises(RuntimeFailure) as error:
+        asyncio.run(transport.generate(prepared))
+    assert error.value.kind is FailureKind.INVALID_RESPONSE
+    assert error.value.evidence is not None
+    assert error.value.evidence.body == Handler.payload
+    assert error.value.evidence.body_sha256 == sha256_hex(Handler.payload)
+    assert Handler.payload.decode() not in str(error.value)
+    assert error.value.__context__ is None
+
+
+@pytest.mark.parametrize("failure", ["invalid_json", "sensitive", "oversize"])
+def test_invalid_http_without_screened_response_has_no_raw_evidence(server, failure):
+    from test_preparation import native_binding
+    from llm_evaluation.runtime.preparation import prepare_generation
+
+    binding, generation = native_binding()
+    prepared = prepare_generation(binding, generation)
+    if failure == "invalid_json":
+        Handler.payload = b'{"duplicate":1,"duplicate":2}'
+    elif failure == "sensitive":
+        Handler.payload = b'{"secret":"test-key"}'
+    else:
+        Handler.payload = b"x" * 101
+    transport = AsyncOpenAICompatibleTransport(
+        OperationalEndpoint(base_url=server),
+        authorization=BearerAuthorization("test-key"),
+        timeouts=binding.timeouts,
+        max_response_bytes=100,
+    )
+    with pytest.raises(RuntimeFailure) as error:
+        asyncio.run(transport.generate(prepared))
+    expected = {
+        "invalid_json": FailureKind.INVALID_JSON,
+        "sensitive": FailureKind.CREDENTIAL_REFLECTION,
+        "oversize": FailureKind.RESPONSE_TOO_LARGE,
+    }[failure]
+    assert error.value.kind is expected
+    assert error.value.evidence is None
+    assert "test-key" not in repr(error.value)
