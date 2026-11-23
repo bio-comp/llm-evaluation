@@ -1,0 +1,164 @@
+{
+  "schema_version": 1,
+  "packet_id": "e002-q0-multidomain-dev-v1",
+  "phase": "DEVELOPMENT",
+  "purpose": "Public-safe synthetic Q0 reference/scoring demonstration; NOT the v1 llama-server runner, not Q1 or FINAL",
+  "cases": [
+    {
+      "case_id": "sanity-arithmetic",
+      "category": "sanity",
+      "scoring_method": "INTEGER",
+      "prompt": "Compute (17 * 23) - 19. Reply with the decimal integer only.",
+      "reference": {
+        "reference_id": "sanity-arithmetic-ref-v1",
+        "source": "arithmetic expression 17 * 23 - 19",
+        "rationale": "17*23=391 and 391-19=372; no model-based reference",
+        "expected": "372",
+        "unit_test_ref": null
+      }
+    },
+    {
+      "case_id": "sanity-record-map",
+      "category": "sanity",
+      "scoring_method": "JSON_STRUCTURAL",
+      "prompt": "Data: Beni=7; Ada=12; Cora=5. Return a single JSON object mapping each name to its integer value; include no other keys.",
+      "reference": {
+        "reference_id": "sanity-record-map-ref-v1",
+        "source": "source text Beni=7; Ada=12; Cora=5",
+        "rationale": "Direct data transcription; JSON key order and whitespace are irrelevant",
+        "expected": "{\"Ada\":12,\"Beni\":7,\"Cora\":5}",
+        "unit_test_ref": null
+      }
+    },
+    {
+      "case_id": "sanity-tag-extraction",
+      "category": "sanity",
+      "scoring_method": "JSON_STRUCTURAL",
+      "prompt": "Synthetic log: line A tag GX-17; line B has no tag; line C tag QZ-04. Return one JSON array of all tags in source order.",
+      "reference": {
+        "reference_id": "sanity-tag-extraction-ref-v1",
+        "source": "three-line synthetic log specified in prompt",
+        "rationale": "Literal two-tag extraction in source order",
+        "expected": "[\"GX-17\",\"QZ-04\"]",
+        "unit_test_ref": null
+      }
+    },
+    {
+      "case_id": "coding-median",
+      "category": "coding",
+      "scoring_method": "SANDBOX_DEFERRED",
+      "prompt": "Implement Python 3 def median(xs: list[int]) -> float: returning median for a nonempty list; include a correct median for even-length inputs. Return Python source only.",
+      "reference": {
+        "reference_id": "coding-median-ref-v1",
+        "source": "trusted test vectors including [1,2,3,4]->2.5 and [-5,-1]->-3.0",
+        "rationale": "No model-output execution; vectors/alternative implementations are reviewed and tested as trusted fixtures",
+        "expected": null,
+        "unit_test_ref": "tests/reference_q0_multidomain.py::test_median_references"
+      }
+    },
+    {
+      "case_id": "coding-clamp-debug",
+      "category": "coding",
+      "scoring_method": "SANDBOX_DEFERRED",
+      "prompt": "Fix Python 3 function def clamp(x:int, low:int, high:int)->int whose implementation wrongly uses min(max(x,low), high-1). Correct inclusive upper bound; return complete fixed function source only.",
+      "reference": {
+        "reference_id": "coding-clamp-debug-ref-v1",
+        "source": "trusted boundary vectors (x=10, low=0, high=10) -> 10",
+        "rationale": "Execution deferred; two equivalent trusted repairs and a known off-by-one bug are test fixtures",
+        "expected": null,
+        "unit_test_ref": "tests/reference_q0_multidomain.py::test_clamp_references"
+      }
+    },
+    {
+      "case_id": "coding-tool-call",
+      "category": "coding",
+      "scoring_method": "JSON_STRUCTURAL",
+      "prompt": "For the synthetic API, request sorting [3,1,2] ascending. Return only one JSON object with exactly keys tool and arguments. tool must be 'sort_numbers'; arguments must have keys numbers and descending, with numbers [3,1,2] and descending false.",
+      "reference": {
+        "reference_id": "coding-tool-call-ref-v1",
+        "source": "synthetic fixed function-call specification in prompt",
+        "rationale": "Closed exact JSON shape and booleans; key order/whitespace are irrelevant",
+        "expected": "{\"tool\":\"sort_numbers\",\"arguments\":{\"numbers\":[3,1,2],\"descending\":false}}",
+        "unit_test_ref": null
+      }
+    },
+    {
+      "case_id": "science-pooled-rate",
+      "category": "scientific_reasoning",
+      "scoring_method": "RATIONAL",
+      "prompt": "Study A: 6 successes from 20 trials; Study B: 12 successes from 30 trials. Compute the pooled success fraction (total successes divided by total trials). Return an exact simplified fraction OR an exact terminating decimal; no other text.",
+      "reference": {
+        "reference_id": "science-pooled-rate-ref-v1",
+        "source": "6+12 successes; 20+30 trials; simplification 18/50 = 9/25",
+        "rationale": "Exact Fraction arithmetic, decimal exactness without floats",
+        "expected": "9/25",
+        "unit_test_ref": null
+      }
+    },
+    {
+      "case_id": "science-ci-decision",
+      "category": "scientific_reasoning",
+      "scoring_method": "EXACT_TEXT",
+      "prompt": "Under this supplied decision rule only: reject H0 iff a reported 95% confidence interval excludes 0. Interval = [-0.1, 0.4]. Reply exactly DO_NOT_REJECT or REJECT.",
+      "reference": {
+        "reference_id": "science-ci-decision-ref-v1",
+        "source": "given interval [-0.1,0.4] and rule excludes zero",
+        "rationale": "The interval includes zero; no claim that the rule validates substantive science",
+        "expected": "DO_NOT_REJECT",
+        "unit_test_ref": null
+      }
+    },
+    {
+      "case_id": "science-causal-claim",
+      "category": "scientific_reasoning",
+      "scoring_method": "EXPERT_DEFERRED",
+      "prompt": "A synthetic observational study reports an association between coffee intake and exam scores; it did not randomize intake or adjust for confounders. Respond to 'Does the excerpt prove coffee causes better scores?' in at most two sentences with appropriate uncertainty.",
+      "reference": {
+        "reference_id": "science-causal-claim-ref-v1",
+        "source": "synthetic observational association, no adjustment, no randomized intervention",
+        "rationale": "Expert assessment of evidence limits and calibrated abstention; cannot establish actual causal effect",
+        "expected": null,
+        "unit_test_ref": null
+      }
+    },
+    {
+      "case_id": "general-exact-steps",
+      "category": "general_instruction_following",
+      "scoring_method": "EXACT_TEXT",
+      "prompt": "Write exactly these three lines, with one newline between lines and nothing else: STEP-1, STEP-2, DONE. Use these as literal lines.",
+      "reference": {
+        "reference_id": "general-exact-steps-ref-v1",
+        "source": "verbatim expected three-line layout",
+        "rationale": "Exact-byte visible response; whitespace changes fail by contract",
+        "expected": "STEP-1\nSTEP-2\nDONE",
+        "unit_test_ref": null
+      }
+    },
+    {
+      "case_id": "general-faithful-summary",
+      "category": "general_instruction_following",
+      "scoring_method": "EXPERT_DEFERRED",
+      "prompt": "Summarize faithfully in one sentence: 'In a synthetic six-person survey, four preferred option A and two option B; no random sampling was performed.' Do not claim representativeness.",
+      "reference": {
+        "reference_id": "general-faithful-summary-ref-v1",
+        "source": "synthetic sample six, 4 to 2 and nonrandom sample",
+        "rationale": "Expert checking of faithful coverage, uncertainty, brevity; no exact universal wording",
+        "expected": null,
+        "unit_test_ref": null
+      }
+    },
+    {
+      "case_id": "general-multistep-followup",
+      "category": "general_instruction_following",
+      "scoring_method": "EXPERT_DEFERRED",
+      "prompt": "A user requests a deployment plan but has not specified the target operating system or security boundary. Give a short two-step planning response, and ask one concrete clarification that materially changes execution.",
+      "reference": {
+        "reference_id": "general-multistep-followup-ref-v1",
+        "source": "missing operating system and trust-boundary requirements",
+        "rationale": "Expert-dependent utility/correct prioritization; no single objective acceptable text",
+        "expected": null,
+        "unit_test_ref": null
+      }
+    }
+  ]
+}
