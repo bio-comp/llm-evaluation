@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -285,3 +286,100 @@ def test_r2_corrupt_case_bytes_still_rejected(
     file.write_bytes(file.read_bytes() + b"corrupt")
     with pytest.raises(ValueError, match="evidence|digest"):
         readback(record, reader_config(tmp_path), evidence_dir)
+
+
+@pytest.mark.parametrize(
+    "readback_failure",
+    [
+        ValueError("source identity mismatch"),
+        subprocess.CalledProcessError(
+            128,
+            ["git", "status", "--porcelain"],
+            output=b"private information must not escape",
+            stderr=b"credential or path must not escape",
+        ),
+    ],
+    ids=["value_error", "git_nonzero_exit"],
+)
+def test_r3_git_readback_failure_publishes_safe_immutable_incomplete_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    readback_failure: ValueError | subprocess.CalledProcessError,
+) -> None:
+    # The synthetic runner executes all five generation cases and the actual
+    # private-evidence verifier. Only its second software-identity call fails.
+    record, private_dir = synthetic_completed_run(
+        tmp_path, monkeypatch, readback_source_failure=readback_failure
+    )
+    assert record.status == "INCOMPLETE"
+    assert record.failure_stage == "evidence_readback"
+    assert record.failure_code == "private_evidence_invalid"
+    assert len(record.cases) == 5
+    assert all(case.status == "PASS" for case in record.cases)
+    assert record.cleanup_verified is True
+    assert record.source_reverified is True  # GGUF/executable, not Git readback
+    assert sorted(path.name for path in private_dir.iterdir()) == sorted(
+        ["server.stderr.log"]
+        + [
+            f"case-{i:02d}-{kind}.json"
+            for i in range(1, 6)
+            for kind in ("request", "response")
+        ]
+    )
+
+    public_path = tmp_path / "public.json"
+    public_bytes = public_path.read_bytes()
+    assert Q0Manifest.model_validate_json(public_bytes) == record, (
+        "public receipt must be a strict, independently readable INCOMPLETE record"
+    )
+    for sensitive in (
+        b"private information",
+        b"credential",
+        b"git",
+        str(private_dir).encode(),
+    ):
+        assert sensitive not in public_bytes
+
+    # A completed execution that failed post-collection validation must not
+    # replace, truncate or overwrite the immutable failure receipt.
+    replay = config(tmp_path / "replay").model_copy(
+        update={"public_manifest": public_path}
+    )
+    with pytest.raises(FileExistsError, match="manifest"):
+        run_q0(replay)
+    assert public_path.read_bytes() == public_bytes
+    assert len(list(private_dir.iterdir())) == 11
+
+
+def test_r3_successful_source_readback_keeps_completed_and_immutable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record, private_dir = synthetic_completed_run(tmp_path, monkeypatch)
+    assert record.status == "COMPLETED"
+    assert record.failure_stage is None
+    assert record.failure_code is None
+    assert len(list(private_dir.iterdir())) == 11
+    public_path = tmp_path / "public.json"
+    original = public_path.read_bytes()
+    assert Q0Manifest.model_validate_json(original) == record
+    replay = config(tmp_path / "replay").model_copy(
+        update={"public_manifest": public_path}
+    )
+    with pytest.raises(FileExistsError, match="manifest"):
+        run_q0(replay)
+    assert public_path.read_bytes() == original
+
+
+def test_r3_unexpected_programmer_error_is_not_swallowed_by_readback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(TypeError, match="unexpected programmer defect"):
+        synthetic_completed_run(
+            tmp_path,
+            monkeypatch,
+            readback_source_failure=TypeError("unexpected programmer defect"),
+        )
+    assert not (tmp_path / "public.json").exists()
+    evidence_dirs = list((tmp_path / "private").glob("q0-*"))
+    assert len(evidence_dirs) == 1
+    assert len(list(evidence_dirs[0].iterdir())) == 11

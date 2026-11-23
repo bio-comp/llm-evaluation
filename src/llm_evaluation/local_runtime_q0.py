@@ -1306,7 +1306,7 @@ def run_q0(config: Q0Config) -> Q0Manifest:
         assert private_dir is not None
         try:
             verify_q0_private_evidence(record, config, private_dir, packet)
-        except (ValueError, OSError):
+        except (ValueError, OSError, subprocess.SubprocessError):
             record = Q0Manifest.model_validate(
                 {
                     **record.model_dump(),

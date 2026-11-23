@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import Mock
@@ -239,6 +240,10 @@ def synthetic_completed_run(
     cleanup_lease_fails: bool = False,
     corrupt_source_after_launch: bool = False,
     synthetic_offload_log: bytes = b"llama_model_load: offloaded 37/37 layers to GPU\n",
+    readback_source_failure: ValueError
+    | subprocess.CalledProcessError
+    | TypeError
+    | None = None,
 ) -> tuple[Q0Manifest, Path]:
     c = config(tmp_path)
     patch_identifiers(monkeypatch, c)
@@ -254,9 +259,23 @@ def synthetic_completed_run(
         monkeypatch.setattr(
             "llm_evaluation.local_runtime_q0.hash_model_artifact", source_hash
         )
+    identity_reads = 0
+
+    def synthetic_source_identity() -> tuple[str, str]:
+        nonlocal identity_reads
+        identity_reads += 1
+        if identity_reads == 2 and readback_source_failure is not None:
+            # Deliberately fail only inside the genuine post-collection verifier,
+            # after five requests, five responses and the owned server log exist.
+            evidence_dirs = list(c.private_root.glob("q0-*"))
+            assert len(evidence_dirs) == 1
+            assert len(list(evidence_dirs[0].iterdir())) == 11
+            raise readback_source_failure
+        return "a" * 40, "b" * 64
+
     monkeypatch.setattr(
         "llm_evaluation.local_runtime_q0.software_identity",
-        lambda: ("a" * 40, "b" * 64),
+        synthetic_source_identity,
     )
     monkeypatch.setattr(
         "llm_evaluation.local_runtime_q0.probe_known_external_conflicts",
