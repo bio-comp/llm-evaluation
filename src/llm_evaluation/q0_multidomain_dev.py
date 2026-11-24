@@ -32,6 +32,56 @@ MAX_ANSWER_CHARS = 8192
 PACKET_ID = "e002-q0-multidomain-dev-v1"
 PACKET_SHA256 = "b2749f6dc23ac42d4632cf1fe1d1c44150a3215486109e5ca82929406c7518d9"
 
+CONTROL_SOURCE_SHA256 = (
+    "2371f2e019f3b9862c7ec28a75c5486888efdf9b31c297348f5dd883db3b306a"
+)
+# Frozen v1 synthetic controls after R1 qualification correction. IDs and source
+# bytes are both independently pinned; retaining only superficial coverage
+# cannot promote a weakened/replaced instrument to "qualified".
+CONTROL_INVENTORY: tuple[str, ...] = (
+    "sanity-arithmetic-01",
+    "sanity-arithmetic-02",
+    "sanity-arithmetic-03",
+    "sanity-record-map-01",
+    "sanity-record-map-02",
+    "sanity-record-map-03",
+    "sanity-record-map-04",
+    "sanity-record-map-05",
+    "sanity-tag-extraction-01",
+    "sanity-tag-extraction-02",
+    "sanity-tag-extraction-03",
+    "sanity-tag-extraction-04",
+    "coding-median-01",
+    "coding-median-02",
+    "coding-clamp-debug-01",
+    "coding-clamp-debug-02",
+    "coding-tool-call-01",
+    "coding-tool-call-02",
+    "coding-tool-call-03",
+    "coding-tool-call-04",
+    "coding-tool-call-05",
+    "science-pooled-rate-01",
+    "science-pooled-rate-02",
+    "science-pooled-rate-03",
+    "science-pooled-rate-04",
+    "science-pooled-rate-05",
+    "science-pooled-rate-06",
+    "science-pooled-rate-07",
+    "science-pooled-rate-08",
+    "science-ci-decision-01",
+    "science-ci-decision-02",
+    "science-ci-decision-03",
+    "science-causal-claim-01",
+    "science-causal-claim-02",
+    "general-exact-steps-01",
+    "general-exact-steps-02",
+    "general-exact-steps-03",
+    "general-faithful-summary-01",
+    "general-faithful-summary-02",
+    "general-multistep-followup-01",
+    "general-multistep-followup-02",
+)
+
 # These are independently recorded reference-content fingerprints, not
 # dynamically accepted hashes from the same untrusted packet being validated.
 # Changing a source, criterion, or expected value requires a new version/anchors.
@@ -155,13 +205,15 @@ class Q0ControlSet(ClosedModel):
     schema_version: Literal[1]
     packet_id: Literal["e002-q0-multidomain-dev-v1"]
     packet_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    controls: tuple[Q0Control, ...] = Field(min_length=24)
+    controls: tuple[Q0Control, ...] = Field(min_length=41, max_length=41)
 
     @model_validator(mode="after")
     def unique_controls(self) -> Q0ControlSet:
         ids = [c.control_id for c in self.controls]
         if len(ids) != len(set(ids)):
             raise ValueError("duplicate control identity")
+        if tuple(ids) != CONTROL_INVENTORY:
+            raise ValueError("control inventory differs from qualified v1 instrument")
         return self
 
 
@@ -231,10 +283,17 @@ def load_packet(path: Path, *, source_bytes: bytes | None = None) -> LoadedPacke
     )
 
 
+def _validate_control_source(source: bytes) -> None:
+    """Require reviewed v1 control source bytes, not merely plausible labels."""
+    if sha256_hex(source) != CONTROL_SOURCE_SHA256:
+        raise ValueError("control source differs from qualified v1 instrument")
+
+
 def load_controls(
     path: Path, packet: LoadedPacket, *, source_bytes: bytes | None = None
 ) -> Q0ControlSet:
     blob = path.read_bytes() if source_bytes is None else source_bytes
+    _validate_control_source(blob)
     control_set = Q0ControlSet.model_validate_json(blob)
     if (
         control_set.packet_sha256 != packet.packet_sha256
@@ -255,7 +314,10 @@ def _parse_rational(raw: str) -> Fraction:
         raise ValueError("invalid rational syntax")
     if "/" in raw:
         numerator, denominator = raw.split("/")
-        return Fraction(int(numerator), int(denominator))
+        value = Fraction(int(numerator), int(denominator))
+        if value.numerator != int(numerator) or value.denominator != int(denominator):
+            raise ValueError("fraction is not simplified")
+        return value
     return Fraction(Decimal(raw))
 
 
@@ -293,6 +355,12 @@ def evaluate_response(packet: LoadedPacket, case_id: str, answer: str) -> Q0Outc
         raise ValueError("unknown case identity")
     if not isinstance(answer, str):
         raise TypeError("answer must be text")
+    try:
+        answer_bytes = answer.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        # Reject before any scoring or digest: an unpaired surrogate has no
+        # genuine UTF-8 source-byte identity. Never normalize it or invent bytes.
+        raise ValueError("answer is not valid UTF-8 text") from None
     if case.scoring_method == "SANDBOX_DEFERRED":
         disposition: Disposition = "NOT_AUTOMATICALLY_SCORABLE"
         reason = "requires_qualified_code_sandbox"
@@ -322,7 +390,7 @@ def evaluate_response(packet: LoadedPacket, case_id: str, answer: str) -> Q0Outc
         packet_version=packet.packet.schema_version,
         packet_sha256=packet.packet_sha256,
         packet_source_size_bytes=packet.packet_size_bytes,
-        answer_sha256=sha256_hex(answer.encode("utf-8")),
+        answer_sha256=sha256_hex(answer_bytes),
         disposition=disposition,
         reason_code=reason,
     )
@@ -387,7 +455,11 @@ def readiness_report(packet: LoadedPacket) -> Q0Readiness:
 def qualification_report(
     packet: LoadedPacket, controls: Q0ControlSet, controls_source: bytes
 ) -> Q0QualificationReport:
-    results = evaluate_all_controls(packet, controls)
+    _validate_control_source(controls_source)
+    source_controls = Q0ControlSet.model_validate_json(controls_source)
+    if source_controls != controls:
+        raise ValueError("control source and evaluated typed controls differ")
+    results = evaluate_all_controls(packet, source_controls)
     return Q0QualificationReport(
         readiness=readiness_report(packet),
         controls_sha256=sha256_hex(controls_source),

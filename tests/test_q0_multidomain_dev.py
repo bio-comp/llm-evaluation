@@ -121,7 +121,7 @@ def test_all_controls_match_independently_labeled_expectations() -> None:
     p = load_packet(PACKET)
     c = load_controls(CONTROLS, p)
     outcomes = evaluate_all_controls(p, c)
-    assert len(outcomes) == 39
+    assert len(outcomes) == 41
     assert {x.disposition for x in outcomes} == {
         "PASS",
         "FAIL",
@@ -160,7 +160,7 @@ def test_known_bad_cannot_pass(case_id: str, answer: str) -> None:
             "coding-tool-call",
             '{"arguments":{"descending":false,"numbers":[3,1,2]},"tool":"sort_numbers"}',
         ),
-        ("science-pooled-rate", "18/50"),
+        ("science-pooled-rate", "0.360"),
         ("science-pooled-rate", "0.36"),
     ],
 )
@@ -224,7 +224,7 @@ def test_unknown_case_extra_fields_and_control_packet_mismatch_rejected(
         Q0Packet.model_validate(changed)
     controls = json.loads(CONTROLS.read_bytes())
     controls["packet_sha256"] = "0" * 64
-    with pytest.raises(ValueError, match="packet"):
+    with pytest.raises(ValueError, match="control source"):
         load_controls(CONTROLS, p, source_bytes=json.dumps(controls).encode())
 
 
@@ -252,9 +252,6 @@ def test_integer_oracle_rejects_any_other_integer(n: int) -> None:
 
 @given(n=st.integers(min_value=1, max_value=999))
 def test_valid_equivalent_fraction_forms_never_false_reject(n: int) -> None:
-    assert (
-        evaluate_response(
-            load_packet(PACKET), "science-pooled-rate", f"{9 * n}/{25 * n}"
-        ).disposition
-        == "PASS"
-    )
+    assert evaluate_response(
+        load_packet(PACKET), "science-pooled-rate", f"{9 * n}/{25 * n}"
+    ).disposition == ("PASS" if n == 1 else "FAIL")

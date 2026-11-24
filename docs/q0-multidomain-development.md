@@ -16,9 +16,14 @@ It is neither a FINAL benchmark nor Q1 screening. E-002 remains PLANNED.
 - Each result records packet ID/version/byte count/SHA-256, case ID/category,
   scoring method, reference ID/content SHA-256, synthetic answer SHA-256,
   disposition and a stable reason code. No private artifact is disclosed.
-- Control fixture: fixtures/q0_multidomain_controls_dev_v1.json, with 39
+- Control fixture: fixtures/q0_multidomain_controls_dev_v1.json, with 41
   independently labeled positive, negative, alternative and deferred controls
-  bound to this packet source hash. The CLI reports its own source SHA-256.
+  bound to this packet source hash. The reviewed v1 control source SHA-256 is
+  2371f2e019f3b9862c7ec28a75c5486888efdf9b31c297348f5dd883db3b306a.
+  The exact source digest and all 41 control identities/order are pinned; an
+  altered, weakened, or substituting source cannot qualify. Reported source
+  bytes are revalidated and compared with the evaluated typed controls before
+  controls_qualified=true can be returned.
 - Reproduce: uv run --locked python scripts/evaluate_q0_multidomain_dev.py
 - Reusable typed API: load_packet, load_controls, evaluate_response,
   evaluate_all_controls, readiness_report and qualification_report.
@@ -30,7 +35,7 @@ It is neither a FINAL benchmark nor Q1 screening. E-002 remains PLANNED.
 | --- | --- | --- |
 | Sanity | sanity-arithmetic, sanity-record-map, sanity-tag-extraction | Exact decimal integer, strict structured JSON map and ordered tag array |
 | Coding | coding-median, coding-clamp-debug, coding-tool-call | First two SANDBOX_DEFERRED; third structurally exact JSON tool-call arguments |
-| Scientific reasoning | science-pooled-rate, science-ci-decision, science-causal-claim | Fraction 9/25 or exact equivalent decimal, supplied CI rule, EXPERT_DEFERRED causal interpretation |
+| Scientific reasoning | science-pooled-rate, science-ci-decision, science-causal-claim | Reduced fraction 9/25 or exact equivalent terminating decimal, supplied CI rule, EXPERT_DEFERRED causal interpretation |
 | General instruction following | general-exact-steps, general-faithful-summary, general-multistep-followup | Three-line EXACT_TEXT, then two EXPERT_DEFERRED tasks |
 
 Seven objective, two qualified-sandbox-dependent, and three expert-dependent
@@ -38,7 +43,12 @@ cases remain separate in the readiness report; no single aggregate is made.
 JSON key order and whitespace may vary, but duplicate keys, extra keys,
 numeric-as-boolean substitutions, NaN/Infinity and wrong values/order fail.
 Rationals are exact Fraction/Decimal comparisons, not approximate floats.
-Exact text rejects any extra punctuation or whitespace.
+Fraction answers must be reduced (9/25 accepted; 18/50 or 36/100 rejected),
+while 0.36 and 0.360 are both accepted terminating decimals.
+Exact text rejects any extra punctuation or whitespace. The direct
+response API rejects Python text containing unpaired Unicode surrogates with
+a deterministic ValueError before scoring or answer hashing; it does not
+claim a UTF-8 hash for text that cannot be encoded.
 
 ## Reference authority and negative controls
 
@@ -49,7 +59,8 @@ The scorer does not generate its own expected values. Reference content is
 also anchored independently of the file being validated. Controls include
 plausible wrong intermediate arithmetic, malformed/duplicate-key JSON,
 incorrect extraction, schema extras, numeric/boolean confusion, incorrect
-pooled rate, and improperly rejected semantically equivalent JSON/fractions.
+pooled rate, unreduced fractions, and incorrectly rejected valid JSON or
+exact terminating-decimal alternatives.
 
 For coding, accepted alternative trusted implementations of median and
 inclusive clamp are defined in tests/reference_q0_multidomain.py. That file

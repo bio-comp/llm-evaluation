@@ -168,8 +168,8 @@
       "control_id": "science-pooled-rate-03",
       "case_id": "science-pooled-rate",
       "response": "18/50",
-      "expected_disposition": "PASS",
-      "control_purpose": "valid equivalent unreduced ratio"
+      "expected_disposition": "FAIL",
+      "control_purpose": "Unreduced fraction is numerically equivalent but violates simplified-fraction answer contract"
     },
     {
       "control_id": "science-pooled-rate-04",
@@ -191,6 +191,20 @@
       "response": "0.36001",
       "expected_disposition": "FAIL",
       "control_purpose": "numerically close but incorrect"
+    },
+    {
+      "control_id": "science-pooled-rate-07",
+      "case_id": "science-pooled-rate",
+      "response": "0.360",
+      "expected_disposition": "PASS",
+      "control_purpose": "Exact terminating decimal with a harmless trailing zero"
+    },
+    {
+      "control_id": "science-pooled-rate-08",
+      "case_id": "science-pooled-rate",
+      "response": "36/100",
+      "expected_disposition": "FAIL",
+      "control_purpose": "Alternative unreduced fraction must not be mistaken for compliant simplification"
     },
     {
       "control_id": "science-ci-decision-01",
