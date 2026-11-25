@@ -1,0 +1,294 @@
+{
+  "schema_version": 1,
+  "packet_id": "e002-q0-multidomain-dev-v1",
+  "packet_sha256": "b2749f6dc23ac42d4632cf1fe1d1c44150a3215486109e5ca82929406c7518d9",
+  "controls": [
+    {
+      "control_id": "sanity-arithmetic-01",
+      "case_id": "sanity-arithmetic",
+      "response": "372",
+      "expected_disposition": "PASS",
+      "control_purpose": "known-good exact arithmetic"
+    },
+    {
+      "control_id": "sanity-arithmetic-02",
+      "case_id": "sanity-arithmetic",
+      "response": "391",
+      "expected_disposition": "FAIL",
+      "control_purpose": "plausible intermediate (misses subtraction)"
+    },
+    {
+      "control_id": "sanity-arithmetic-03",
+      "case_id": "sanity-arithmetic",
+      "response": "372 ",
+      "expected_disposition": "FAIL",
+      "control_purpose": "strict integer lexical boundary"
+    },
+    {
+      "control_id": "sanity-record-map-01",
+      "case_id": "sanity-record-map",
+      "response": "{\"Ada\":12,\"Beni\":7,\"Cora\":5}",
+      "expected_disposition": "PASS",
+      "control_purpose": "known good"
+    },
+    {
+      "control_id": "sanity-record-map-02",
+      "case_id": "sanity-record-map",
+      "response": "{\"Cora\":5,\"Beni\":7,\"Ada\":12}",
+      "expected_disposition": "PASS",
+      "control_purpose": "valid key-order alternative; reject false rejection"
+    },
+    {
+      "control_id": "sanity-record-map-03",
+      "case_id": "sanity-record-map",
+      "response": "{\"Ada\":12,\"Beni\":7,\"Cora\":6}",
+      "expected_disposition": "FAIL",
+      "control_purpose": "plausible wrong source datum"
+    },
+    {
+      "control_id": "sanity-record-map-04",
+      "case_id": "sanity-record-map",
+      "response": "{\"Ada\":12,\"Beni\":7,\"Cora\":5,\"extra\":0}",
+      "expected_disposition": "FAIL",
+      "control_purpose": "unexpected extra key"
+    },
+    {
+      "control_id": "sanity-record-map-05",
+      "case_id": "sanity-record-map",
+      "response": "{\"Ada\":12,\"Beni\":7,\"Cora\":5,}",
+      "expected_disposition": "FAIL",
+      "control_purpose": "malformed JSON"
+    },
+    {
+      "control_id": "sanity-tag-extraction-01",
+      "case_id": "sanity-tag-extraction",
+      "response": "[\"GX-17\",\"QZ-04\"]",
+      "expected_disposition": "PASS",
+      "control_purpose": "known good"
+    },
+    {
+      "control_id": "sanity-tag-extraction-02",
+      "case_id": "sanity-tag-extraction",
+      "response": "[ \"GX-17\", \"QZ-04\" ]",
+      "expected_disposition": "PASS",
+      "control_purpose": "whitespace alternative"
+    },
+    {
+      "control_id": "sanity-tag-extraction-03",
+      "case_id": "sanity-tag-extraction",
+      "response": "[\"QZ-04\",\"GX-17\"]",
+      "expected_disposition": "FAIL",
+      "control_purpose": "wrong source ordering"
+    },
+    {
+      "control_id": "sanity-tag-extraction-04",
+      "case_id": "sanity-tag-extraction",
+      "response": "[\"GX-17\"]",
+      "expected_disposition": "FAIL",
+      "control_purpose": "missing second tag"
+    },
+    {
+      "control_id": "coding-median-01",
+      "case_id": "coding-median",
+      "response": "def median(xs): return 0",
+      "expected_disposition": "NOT_AUTOMATICALLY_SCORABLE",
+      "control_purpose": "known-bad model code is not run or certified"
+    },
+    {
+      "control_id": "coding-median-02",
+      "case_id": "coding-median",
+      "response": "def median(xs): return sorted(xs)[len(xs)//2]",
+      "expected_disposition": "NOT_AUTOMATICALLY_SCORABLE",
+      "control_purpose": "plausible but even-length bug; no premature verdict"
+    },
+    {
+      "control_id": "coding-clamp-debug-01",
+      "case_id": "coding-clamp-debug",
+      "response": "def clamp(x, low, high): return min(max(x, low), high-1)",
+      "expected_disposition": "NOT_AUTOMATICALLY_SCORABLE",
+      "control_purpose": "inert broken code"
+    },
+    {
+      "control_id": "coding-clamp-debug-02",
+      "case_id": "coding-clamp-debug",
+      "response": "def clamp(x, low, high): return max(low, min(x, high))",
+      "expected_disposition": "NOT_AUTOMATICALLY_SCORABLE",
+      "control_purpose": "inert valid alternative; sandbox required"
+    },
+    {
+      "control_id": "coding-tool-call-01",
+      "case_id": "coding-tool-call",
+      "response": "{\"tool\":\"sort_numbers\",\"arguments\":{\"numbers\":[3,1,2],\"descending\":false}}",
+      "expected_disposition": "PASS",
+      "control_purpose": "known good"
+    },
+    {
+      "control_id": "coding-tool-call-02",
+      "case_id": "coding-tool-call",
+      "response": "{\"arguments\":{\"descending\":false,\"numbers\":[3,1,2]},\"tool\":\"sort_numbers\"}",
+      "expected_disposition": "PASS",
+      "control_purpose": "valid key-order alternative"
+    },
+    {
+      "control_id": "coding-tool-call-03",
+      "case_id": "coding-tool-call",
+      "response": "{\"tool\":\"sort_numbers\",\"arguments\":{\"numbers\":[3,1,2],\"descending\":0}}",
+      "expected_disposition": "FAIL",
+      "control_purpose": "JSON 0 is not boolean false"
+    },
+    {
+      "control_id": "coding-tool-call-04",
+      "case_id": "coding-tool-call",
+      "response": "{\"tool\":\"sort_numbers\",\"arguments\":{\"numbers\":[1,2,3],\"descending\":false}}",
+      "expected_disposition": "FAIL",
+      "control_purpose": "incorrect payload input mutation"
+    },
+    {
+      "control_id": "coding-tool-call-05",
+      "case_id": "coding-tool-call",
+      "response": "{\"tool\":\"sort_numbers\",\"arguments\":{\"numbers\":[3,1,2],\"descending\":false},\"comment\":\"ok\"}",
+      "expected_disposition": "FAIL",
+      "control_purpose": "extra schema field"
+    },
+    {
+      "control_id": "science-pooled-rate-01",
+      "case_id": "science-pooled-rate",
+      "response": "9/25",
+      "expected_disposition": "PASS",
+      "control_purpose": "exact reduced fraction"
+    },
+    {
+      "control_id": "science-pooled-rate-02",
+      "case_id": "science-pooled-rate",
+      "response": "0.36",
+      "expected_disposition": "PASS",
+      "control_purpose": "valid terminating decimal alternative"
+    },
+    {
+      "control_id": "science-pooled-rate-03",
+      "case_id": "science-pooled-rate",
+      "response": "18/50",
+      "expected_disposition": "FAIL",
+      "control_purpose": "Unreduced fraction is numerically equivalent but violates simplified-fraction answer contract"
+    },
+    {
+      "control_id": "science-pooled-rate-04",
+      "case_id": "science-pooled-rate",
+      "response": "0.4",
+      "expected_disposition": "FAIL",
+      "control_purpose": "mean of study-specific rates, not pooled rate"
+    },
+    {
+      "control_id": "science-pooled-rate-05",
+      "case_id": "science-pooled-rate",
+      "response": "9/0",
+      "expected_disposition": "FAIL",
+      "control_purpose": "invalid denominator"
+    },
+    {
+      "control_id": "science-pooled-rate-06",
+      "case_id": "science-pooled-rate",
+      "response": "0.36001",
+      "expected_disposition": "FAIL",
+      "control_purpose": "numerically close but incorrect"
+    },
+    {
+      "control_id": "science-pooled-rate-07",
+      "case_id": "science-pooled-rate",
+      "response": "0.360",
+      "expected_disposition": "PASS",
+      "control_purpose": "Exact terminating decimal with a harmless trailing zero"
+    },
+    {
+      "control_id": "science-pooled-rate-08",
+      "case_id": "science-pooled-rate",
+      "response": "36/100",
+      "expected_disposition": "FAIL",
+      "control_purpose": "Alternative unreduced fraction must not be mistaken for compliant simplification"
+    },
+    {
+      "control_id": "science-ci-decision-01",
+      "case_id": "science-ci-decision",
+      "response": "DO_NOT_REJECT",
+      "expected_disposition": "PASS",
+      "control_purpose": "follows stated rule"
+    },
+    {
+      "control_id": "science-ci-decision-02",
+      "case_id": "science-ci-decision",
+      "response": "REJECT",
+      "expected_disposition": "FAIL",
+      "control_purpose": "mistakes interval as excluding zero"
+    },
+    {
+      "control_id": "science-ci-decision-03",
+      "case_id": "science-ci-decision",
+      "response": "DO_NOT_REJECT because includes zero",
+      "expected_disposition": "FAIL",
+      "control_purpose": "violates exact format"
+    },
+    {
+      "control_id": "science-causal-claim-01",
+      "case_id": "science-causal-claim",
+      "response": "This proves coffee causes better scores.",
+      "expected_disposition": "NOT_AUTOMATICALLY_SCORABLE",
+      "control_purpose": "unsupported causal claim awaits expert verdict; no automated pass"
+    },
+    {
+      "control_id": "science-causal-claim-02",
+      "case_id": "science-causal-claim",
+      "response": "No causal claim is established by this observational excerpt.",
+      "expected_disposition": "NOT_AUTOMATICALLY_SCORABLE",
+      "control_purpose": "plausibly careful answer, expert review needed"
+    },
+    {
+      "control_id": "general-exact-steps-01",
+      "case_id": "general-exact-steps",
+      "response": "STEP-1\nSTEP-2\nDONE",
+      "expected_disposition": "PASS",
+      "control_purpose": "exact line match"
+    },
+    {
+      "control_id": "general-exact-steps-02",
+      "case_id": "general-exact-steps",
+      "response": "STEP-1\nSTEP-2\nDONE\n",
+      "expected_disposition": "FAIL",
+      "control_purpose": "extra final newline violates exact format"
+    },
+    {
+      "control_id": "general-exact-steps-03",
+      "case_id": "general-exact-steps",
+      "response": "STEP-1 STEP-2 DONE",
+      "expected_disposition": "FAIL",
+      "control_purpose": "wrong line structure"
+    },
+    {
+      "control_id": "general-faithful-summary-01",
+      "case_id": "general-faithful-summary",
+      "response": "Four of six preferred A but the sample was not random.",
+      "expected_disposition": "NOT_AUTOMATICALLY_SCORABLE",
+      "control_purpose": "potential valid alternate phrasing"
+    },
+    {
+      "control_id": "general-faithful-summary-02",
+      "case_id": "general-faithful-summary",
+      "response": "The survey proves A wins among all people.",
+      "expected_disposition": "NOT_AUTOMATICALLY_SCORABLE",
+      "control_purpose": "unsupported population generalization; not automatically judged"
+    },
+    {
+      "control_id": "general-multistep-followup-01",
+      "case_id": "general-multistep-followup",
+      "response": "I will proceed on Windows with no authentication.",
+      "expected_disposition": "NOT_AUTOMATICALLY_SCORABLE",
+      "control_purpose": "unsupported unstated premises; expert assessment"
+    },
+    {
+      "control_id": "general-multistep-followup-02",
+      "case_id": "general-multistep-followup",
+      "response": "First define scope, then threat model. Which OS will host it?",
+      "expected_disposition": "NOT_AUTOMATICALLY_SCORABLE",
+      "control_purpose": "plausible helpful reply; not automatically graded"
+    }
+  ]
+}
