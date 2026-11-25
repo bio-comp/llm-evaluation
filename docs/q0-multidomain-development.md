@@ -44,7 +44,10 @@ JSON key order and whitespace may vary, but duplicate keys, extra keys,
 numeric-as-boolean substitutions, NaN/Infinity and wrong values/order fail.
 Rationals are exact Fraction/Decimal comparisons, not approximate floats.
 Fraction answers must be reduced (9/25 accepted; 18/50 or 36/100 rejected),
-while 0.36 and 0.360 are both accepted terminating decimals.
+while 0.36 and exact terminating-decimal equivalents with trailing zeros are
+accepted up to the shared 8,192-character response limit. The rational parser
+does not impose the former 128-character ceiling; over-limit responses remain
+FAIL with reason code answer_over_limit.
 Exact text rejects any extra punctuation or whitespace. The direct
 response API rejects Python text containing unpaired Unicode surrogates with
 a deterministic ValueError before scoring or answer hashing; it does not

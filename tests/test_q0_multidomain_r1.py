@@ -76,6 +76,43 @@ def test_exact_terminating_decimal_alternatives_remain_valid(
     )
 
 
+@pytest.mark.parametrize("length", [128, 129, 300, 4301, 8192])
+def test_exact_decimal_is_not_falsely_rejected_by_rational_parser_ceiling(
+    length: int,
+) -> None:
+    # The packet asks for an exact terminating decimal, without a 128-char
+    # restriction. Only the global 8192-character response limit applies.
+    answer = "0.36" + "0" * (length - 4)
+    result = evaluate_response(load_packet(PACKET), "science-pooled-rate", answer)
+    assert result.disposition == "PASS"
+    assert result.reason_code == "objective_match"
+    assert result.answer_sha256 == hashlib.sha256(answer.encode("utf-8")).hexdigest()
+
+
+@given(trailing_zeros=st.integers(min_value=125, max_value=8188))
+def test_long_equivalent_decimals_preserve_correctness(
+    trailing_zeros: int,
+) -> None:
+    p = load_packet(PACKET)
+    suffix = "0" * trailing_zeros
+    assert (
+        evaluate_response(p, "science-pooled-rate", "0.36" + suffix).disposition
+        == "PASS"
+    )
+    assert (
+        evaluate_response(p, "science-pooled-rate", "0.35" + suffix).disposition
+        == "FAIL"
+    )
+
+
+def test_rational_global_answer_limit_is_enforced_without_secondary_ceiling() -> None:
+    p = load_packet(PACKET)
+    too_long = "0.36" + "0" * 8189
+    result = evaluate_response(p, "science-pooled-rate", too_long)
+    assert result.disposition == "FAIL"
+    assert result.reason_code == "answer_over_limit"
+
+
 def make_weakened_24() -> bytes:
     """Retain one PASS/FAIL for objective cases and one deferred per other case."""
     data = json.loads(CONTROLS.read_bytes())

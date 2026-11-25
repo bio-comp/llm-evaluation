@@ -308,7 +308,7 @@ def load_controls(
 
 def _parse_rational(raw: str) -> Fraction:
     if (
-        len(raw) > 128
+        len(raw) > MAX_ANSWER_CHARS
         or re.fullmatch(r"-?(?:0|[1-9][0-9]*)(?:/[1-9][0-9]*|\.[0-9]+)?", raw) is None
     ):
         raise ValueError("invalid rational syntax")
