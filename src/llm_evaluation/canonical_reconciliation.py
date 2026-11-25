@@ -825,7 +825,6 @@ def supersede_legacy_reconciliation_state(
     return archive
 
 
-
 def supersede_invalid_durable_reconciliation_state(
     *,
     replacement: DurableReconciliationStateRecord,
@@ -843,7 +842,9 @@ def supersede_invalid_durable_reconciliation_state(
         ("replacement canonical", expected_replacement_canonical_sha256),
     ):
         if _SHA256_RE.fullmatch(value) is None:
-            raise ReconciliationStateError(f"expected {label} identity must be lowercase SHA-256")
+            raise ReconciliationStateError(
+                f"expected {label} identity must be lowercase SHA-256"
+            )
     if not isinstance(replacement, DurableReconciliationStateRecord):
         raise TypeError(
             f"replacement must be DurableReconciliationStateRecord, got {type(replacement).__name__}"
@@ -943,7 +944,10 @@ def supersede_invalid_durable_reconciliation_state(
         raise ReconciliationStateError(
             "failed to read back archived invalid durable reconciliation state"
         ) from exc
-    if archived_bytes != active_bytes or hashlib.sha256(archived_bytes).hexdigest() != active_raw_sha256:
+    if (
+        archived_bytes != active_bytes
+        or hashlib.sha256(archived_bytes).hexdigest() != active_raw_sha256
+    ):
         raise ReconciliationStateError(
             "invalid durable reconciliation history readback verification failed"
         )
@@ -958,7 +962,9 @@ def supersede_invalid_durable_reconciliation_state(
             "failed to durably synchronize reconciliation history before recovery"
         ) from exc
 
-    temp_path = parent / f".last-reconciled-state.recovery.{os.getpid()}.{time.time_ns()}.json"
+    temp_path = (
+        parent / f".last-reconciled-state.recovery.{os.getpid()}.{time.time_ns()}.json"
+    )
     try:
         fd = os.open(str(temp_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with open(fd, "wb", closefd=True) as f:
@@ -1007,10 +1013,17 @@ def supersede_invalid_durable_reconciliation_state(
         )
     return readback
 
+
 def save_durable_reconciliation_state(
     record: DurableReconciliationStateRecord,
     path: Path | str | None = None,
 ) -> Path:
+    """Replace and verify a checkpoint, including immediate parent synchronization.
+
+    A post-replacement synchronization failure leaves durability unconfirmed;
+    the new target may be readable and is not automatically rolled back.
+    Newly created ancestor directory entries are not independently synchronized.
+    """
     if not isinstance(record, DurableReconciliationStateRecord):
         raise TypeError(
             f"expected DurableReconciliationStateRecord, got {type(record).__name__}"
@@ -1068,14 +1081,6 @@ def save_durable_reconciliation_state(
             f.flush()
             os.fsync(f.fileno())
         os.replace(str(temp_path), str(target))
-        try:
-            dir_fd = os.open(str(parent), os.O_RDONLY)
-            try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
-        except OSError:
-            pass
     except Exception as exc:
         if temp_path.exists():
             try:
@@ -1083,7 +1088,23 @@ def save_durable_reconciliation_state(
             except OSError:
                 pass
         raise ReconciliationStateError(
-            f"failed to atomically persist durable reconciliation state: {exc}"
+            f"failed to atomically persist durable reconciliation state before "
+            f"successful replacement: {exc}"
+        ) from exc
+
+    # Replacement has succeeded. Readability is not durability; do not remove
+    # or roll back the new target if directory synchronization fails.
+    try:
+        dir_fd = os.open(str(parent), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError as exc:
+        raise ReconciliationStateError(
+            "parent directory synchronization failed after replacement; "
+            "durability is unconfirmed, the new target may be readable; "
+            "verify the intended record and retry persistence"
         ) from exc
 
     # Readback verification
