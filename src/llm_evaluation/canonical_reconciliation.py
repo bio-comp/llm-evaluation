@@ -688,6 +688,28 @@ def load_last_reconciled_state(
     return durable.state if durable is not None else None
 
 
+def _verify_and_sync_existing_history(
+    path: Path, expected: bytes, *, mismatch_message: str
+) -> None:
+    """Verify matching immutable bytes and reestablish the file-sync boundary.
+
+    This supports retry after a transient synchronization failure on a healthy
+    filesystem, not recovery from arbitrary real writeback or media errors.
+    A successful reopened-descriptor fsync cannot prove earlier lost writes
+    were recovered; operators must resolve actual storage faults before retry.
+    """
+    try:
+        with path.open("rb") as stream:
+            if stream.read() != expected:
+                raise ReconciliationStateError(mismatch_message)
+            os.fsync(stream.fileno())
+    except OSError as exc:
+        raise ReconciliationStateError(
+            "failed to verify or synchronize existing reconciliation history file; "
+            "preserve existing bytes and resolve storage errors before retry"
+        ) from exc
+
+
 def supersede_legacy_reconciliation_state(
     *,
     expected_raw_sha256: str,
@@ -757,15 +779,11 @@ def supersede_legacy_reconciliation_state(
             "legacy reconciliation history target must not be a symlink"
         )
     if archive.exists():
-        try:
-            if archive.read_bytes() != raw_bytes:
-                raise ReconciliationStateError(
-                    "existing reconciliation history file does not match the legacy state bytes"
-                )
-        except OSError as exc:
-            raise ReconciliationStateError(
-                "failed to verify existing reconciliation history file"
-            ) from exc
+        _verify_and_sync_existing_history(
+            archive,
+            raw_bytes,
+            mismatch_message="existing reconciliation history file does not match the legacy state bytes",
+        )
     else:
         try:
             fd = os.open(str(archive), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -917,16 +935,11 @@ def supersede_invalid_durable_reconciliation_state(
             "invalid reconciliation history target must not be a symlink"
         )
     if archive.exists():
-        try:
-            existing = archive.read_bytes()
-        except OSError as exc:
-            raise ReconciliationStateError(
-                "failed to verify existing invalid-state history record"
-            ) from exc
-        if existing != active_bytes:
-            raise ReconciliationStateError(
-                "existing invalid-state history record does not match active state bytes"
-            )
+        _verify_and_sync_existing_history(
+            archive,
+            active_bytes,
+            mismatch_message="existing invalid-state history record does not match active state bytes",
+        )
     else:
         try:
             fd = os.open(str(archive), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -1189,28 +1202,22 @@ def persist_partial_reconciliation_receipt(
             "partial reconciliation history target must not be a symlink"
         )
     if receipt_path.exists():
+        _verify_and_sync_existing_history(
+            receipt_path,
+            payload,
+            mismatch_message="existing partial reconciliation receipt does not match expected canonical bytes",
+        )
+    else:
         try:
-            existing = receipt_path.read_bytes()
+            fd = os.open(str(receipt_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with open(fd, "wb", closefd=True) as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
         except OSError as exc:
             raise ReconciliationStateError(
-                "failed to verify existing partial reconciliation receipt"
+                "failed to persist partial reconciliation receipt"
             ) from exc
-        if existing != payload:
-            raise ReconciliationStateError(
-                "existing partial reconciliation receipt does not match expected canonical bytes"
-            )
-        return receipt_path
-
-    try:
-        fd = os.open(str(receipt_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with open(fd, "wb", closefd=True) as f:
-            f.write(payload)
-            f.flush()
-            os.fsync(f.fileno())
-    except OSError as exc:
-        raise ReconciliationStateError(
-            "failed to persist partial reconciliation receipt"
-        ) from exc
 
     try:
         readback = receipt_path.read_bytes()
