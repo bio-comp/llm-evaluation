@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import errno
+import hashlib
+import os
+import stat
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from pydantic import ValidationError
@@ -719,8 +725,9 @@ def test_persist_completed_reconciliation_success_and_rejections(
         )
 
 
-
-def test_global_durable_advance_rejects_partial_obligation_completion(tmp_path: Path) -> None:
+def test_global_durable_advance_rejects_partial_obligation_completion(
+    tmp_path: Path,
+) -> None:
     target = tmp_path / "last-reconciled-state.json"
     completed = _make_valid_complete_disposition()
     assert completed.obligation_ids == ("D-016:test-obligation",)
@@ -781,7 +788,10 @@ def test_partial_completion_receipt_rejects_non_complete_and_symlinked_history(
 
     completed = _make_valid_complete_disposition()
     required = completed.model_copy(
-        update={"disposition": ReconciliationDisposition.REQUIRED, "verified_publication": None}
+        update={
+            "disposition": ReconciliationDisposition.REQUIRED,
+            "verified_publication": None,
+        }
     )
     with pytest.raises(ValueError, match="only a COMPLETE"):
         reconciliation.persist_partial_reconciliation_receipt(
@@ -834,9 +844,10 @@ def test_invalid_v2_state_supersession_archives_exact_bytes_and_restores_exact_r
     archived = list(history.glob("superseded-invalid-v2-*.json"))
     assert len(archived) == 1
     assert archived[0].read_bytes() == invalid_bytes
-    assert hashlib.sha256(archived[0].read_bytes()).hexdigest() == hashlib.sha256(
-        invalid_bytes
-    ).hexdigest()
+    assert (
+        hashlib.sha256(archived[0].read_bytes()).hexdigest()
+        == hashlib.sha256(invalid_bytes).hexdigest()
+    )
 
 
 def test_invalid_v2_state_supersession_fails_closed_on_active_or_replacement_identity_mismatch(
@@ -865,14 +876,18 @@ def test_invalid_v2_state_supersession_fails_closed_on_active_or_replacement_ide
             replacement=replacement,
             expected_active_raw_sha256="0" * 64,
             expected_active_canonical_sha256=canonical_record_hash(invalid),
-            expected_replacement_raw_sha256=hashlib.sha256(replacement_bytes).hexdigest(),
+            expected_replacement_raw_sha256=hashlib.sha256(
+                replacement_bytes
+            ).hexdigest(),
             expected_replacement_canonical_sha256=canonical_record_hash(replacement),
             path=target,
         )
     assert target.read_bytes() == invalid_bytes
     assert not (tmp_path / "reconciliation-history").exists()
 
-    with pytest.raises(ReconciliationStateError, match="replacement.*hash|replacement.*identity"):
+    with pytest.raises(
+        ReconciliationStateError, match="replacement.*hash|replacement.*identity"
+    ):
         reconciliation.supersede_invalid_durable_reconciliation_state(
             replacement=replacement,
             expected_active_raw_sha256=hashlib.sha256(invalid_bytes).hexdigest(),
@@ -914,12 +929,15 @@ def test_invalid_v2_state_supersession_rejects_symlink_history_without_mutation(
             replacement=replacement,
             expected_active_raw_sha256=hashlib.sha256(invalid_bytes).hexdigest(),
             expected_active_canonical_sha256=canonical_record_hash(invalid),
-            expected_replacement_raw_sha256=hashlib.sha256(replacement_bytes).hexdigest(),
+            expected_replacement_raw_sha256=hashlib.sha256(
+                replacement_bytes
+            ).hexdigest(),
             expected_replacement_canonical_sha256=canonical_record_hash(replacement),
             path=target,
         )
     assert target.read_bytes() == invalid_bytes
     assert not list(real_history.iterdir())
+
 
 def test_legacy_state_supersession_rejects_symlinked_history_without_removing_active_state(
     tmp_path: Path,
@@ -929,7 +947,9 @@ def test_legacy_state_supersession_rejects_symlinked_history_without_removing_ac
 
     target = tmp_path / "last-reconciled-state.json"
     comp = _make_valid_complete_disposition()
-    state = LastReconciledStateRecord(snapshot_state_sha256=comp.current_snapshot_sha256)
+    state = LastReconciledStateRecord(
+        snapshot_state_sha256=comp.current_snapshot_sha256
+    )
     legacy = DurableReconciliationStateRecord(state=state, disposition=comp).model_copy(
         update={"schema_version": 1}
     )
@@ -955,7 +975,9 @@ def test_legacy_state_supersession_verifies_archive_before_removing_active_state
 
     target = tmp_path / "last-reconciled-state.json"
     comp = _make_valid_complete_disposition()
-    state = LastReconciledStateRecord(snapshot_state_sha256=comp.current_snapshot_sha256)
+    state = LastReconciledStateRecord(
+        snapshot_state_sha256=comp.current_snapshot_sha256
+    )
     legacy = DurableReconciliationStateRecord(state=state, disposition=comp).model_copy(
         update={"schema_version": 1}
     )
@@ -1005,3 +1027,479 @@ def test_v2_state_writer_refuses_to_overwrite_legacy_v1_without_supersession(
     with pytest.raises(ReconciliationStateError, match="legacy|supersession"):
         save_durable_reconciliation_state(new_record, path=target)
     assert target.read_bytes() == legacy_bytes
+
+
+def _issue62_record(snapshot: str) -> DurableReconciliationStateRecord:
+    completed = _make_valid_complete_disposition(snapshot_sha=snapshot)
+    return DurableReconciliationStateRecord(
+        state=LastReconciledStateRecord(snapshot_state_sha256=snapshot),
+        disposition=completed,
+    )
+
+
+@pytest.mark.parametrize("high_level", [False, True], ids=["save", "complete"])
+@pytest.mark.parametrize("failure", ["open", "fsync"])
+def test_issue62_post_replace_failure_and_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    high_level: bool,
+    failure: Literal["open", "fsync"],
+) -> None:
+    target = tmp_path / "state.json"
+    previous = _issue62_record(H1)
+    replacement = _issue62_record(H2)
+    target.write_bytes(canonical_record_bytes(previous))
+    payload = canonical_record_bytes(replacement)
+    assert target.read_bytes() != payload
+    real_open, real_sync, real_close = os.open, os.fsync, os.close
+    fault = OSError(errno.EIO, "injected directory synchronization failure")
+    events: list[str] = []
+    directory_fd: int | None = None
+    fail = True
+
+    def injected_open(path: str, flags: int, mode: int = 0o777) -> int:
+        nonlocal directory_fd
+        if path == str(target.parent) and flags == os.O_RDONLY:
+            events.append("directory-open")
+            assert target.read_bytes() == payload
+            if fail and failure == "open":
+                raise fault
+            directory_fd = real_open(path, flags, mode)
+            return directory_fd
+        return real_open(path, flags, mode)
+
+    def injected_sync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            assert fd == directory_fd
+            events.append("directory-fsync")
+            if fail and failure == "fsync":
+                raise fault
+        else:
+            assert stat.S_ISREG(os.fstat(fd).st_mode)
+            events.append("file-fsync")
+        real_sync(fd)
+
+    def tracked_close(fd: int) -> None:
+        if fd == directory_fd:
+            events.append("directory-close")
+        real_close(fd)
+
+    def persist() -> Path | DurableReconciliationStateRecord:
+        if high_level:
+            return persist_completed_reconciliation(
+                replacement.disposition,
+                path=target,
+                expected_complete_obligation_ids=replacement.disposition.obligation_ids,
+            )
+        return save_durable_reconciliation_state(replacement, path=target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "open", injected_open)
+        patch.setattr(os, "fsync", injected_sync)
+        patch.setattr(os, "close", tracked_close)
+        try:
+            with pytest.raises(
+                ReconciliationStateError, match="after replacement.*durability"
+            ) as caught:
+                persist()
+            assert caught.value.__cause__ is fault
+        finally:
+            # These observations also run on the known-bad baseline.
+            expected = ["file-fsync", "directory-open"]
+            if failure == "fsync":
+                expected += ["directory-fsync", "directory-close"]
+            assert events == expected
+            assert target.read_bytes() == payload
+            assert not list(tmp_path.glob(".last-reconciled-state.tmp.*"))
+        # Readability alone was not sufficient. Retry must actually sync again.
+        fail = False
+        events.clear()
+        result = persist()
+        assert result == (replacement if high_level else target)
+        assert events == [
+            "file-fsync",
+            "directory-open",
+            "directory-fsync",
+            "directory-close",
+        ]
+    assert target.read_bytes() == payload
+    assert load_durable_reconciliation_state(target) == replacement
+    assert not list(tmp_path.glob(".last-reconciled-state.tmp.*"))
+
+
+@pytest.mark.parametrize("failure", ["file-fsync", "replace"])
+def test_issue62_pre_replace_failure_preserves_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    target = tmp_path / "state.json"
+    previous = canonical_record_bytes(_issue62_record(H1))
+    target.write_bytes(previous)
+    replacement = _issue62_record(H2)
+    real_sync = os.fsync
+    fault = OSError(errno.EIO, "injected pre-replacement failure")
+    events: list[str] = []
+
+    def injected_sync(fd: int) -> None:
+        assert stat.S_ISREG(os.fstat(fd).st_mode)
+        events.append("file-fsync")
+        if failure == "file-fsync":
+            raise fault
+        real_sync(fd)
+
+    def injected_replace(src: str, dst: str) -> None:
+        assert Path(dst) == target
+        assert Path(src).read_bytes() == canonical_record_bytes(replacement)
+        events.append("replace")
+        raise fault
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fsync", injected_sync)
+        patch.setattr(os, "replace", injected_replace)
+        with pytest.raises(
+            ReconciliationStateError, match="atomically persist"
+        ) as caught:
+            save_durable_reconciliation_state(replacement, path=target)
+        assert caught.value.__cause__ is fault
+    assert events == (
+        ["file-fsync"] if failure == "file-fsync" else ["file-fsync", "replace"]
+    )
+    assert target.read_bytes() == previous
+    assert not list(tmp_path.glob(".last-reconciled-state.tmp.*"))
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_issue62_normal_save_syncs_before_readback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing: bool
+) -> None:
+    target = tmp_path / "state.json"
+    if existing:
+        target.write_bytes(canonical_record_bytes(_issue62_record(H1)))
+    record = _issue62_record(H2)
+    payload = canonical_record_bytes(record)
+    real_sync, real_replace, real_read = os.fsync, os.replace, Path.read_bytes
+    events: list[str] = []
+
+    def tracked_sync(fd: int) -> None:
+        real_sync(fd)
+        events.append(
+            "directory-fsync" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file-fsync"
+        )
+
+    def tracked_replace(src: str, dst: str) -> None:
+        real_replace(src, dst)
+        events.append("replace")
+
+    def tracked_read(path: Path) -> bytes:
+        if path == target and "replace" in events:
+            events.append("readback")
+        return real_read(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fsync", tracked_sync)
+        patch.setattr(os, "replace", tracked_replace)
+        patch.setattr(Path, "read_bytes", tracked_read)
+        assert save_durable_reconciliation_state(record, path=target) == target
+    assert events == ["file-fsync", "replace", "directory-fsync", "readback"]
+    assert target.read_bytes() == payload
+    assert load_durable_reconciliation_state(target) == record
+    assert not list(tmp_path.glob(".last-reconciled-state.tmp.*"))
+
+
+@pytest.mark.parametrize("operation", ["partial", "legacy"])
+def test_issue62_existing_history_sync_guards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    import llm_evaluation.canonical_reconciliation as reconciliation
+
+    target = tmp_path / "state.json"
+    record = _issue62_record(H1)
+    if operation == "legacy":
+        record = record.model_copy(update={"schema_version": 1})
+    original = canonical_record_bytes(record)
+    target.write_bytes(original)
+    real_sync = os.fsync
+    fault = OSError(errno.EIO, "injected history directory synchronization failure")
+    events: list[str] = []
+
+    def injected_sync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            events.append("history-fsync")
+            raise fault
+        real_sync(fd)
+        events.append("file-fsync")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fsync", injected_sync)
+        with pytest.raises(
+            ReconciliationStateError, match="synchronize.*history"
+        ) as caught:
+            if operation == "partial":
+                reconciliation.persist_partial_reconciliation_receipt(
+                    _issue62_record(H2).disposition, reconciliation_state_path=target
+                )
+            else:
+                reconciliation.supersede_legacy_reconciliation_state(
+                    expected_raw_sha256=hashlib.sha256(original).hexdigest(),
+                    path=target,
+                )
+        assert caught.value.__cause__ is fault
+    assert events == ["file-fsync", "history-fsync"]
+    assert target.read_bytes() == original
+
+
+@dataclass(frozen=True)
+class _R1HistoryCase:
+    active: Path
+    artifact: Path
+    active_bytes: bytes
+    artifact_bytes: bytes
+    final_active_bytes: bytes | None
+    persist: Callable[[], Path | DurableReconciliationStateRecord]
+    expected_result: Path | DurableReconciliationStateRecord
+
+
+def _r1_history_case(
+    tmp_path: Path, operation: Literal["partial", "legacy", "invalid"]
+) -> _R1HistoryCase:
+    import llm_evaluation.canonical_reconciliation as reconciliation
+
+    active = tmp_path / "state.json"
+    history = tmp_path / "reconciliation-history"
+    original = _issue62_record(H1)
+    replacement = _issue62_record(H2)
+    if operation == "legacy":
+        original = original.model_copy(update={"schema_version": 1})
+    original_bytes = canonical_record_bytes(original)
+    active.write_bytes(original_bytes)
+    original_hash = hashlib.sha256(original_bytes).hexdigest()
+    if operation == "partial":
+        completed = replacement.disposition
+        artifact_bytes = canonical_record_bytes(completed)
+        artifact = history / (
+            f"partial-complete-{completed.current_snapshot_sha256}-"
+            f"{canonical_record_hash(completed)}.json"
+        )
+
+        def persist_partial() -> Path:
+            return reconciliation.persist_partial_reconciliation_receipt(
+                completed, reconciliation_state_path=active
+            )
+
+        return _R1HistoryCase(
+            active,
+            artifact,
+            original_bytes,
+            artifact_bytes,
+            original_bytes,
+            persist_partial,
+            artifact,
+        )
+    if operation == "legacy":
+        artifact = history / f"superseded-v1-{original_hash}.json"
+
+        def persist_legacy() -> Path:
+            return reconciliation.supersede_legacy_reconciliation_state(
+                expected_raw_sha256=original_hash, path=active
+            )
+
+        return _R1HistoryCase(
+            active,
+            artifact,
+            original_bytes,
+            original_bytes,
+            None,
+            persist_legacy,
+            artifact,
+        )
+    artifact = history / f"superseded-invalid-v2-{original_hash}.json"
+    replacement_bytes = canonical_record_bytes(replacement)
+
+    def persist_invalid() -> DurableReconciliationStateRecord:
+        return reconciliation.supersede_invalid_durable_reconciliation_state(
+            replacement=replacement,
+            expected_active_raw_sha256=original_hash,
+            expected_active_canonical_sha256=canonical_record_hash(original),
+            expected_replacement_raw_sha256=hashlib.sha256(
+                replacement_bytes
+            ).hexdigest(),
+            expected_replacement_canonical_sha256=canonical_record_hash(replacement),
+            path=active,
+        )
+
+    return _R1HistoryCase(
+        active,
+        artifact,
+        original_bytes,
+        original_bytes,
+        replacement_bytes,
+        persist_invalid,
+        replacement,
+    )
+
+
+def _r1_descriptor_matches(fd: int, path: Path) -> bool:
+    return path.exists() and os.path.samestat(os.fstat(fd), path.stat())
+
+
+@pytest.mark.parametrize(
+    ("operation", "failure"),
+    [
+        ("partial", "history-file"),
+        ("partial", "history-directory"),
+        ("legacy", "history-file"),
+        ("legacy", "history-directory"),
+        ("invalid", "history-file"),
+        ("invalid", "history-directory"),
+    ],
+)
+def test_r1_history_retry_requires_file_and_directory_sync(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: Literal["partial", "legacy", "invalid"],
+    failure: Literal["history-file", "history-directory"],
+) -> None:
+    case = _r1_history_case(tmp_path, operation)
+    original_sync, original_replace, original_unlink = os.fsync, os.replace, Path.unlink
+    fault = OSError(errno.EIO, "synthetic targeted history synchronization failure")
+    events: list[str] = []
+    fault_enabled = True
+
+    def tracked_sync(fd: int) -> None:
+        if _r1_descriptor_matches(fd, case.artifact):
+            event = "history-file"
+        elif _r1_descriptor_matches(fd, case.artifact.parent):
+            event = "history-directory"
+        elif _r1_descriptor_matches(fd, case.active.parent):
+            event = "active-parent"
+        else:
+            assert stat.S_ISREG(os.fstat(fd).st_mode)
+            event = "replacement-file"
+        events.append(event)
+        if fault_enabled and event == failure:
+            raise fault
+        original_sync(fd)
+
+    def tracked_replace(src: str, dst: str) -> None:
+        if Path(dst) == case.active:
+            events.append("replace-active")
+        original_replace(src, dst)
+
+    def tracked_unlink(path: Path, missing_ok: bool = False) -> None:
+        if path == case.active:
+            events.append("retire-active")
+        original_unlink(path, missing_ok=missing_ok)
+
+    expected_failure = ["history-file"]
+    if failure == "history-directory":
+        expected_failure.append("history-directory")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fsync", tracked_sync)
+        patch.setattr(os, "replace", tracked_replace)
+        patch.setattr(Path, "unlink", tracked_unlink)
+        with pytest.raises(ReconciliationStateError) as initial:
+            case.persist()
+        assert initial.value.__cause__ is fault
+        assert events == expected_failure
+        assert case.active.read_bytes() == case.active_bytes
+        assert case.artifact.read_bytes() == case.artifact_bytes
+        artifact_stat = case.artifact.stat()
+        events.clear()
+        try:
+            with pytest.raises(ReconciliationStateError) as retry:
+                case.persist()
+            assert retry.value.__cause__ is fault
+        finally:
+            print(f"{operation}/{failure} sustained retry trace: {events}")
+            print(
+                "active preserved:",
+                case.active.exists() and case.active.read_bytes() == case.active_bytes,
+            )
+        assert events == expected_failure
+        assert case.active.read_bytes() == case.active_bytes
+        assert case.artifact.read_bytes() == case.artifact_bytes
+        fault_enabled = False
+        events.clear()
+        assert case.persist() == case.expected_result
+        expected_success = ["history-file", "history-directory"]
+        if operation == "legacy":
+            expected_success += ["retire-active", "active-parent"]
+        elif operation == "invalid":
+            expected_success += ["replacement-file", "replace-active", "active-parent"]
+        print(f"{operation}/{failure} recovery trace: {events}")
+        assert events == expected_success
+    assert case.artifact.read_bytes() == case.artifact_bytes
+    assert os.path.samestat(case.artifact.stat(), artifact_stat)
+    assert case.artifact.stat().st_mtime_ns == artifact_stat.st_mtime_ns
+    if case.final_active_bytes is None:
+        assert not case.active.exists()
+    else:
+        assert case.active.read_bytes() == case.final_active_bytes
+    assert not list(tmp_path.glob(".last-reconciled-state.recovery.*"))
+
+
+def test_r1_history_valid_partial_receipt_resyncs_without_rewrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = _r1_history_case(tmp_path, "partial")
+    assert case.persist() == case.expected_result
+    before = case.artifact.stat()
+    original_sync = os.fsync
+    events: list[str] = []
+
+    def tracked_sync(fd: int) -> None:
+        if _r1_descriptor_matches(fd, case.artifact):
+            events.append("receipt-file")
+        elif _r1_descriptor_matches(fd, case.artifact.parent):
+            events.append("history-directory")
+        else:
+            pytest.fail("unexpected sync during idempotent receipt return")
+        original_sync(fd)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fsync", tracked_sync)
+        assert case.persist() == case.expected_result
+    assert events == ["receipt-file", "history-directory"]
+    assert case.artifact.read_bytes() == case.artifact_bytes
+    assert os.path.samestat(before, case.artifact.stat())
+    assert before.st_mtime_ns == case.artifact.stat().st_mtime_ns
+    assert case.active.read_bytes() == case.active_bytes
+
+
+@pytest.mark.parametrize("operation", ["partial", "legacy", "invalid"])
+def test_r1_history_contradictory_artifact_not_overwritten(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: Literal["partial", "legacy", "invalid"],
+) -> None:
+    case = _r1_history_case(tmp_path, operation)
+    case.artifact.parent.mkdir()
+    contradictory = b"contradictory existing history"
+    case.artifact.write_bytes(contradictory)
+
+    def forbidden_sync(fd: int) -> None:
+        pytest.fail(f"unexpected synchronization of contradictory artifact: {fd}")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fsync", forbidden_sync)
+        with pytest.raises(ReconciliationStateError, match="does not match"):
+            case.persist()
+    assert case.artifact.read_bytes() == contradictory
+    assert case.active.read_bytes() == case.active_bytes
+
+
+@pytest.mark.parametrize("operation", ["partial", "legacy", "invalid"])
+def test_r1_history_symlink_artifact_not_followed(
+    tmp_path: Path,
+    operation: Literal["partial", "legacy", "invalid"],
+) -> None:
+    case = _r1_history_case(tmp_path, operation)
+    case.artifact.parent.mkdir()
+    external = tmp_path / "external.json"
+    external.write_bytes(case.artifact_bytes)
+    case.artifact.symlink_to(external)
+    with pytest.raises(ReconciliationStateError, match="symlink"):
+        case.persist()
+    assert case.artifact.is_symlink()
+    assert external.read_bytes() == case.artifact_bytes
+    assert case.active.read_bytes() == case.active_bytes
