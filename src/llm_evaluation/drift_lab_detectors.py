@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 import math
 from dataclasses import dataclass
 from typing import Literal, Sequence
@@ -167,6 +168,33 @@ def max_shewhart(values: Sequence[float]) -> float:
     return max(data)
 
 
+def _calibrate_sorted_exceedance(
+    sorted_values: Sequence[float],
+    cutoffs: Sequence[float],
+    target_tail_probability: float,
+) -> CalibratedThreshold:
+    """Calibrate from a pre-sorted sample and its sorted distinct cutoffs."""
+    n = len(sorted_values)
+    # cutoffs is sorted increasingly and the exceedance rate is non-increasing
+    # in the threshold, so the feasibility predicate is monotone.
+    lo = 0
+    hi = len(cutoffs)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        threshold = cutoffs[mid]
+        exceedances = n - bisect.bisect_right(sorted_values, threshold)
+        if exceedances / n <= target_tail_probability:
+            hi = mid
+        else:
+            lo = mid + 1
+    threshold = cutoffs[lo]
+    exceedances = n - bisect.bisect_right(sorted_values, threshold)
+    return CalibratedThreshold(
+        threshold=threshold,
+        exceedance_probability=exceedances / n,
+    )
+
+
 def calibrate_exceedance_threshold(
     values: Sequence[float], *, target_tail_probability: float
 ) -> CalibratedThreshold:
@@ -176,15 +204,9 @@ def calibrate_exceedance_threshold(
     target = _validate_probability(
         target_tail_probability, label="target_tail_probability", open_interval=False
     )
-    for threshold in sorted(set(data)):
-        exceedances = sum(value > threshold for value in data)
-        probability = exceedances / len(data)
-        if probability <= target:
-            return CalibratedThreshold(
-                threshold=threshold,
-                exceedance_probability=probability,
-            )
-    raise AssertionError("maximum observed statistic must always be feasible")
+    sorted_data = sorted(data)
+    cutoffs = sorted(set(data))
+    return _calibrate_sorted_exceedance(sorted_data, cutoffs, target)
 
 
 def calibrate_layered_equal_tail(
@@ -198,22 +220,32 @@ def calibrate_layered_equal_tail(
     process = tuple(float(value) for value in process_statistics)
     if len(distribution) != len(process) or not distribution:
         raise ValueError("layered calibration requires equally sized non-empty paired paths")
+    if any(not math.isfinite(value) for value in distribution) or any(
+        not math.isfinite(value) for value in process
+    ):
+        raise ValueError("calibration requires at least one finite statistic")
     target_family = _validate_probability(
         target_family_probability, label="target_family_probability", open_interval=False
     )
     grid = tuple(float(value) for value in component_tail_grid)
     if not grid or tuple(sorted(set(grid))) != grid:
         raise ValueError("component_tail_grid must be non-empty, unique, and increasing")
+
+    distribution_sorted = sorted(distribution)
+    process_sorted = sorted(process)
+    distribution_cutoffs = sorted(set(distribution))
+    process_cutoffs = sorted(set(process))
+
     feasible: LayeredCalibration | None = None
     for component_tail in grid:
-        _validate_probability(
+        validated_component_tail = _validate_probability(
             component_tail, label="component tail probability", open_interval=False
         )
-        distribution_threshold = calibrate_exceedance_threshold(
-            distribution, target_tail_probability=component_tail
+        distribution_threshold = _calibrate_sorted_exceedance(
+            distribution_sorted, distribution_cutoffs, validated_component_tail
         )
-        process_threshold = calibrate_exceedance_threshold(
-            process, target_tail_probability=component_tail
+        process_threshold = _calibrate_sorted_exceedance(
+            process_sorted, process_cutoffs, validated_component_tail
         )
         family_probability = sum(
             distribution_value > distribution_threshold.threshold
