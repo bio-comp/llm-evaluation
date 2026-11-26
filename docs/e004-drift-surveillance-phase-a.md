@@ -4,6 +4,10 @@ E-004 is a known-truth synthetic laboratory for a narrow drift-surveillance ques
 
 It is an instrument-validation experiment, not a production monitoring policy. It does not define a universal PSI cutoff, a universal SPC chart, a release threshold, or a clinically/business-material drift level.
 
+## Living research versus the Phase A test condition
+
+The frozen Phase A fixture identifies only this test's measurement condition, not a frozen E-004 research program. Drive records Phase A repository reconciliation as complete and DEVELOPMENT as authorized; actual scientific runs and FINAL completion must be determined from verified run records, not inferred from the design file. Improve future scenarios, monitoring hypotheses, and code in normal branches; give materially changed confirmatory conditions their own versioned design and holdout, preserving results from this exact fixture. No separate canonical approval is needed for ordinary safe exploratory work.
+
 ## Frozen design
 
 The exact public design is `fixtures/e004_drift_surveillance_phase_a_design.json`. The implementation rejects design drift through canonical hashes and strict versioned records.

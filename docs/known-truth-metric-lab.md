@@ -31,7 +31,7 @@ uv run llm-evaluation-metric-lab \
   --output /private/tmp/metric-lab-development.json
 ```
 
-FINAL execution is gated on Drive→Git reconciliation of the frozen fixture and implementation. Once that gate is closed, run the exact frozen fixture from a clean, verified source checkout:
+Historical execution note: the original FINAL was contingent on a fixture/implementation reconciliation, which was closed before the recorded November 2026 FINAL run. That one-time prerequisite is **already satisfied**, not a standing gate on future research. To independently reproduce the recorded FINAL condition, use its exact design and a verified source checkout:
 
 ```sh
 uv run llm-evaluation-metric-lab \
@@ -41,4 +41,4 @@ uv run llm-evaluation-metric-lab \
   --output /private/tmp/metric-lab-final.json
 ```
 
-`--replicates 2000` is redundant in FINAL but intentionally explicit here; the CLI rejects any other FINAL replicate count. Output publication is immutable and read back through the run-record verifier. Do not edit the frozen fixture or tune the implementation after inspecting FINAL outcomes; a changed design is a new experiment condition with a new identity.
+`--replicates 2000` is redundant in FINAL but intentionally explicit here; the CLI rejects any other FINAL replicate count. Output publication is immutable and read back through the run-record verifier. Do not retrospectively mutate this completed FINAL fixture or tune its original condition after seeing outcomes. Design improvements are welcome as new prospective experiment versions with distinct identities; they do not need another global project freeze.
